@@ -4,7 +4,9 @@ Ademas de PSNR/SSIM mide justamente lo que se le critica a GNMScale:
   * grano: PSNR solo en zonas planas del objetivo (desvio local < 2/255);
     si un metodo amplifica ruido, ahi cae por debajo de "sin procesar";
   * halos: % de pixeles que se salen del rango local (3x3) del objetivo
-    por mas de 4/255 (sobreimpulsos alrededor de bordes).
+    por mas de 4/255 (sobreimpulsos alrededor de bordes);
+  * parpadeo: cambio medio de la salida cuando la imagen se mueve 1 pixel
+    (en un filtro ideal es 0; en movimiento se ve como titileo).
 
   python sr/eval_sr.py --data val_sr.npz --nxsr weights/nxsr.pkl --gnmscale DIR_MODELOS --out tabla.md
 """
@@ -81,10 +83,14 @@ def main():
             p = jax.tree_util.tree_map(jnp.asarray, pickle.load(f))
         tag = os.path.basename(w).replace(".pkl", "")
         methods[f"{tag} ({net_sr.macs_per_pixel(p):.0f} MAC/px)"] = jax.jit(lambda x, p=p: net_sr.apply(p, x))
-    lines = ["| metodo | PSNR | SSIM | PSNR zonas planas (grano) | halos % |", "|---|---|---|---|---|"]
+    lines = ["| metodo | PSNR | SSIM | PSNR zonas planas (grano) | halos % | parpadeo (/255) |",
+             "|---|---|---|---|---|---|"]
     for name, fn in methods.items():
         m = metrics(run(fn, lr), hr, flat, lo, hi)
-        lines.append(f"| {name} | {m[0]:.2f} | {m[1]:.4f} | {m[2]:.2f} | {m[3]:.2f} |")
+        # parpadeo: cuanto cambia la salida si la imagen se mueve 1 pixel en diagonal
+        fa, fb = net_sr.shift_pair(lambda z: jnp.asarray(run(fn, np.asarray(z))), lr[:128], 1, 1)
+        fl = float(np.abs(np.clip(np.asarray(fa), 0, 1) - np.clip(np.asarray(fb), 0, 1)).mean() * 255)
+        lines.append(f"| {name} | {m[0]:.2f} | {m[1]:.4f} | {m[2]:.2f} | {m[3]:.2f} | {fl:.3f} |")
         print(lines[-1], flush=True)
     if a.out:
         open(a.out, "w").write("\n".join(lines) + "\n")
