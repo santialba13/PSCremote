@@ -1,4 +1,4 @@
-# VCFG-NX 2.1: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
+# VCFG-NX 2.2: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
 
 Rediseño del **VCFG v2.14** (generador de fotogramas en beta de la comunidad
 de GoldHEN) que además incorpora un **modelo de reescalado/realce propio,
@@ -6,7 +6,7 @@ NXSR**, como alternativa a GNMScale pero sin el granulado que este agrega.
 Todo con la interfaz de VCFG: app instaladora con lista de juegos y menú en
 pantalla con **L3+R3**.
 
-**Descarga:** [`dist/VCFG-NX_v2.10.pkg`](dist/VCFG-NX_v2.10.pkg) (fPKG, app) ·
+**Descarga:** [`dist/VCFG-NX_v2.20.pkg`](dist/VCFG-NX_v2.20.pkg) (fPKG, app) ·
 [`dist/vcfg_nx.prx`](dist/vcfg_nx.prx) (plugin suelto) · [`dist/SHA256SUMS.txt`](dist/SHA256SUMS.txt)
 
 | servicio | qué hace |
@@ -47,6 +47,27 @@ juego):
   PSNR es moderada: con ~1000 operaciones por píxel (lo que la GPU de la PS4
   puede pagar a 1080p junto con la generación de fotogramas) no se puede
   "inventar" mucho detalle; lo que gana es nitidez real sin artefactos.
+
+## Novedades de la 2.2
+
+![lista de juegos](docs/img/app_juegos.png)
+
+* **App nueva**: cuadrícula con los juegos instalados y sus íconos, filtros
+  (todos / activos / con ajustes propios) y un panel con lo que va a usar el
+  juego elegido.
+* **Ajustes por juego** desde la app: cada juego puede seguir los ajustes por
+  defecto o tener los suyos (FG, NXSR, modelo, SMAA, RCAS, calidad dinámica,
+  modo ahorro, límite de temperatura, contador de FPS). Es el mismo archivo
+  que guarda el menú L3+R3 dentro del juego.
+* **Menos memoria**: los buffers temporales del FG y del post-proceso
+  comparten la misma región: 90 → 63 MiB a 1080p (−31 %), con salida idéntica
+  byte a byte. Más juegos tienen memoria libre para activar los efectos.
+* **La app no usa CPU en reposo**: solo redibuja cuando se toca un botón (antes
+  redibujaba la pantalla entera 30 veces por segundo).
+* Juegos en discos externos (`ext0`/`ext1`) sin repetir. Los modelos (NXFlow y
+  NXSR) no cambiaron.
+
+![ajustes de un juego](docs/img/app_ajustes_juego.png)
 
 ## Novedades de la 2.1
 
@@ -98,10 +119,14 @@ no son juegos (`CUSA`/`PLAS`).
 ## Instalar y usar
 
 1. Requiere **GoldHEN** con soporte de plugins.
-2. Instalar `VCFG-NX_v2.10.pkg` y abrir **VCFG-NX**.
-3. En la lista de juegos: **X** activa/desactiva el juego, **TRIÁNGULO** todos,
-   **CUADRADO** ajustes por defecto (FG, NXSR Suave/Normal/Fuerte, SMAA, RCAS),
-   **OPTIONS** desinstalar, **CÍRCULO** guardar y salir.
+2. Instalar `VCFG-NX_v2.20.pkg` y abrir **VCFG-NX**.
+3. En la cuadrícula: **X** activa o desactiva VCFG-NX en el juego,
+   **CUADRADO** abre los ajustes de ese juego, **TRIÁNGULO** los ajustes por
+   defecto, **L1/R1** cambia el filtro, **OPTIONS** abre el menú (activar o
+   desactivar todos, quitar ajustes propios, desinstalar, salir sin guardar) y
+   **CÍRCULO** guarda y sale.
+   En los ajustes de un juego, cambiar cualquier valor lo pasa a "ajustes
+   propios"; **CUADRADO** lo devuelve a los ajustes por defecto.
 4. En el juego: mantener **L3+R3** 1,5 s abre el menú (el juego no recibe los
    botones mientras está abierto). Ahí se cambia cada efecto en vivo, se ve el
    contador de FPS, el modo **Comparar** (mitad izquierda original) y
@@ -140,7 +165,8 @@ upscale/                       referencias FSR1 y SMAA
 shaders/                       kernels de GPU (.cl) -> ISA GCN gfx701
 plugin/source/                 plugin: motor (nx_engine), tubería GPU, menú en pantalla, hooks
 plugin/test/                   host_test, emulador del DCB, simulador de consola con ASan
-installer/                     app (interfaz VCFG), edición segura de plugins.ini, PKG
+installer/                     app (cuadrícula de juegos, ajustes por juego), edición segura de plugins.ini, PKG
+installer/test/                test_core, test_app (la app entera con mando guionado) y capturas de pantalla
 weights/                       pesos entrenados (nxflow.pkl, nxsr.pkl, nxsr_hq.pkl)
 ```
 
@@ -155,6 +181,7 @@ plugin/test/console_sim                                # 18 escenarios: memoria,
 python3 plugin/test/test_gpu_path.py video.mp4 weights/nxflow.pkl
 python3 plugin/test/test_smaa_path.py
 python3 plugin/test/test_sr_path.py                    # NXSR: DCB emulado vs modelo
+make -C installer/test                                 # app: archivos, interfaz de punta a punta
 make -C installer OO_PS4_TOOLCHAIN=... GOLDHEN_SDK=... [SSL11_DIR=carpeta con libssl.so.1.1]
 ```
 
@@ -180,6 +207,7 @@ se agregó SMAA 1x (1.0) y ahora NXSR, entrenado desde cero.
   binarios ni sus pesos; solo el análisis.
 * SMAA: Jimenez et al., MIT (`third_party/smaa/LICENSE.txt`). FSR1: AMD, MIT.
 * Fuente del menú: DejaVu Sans Mono (licencia libre de Bitstream Vera/DejaVu).
+* stb_image (Sean Barrett): dominio público / MIT, para los íconos de la app.
 * Formato PKG/PFS: LibOrbisPkg (maxton). Toolchain: OpenOrbis y GoldHEN Plugins SDK.
 * Datos: Big Buck Bunny (© Blender Foundation, CC-BY 3.0), Urban100, BSD100,
   Set14, Sun-Hays80, clips de muestra de scikit-video/OpenCV y escenas

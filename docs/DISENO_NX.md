@@ -1,4 +1,4 @@
-# VCFG-NX 2.1: diseño
+# VCFG-NX 2.2: diseño
 
 Rediseño del frame generator VCFG para PS4 (GoldHEN). Objetivo: 30 → 60 fps
 con menos artefactos que el block-matching puro, más un escalado/nitidez tipo
@@ -226,6 +226,33 @@ entrenar, el mismo coste en la consola. Una pérdida de consistencia ante
 desplazamientos de 1 píxel castiga que la salida cambie según la fase de la
 celda 2x2 (lo que en movimiento se vería como parpadeo).
 
+### Memoria
+
+`nx_pipeline.c` reparte una sola arena. Lo que pasa de un fotograma al
+siguiente (pirámide de luma y pooling del fotograma anterior, el intermedio
+`tmp_img`) va aparte; los temporales del FG (flujo, entradas de nivel, capas
+ocultas) y los del post-proceso (SMAA, intermedios de EASU/SMAA) se usan en
+fases distintas del mismo trabajo, separadas por barreras, así que comparten
+una región del tamaño del mayor de los dos grupos. El tamaño se calcula con el
+mismo código que reparte (una pasada "en seco"), así no pueden desincronizarse.
+
+| caso | antes (2.1) | ahora |
+|---|---|---|
+| 1080p FG + SMAA + NXSR | 90,2 MiB | 62,6 MiB |
+| 900p → 1080p | 66,2 MiB | 45,5 MiB |
+| 720p → 1080p | 45,3 MiB | 32,2 MiB |
+
+Más los 4 buffers de salida (2 intermedios + 2 reales, 33 MiB a 1080p).
+
+## App (instalador)
+
+`installer/source/main.c` dibuja en la CPU sobre dos framebuffers de VideoOut
+y solo redibuja cuando cambia algo (sin tocar nada, duerme mirando el mando).
+Los íconos (`/user/appmeta/<ID>/icon0.png`, 512x512) se decodifican con
+stb_image solo cuando se ven, se reducen a 176x176 por promedio de área y se
+guardan los últimos 32. Los ajustes se leen y escriben con
+`plugin/source/config.c`, el mismo código que usa el plugin.
+
 ## Evaluación segura (sin consola)
 
 | prueba | qué valida |
@@ -233,7 +260,9 @@ celda 2x2 (lo que en movimiento se vería como parpadeo).
 | `plugin/test/console_sim` (ASan + UBSan) | 16 escenarios: arranque, poca memoria, GPU trabada (con y sin trabajo propio: pausa y reintento), cierre → modo seguro → reactivar, menú, HDR, juego a 60 fps, re-registro (otra geometría, misma geometría, antes de activar), ForWorkload + 2000 llamadas aleatorias, flips de CPU, GPU justa con modelo de tiempos (calidad dinámica baja y vuelve a subir), modelo Auto/Calidad en Pro, proceso que no es juego |
 | `plugin/test/host_test` | offsets de argumentos de los 26 kernels vs compilador; DCB bien formado en 6 configuraciones |
 | `test_gpu_path.py`, `test_smaa_path.py`, `test_sr_path.py` | el DCB ejecutado (kernels compilados para x86) coincide con las referencias: FG, SMAA y NXSR con LDS y barreras |
-| `installer/test/test_core.c` (ASan) | edición de `plugins.ini` (conserva lo existente, idempotente, desinstalar) y lectura de `param.sfo` |
+| `installer/test/test_core.c` (ASan) | edición de `plugins.ini` (conserva lo existente, idempotente, desinstalar), `param.sfo`, discos externos sin repetir, ajustes por juego ida y vuelta |
+| `installer/test/test_app.c` (ASan + UBSan) | la app entera con un mando guionado sobre un sistema de archivos falso: activar, ajustes propios, volver a por defecto, cambiar los generales, guardar, salir sin guardar, desinstalar, consola sin juegos |
+| regresión del emulador de GPU | con la memoria compartida, los 6 modos (FG, FG+RCAS, FG+SMAA, NXSR, FG+NXSR, NXSR Calidad) dan la misma salida byte a byte que antes |
 
 ## Qué falta validar en una consola
 

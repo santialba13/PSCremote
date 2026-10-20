@@ -96,7 +96,9 @@ empeora porque realza el escalonado. En juegos que ya traen su propio AA
 | FG + NXSR (mejora primero, FG interpola los reales ya mejorados) en el emulador | correcto |
 | menú en pantalla (`osd_draw`) renderizado en el emulador | legible, fila seleccionada resaltada |
 | `console_sim`: 11 escenarios con ASan + UBSan (ver abajo) | todos pasan, sin errores de memoria |
-| test del instalador (`installer/test/test_core.c`, ASan) | lista de juegos, `plugins.ini` idempotente, desinstalar |
+| test del instalador (`installer/test/test_core.c`, ASan) | lista de juegos, `plugins.ini` idempotente, desinstalar, ajustes por juego |
+| test de la app de punta a punta (`installer/test/test_app.c`, ASan + UBSan) | 4 recorridos con mando guionado: todo correcto |
+| memoria compartida FG / post-proceso (2.2) | arena 1080p 90,2 → 62,6 MiB; salida idéntica byte a byte en los 6 modos del emulador |
 
 Lo que **no** está verificado: ejecución en la GPU real de la PS4 (tiling de
 los backbuffers, coherencia de caches, orden de los flips, rendimiento).
