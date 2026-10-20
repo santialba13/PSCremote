@@ -58,7 +58,7 @@
 #define CFG_DIR ROOT "/data/vcfg_nx"
 #define TITLE_ID "VCNX00001"
 #define CONTENT_ID "IV0000-VCNX00001_00-VCFGNXINSTALL000"
-#define VERSION "2.4.5"
+#define VERSION "2.4.6"
 
 #define W 1920
 #define H 1080
@@ -1011,7 +1011,7 @@ typedef struct {
     uint32_t title_color;
     const char* body[9];
     uint32_t body_color[9];   // 0 = el color normal
-    const char* opts[6];
+    const char* opts[8];
     int nopts, row;
 } modal_t;
 static modal_t modal;
@@ -1114,9 +1114,71 @@ static void repaint_modal_options(void)
 }
 
 // -------------------------------------------------------------- dialogos (logica)
-enum { M_NONE, M_EXIT, M_OPTIONS, M_CONFIRM_UNINSTALL, M_CONFIRM_RESET, M_SAVE_ERROR, M_DIAG, M_SAVED };
+enum { M_NONE, M_EXIT, M_OPTIONS, M_CONFIRM_UNINSTALL, M_CONFIRM_RESET, M_SAVE_ERROR, M_DIAG, M_SAVED, M_CONFIRM_CLEAN, M_CLEANED };
 static int modal_kind;
 static char modal_lines[9][300];
+
+// Limpieza completa: todo lo que dejaron versiones anteriores de VCFG-NX
+// (todas usaron estas mismas rutas) y reinstalacion de cero con esta version.
+// Los juegos activados siguen activados; los ajustes vuelven a los por defecto.
+static char clean_result[300];
+static void clean_reinstall(void)
+{
+    int n = 0;
+    errno = 0;
+    if (jailed) { snprintf(clean_result, sizeof clean_result, "!GoldHEN no dio acceso fuera del sandbox."); return; }
+    if (!prx) { snprintf(clean_result, sizeof clean_result, "!No se encontr\xf3 el plugin dentro de la app: reinstal\xe1 el PKG."); return; }
+    // 1. copias viejas y temporales; una copia nueva de plugins.ini tal como esta
+    n += inst_rm_matching(GOLDHEN_DIR, "plugins.ini.vcfg_nx_backup_", ".vcfg_tmp");
+    char* ini = read_text(PLUGINS_INI);
+    if (ini[0]) {
+        char bak[200];
+        snprintf(bak, sizeof bak, PLUGINS_INI ".vcfg_nx_backup_%ld", (long)time(NULL));
+        if (write_text_verified(bak, ini) != 0) {
+            snprintf(clean_result, sizeof clean_result, "!No se pudo hacer la copia de seguridad de plugins.ini.");
+            free(ini);
+            return;
+        }
+    }
+    backup_done = 1;
+    // plugins.ini sin ninguna linea de VCFG-NX
+    char* clean = inst_ini_remove_all(ini);
+    if (clean) {
+        if (write_text_verified(PLUGINS_INI, clean) != 0) {
+            snprintf(clean_result, sizeof clean_result, "!No se pudo reescribir /data/GoldHEN/plugins.ini.");
+            free(clean); free(ini);
+            return;
+        }
+        n++;
+        free(clean);
+    }
+    free(ini);
+    // 2. archivos del plugin (cualquier version), temporales y copias viejas
+    n += inst_rm_matching(PLUGIN_DIR, "vcfg_nx", ".vcfg_tmp");
+    // 3. /data/vcfg_nx entera: ajustes, registros, protecciones, reserva
+    n += inst_rm_tree(CFG_DIR);
+    // 4. de cero: ajustes por defecto en todos los juegos y reinstalar
+    nx_config_defaults(&defaults);
+    for (int i = 0; i < ngames; ++i) {
+        games[i].custom = games[i].custom_saved = games[i].cfg_dirty = 0;
+        games[i].cfg = defaults;
+    }
+    int e = save_all(0);
+    if (e != 0) {
+        snprintf(diag.save_error, sizeof diag.save_error, "%s (c\xf3" "digo %d)", save_error_text(e), e);
+        snprintf(clean_result, sizeof clean_result, "!Se borr\xf3 lo anterior (%d elementos) pero fall\xf3 la "
+                 "reinstalaci\xf3n: %s", n, diag.save_error);
+        dirty_cfg = 1;
+        return;
+    }
+    dirty_cfg = 0;
+    diag.save_error[0] = 0;
+    int on = 0;
+    for (int i = 0; i < ngames; ++i) on += games[i].enabled;
+    snprintf(clean_result, sizeof clean_result, "Se borraron %d elementos de versiones anteriores y se instal\xf3 "
+             "VCFG-NX %s de cero en %d juego(s).", n, VERSION, on);
+    set_msg(C_OK, "Instalaci\xf3n limpia de VCFG-NX %s.", VERSION);
+}
 
 // carga un PRX como lo hace GoldHEN y lo vuelve a descargar (sin llamar a
 // plugin_load). 1 = se pudo cargar y exporta plugin_load
@@ -1263,9 +1325,10 @@ static void open_modal(int kind)
         modal.opts[1] = "Desactivar VCFG-NX en todos los juegos";
         modal.opts[2] = "Quitar los ajustes propios de todos";
         modal.opts[3] = "Diagn\xf3stico";
-        modal.opts[4] = "Desinstalar VCFG-NX";
-        modal.opts[5] = "Volver";
-        modal.nopts = 6;
+        modal.opts[4] = "Limpiar todo y reinstalar";
+        modal.opts[5] = "Desinstalar VCFG-NX";
+        modal.opts[6] = "Volver";
+        modal.nopts = 7;
         break;
     case M_CONFIRM_UNINSTALL:
         modal.title = "\xbf" "Desinstalar VCFG-NX?"; modal.title_color = C_WARN;
@@ -1273,6 +1336,23 @@ static void open_modal(int kind)
         modal.body[1] = "y se borra /data/GoldHEN/plugins/vcfg_nx.prx.";
         modal.body[2] = "Los ajustes de /data/vcfg_nx se conservan.";
         modal.opts[0] = "Desinstalar"; modal.opts[1] = "Cancelar"; modal.nopts = 2; modal.row = 1;
+        break;
+    case M_CONFIRM_CLEAN:
+        modal.title = "\xbfLimpiar todo y reinstalar?"; modal.title_color = C_WARN;
+        modal_h = 700;
+        modal.body[0] = "Borra todo lo que dejaron las versiones anteriores de VCFG-NX:";
+        modal.body[1] = "\xb7 la carpeta /data/vcfg_nx (ajustes, registros y protecciones)";
+        modal.body[2] = "\xb7 el plugin y la sonda viejos, archivos temporales y copias de plugins.ini";
+        modal.body[3] = "\xb7 las l\xedneas de VCFG-NX en plugins.ini (los dem\xe1s plugins no se tocan)";
+        modal.body[4] = "Despu\xe9s instala esta versi\xf3n de cero en los juegos activados, con ajustes por defecto.";
+        modal.opts[0] = "Limpiar y reinstalar"; modal.opts[1] = "Cancelar"; modal.nopts = 2; modal.row = 1;
+        break;
+    case M_CLEANED:
+        modal.title = clean_result[0] == '!' ? "No se pudo completar" : "Listo: instalaci\xf3n limpia";
+        modal.title_color = clean_result[0] == '!' ? C_DANGER : C_OK;
+        modal.body[0] = clean_result[0] == '!' ? clean_result + 1 : clean_result;
+        modal.body[1] = "Abr\xed el juego: al arrancar tiene que aparecer \"VCFG-NX " VERSION " cargado\".";
+        modal.opts[0] = "Aceptar"; modal.nopts = 1;
         break;
     case M_CONFIRM_RESET:
         modal.title = "\xbfQuitar los ajustes propios?"; modal.title_color = C_WARN;
@@ -1479,7 +1559,7 @@ static int handle_modal(uint32_t b, int* quit)
     }
     if (b & ORBIS_PAD_BUTTON_CIRCLE) {
         ui_sound_play(SND_BACK);
-        if (modal_kind == M_DIAG || modal_kind == M_CONFIRM_RESET) open_modal(M_OPTIONS);
+        if (modal_kind == M_DIAG || modal_kind == M_CONFIRM_RESET || modal_kind == M_CONFIRM_CLEAN) open_modal(M_OPTIONS);
         else close_modal();
         return 0;
     }
@@ -1530,10 +1610,27 @@ static int handle_modal(uint32_t b, int* quit)
         } else if (r == 3) {
             open_modal(M_DIAG);
         } else if (r == 4) {
+            open_modal(M_CONFIRM_CLEAN);
+        } else if (r == 5) {
             open_modal(M_CONFIRM_UNINSTALL);
         } else {
             close_modal();
         }
+        break;
+    case M_CONFIRM_CLEAN:
+        if (r == 0) {
+            clean_reinstall();
+            ui_sound_play(clean_result[0] == '!' ? SND_ERROR : SND_SAVE);
+            rebuild_visible();
+            open_modal(M_CLEANED);
+        } else {
+            ui_sound_play(SND_BACK);
+            open_modal(M_OPTIONS);
+        }
+        break;
+    case M_CLEANED:
+        ui_sound_play(SND_SELECT);
+        close_modal();
         break;
     case M_CONFIRM_UNINSTALL:
         if (r == 0) {

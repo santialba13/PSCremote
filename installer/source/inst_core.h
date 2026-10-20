@@ -52,3 +52,8 @@ int inst_log_summary(const char* log, char* out, size_t n);
 // plugins de la seccion [section] de plugins.ini: 1 si esta VCFG-NX; los demas
 // .prx (solo el nombre) quedan en `others`, separados por ", "
 int inst_ini_section_plugins(const char* ini, const char* section, char* others, size_t n);
+
+// limpieza: borra una carpeta entera / los archivos de dir que empiezan con
+// prefix o terminan en suffix. Devuelven cuantas cosas borraron
+int inst_rm_tree(const char* path);
+int inst_rm_matching(const char* dir, const char* prefix, const char* suffix);

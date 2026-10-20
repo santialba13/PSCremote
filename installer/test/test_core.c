@@ -75,9 +75,9 @@ int main(void)
           "con .ini: por defecto + lo propio");
     // entradas de un PKG real (el de VCFG-NX): icon0.png y param.sfo sin cifrar
     size_t ilen = 0, slen = 0;
-    unsigned char* icon = inst_pkg_entry("../../dist/VCFG-NX_v2.45.pkg", PKG_ENTRY_ICON0, &ilen);
+    unsigned char* icon = inst_pkg_entry("../../dist/VCFG-NX_v2.46.pkg", PKG_ENTRY_ICON0, &ilen);
     CHECK(icon && ilen > 1000 && !memcmp(icon, "\x89PNG", 4), "icon0.png del PKG");
-    unsigned char* sfo = inst_pkg_entry("../../dist/VCFG-NX_v2.45.pkg", PKG_ENTRY_PARAM_SFO, &slen);
+    unsigned char* sfo = inst_pkg_entry("../../dist/VCFG-NX_v2.46.pkg", PKG_ENTRY_PARAM_SFO, &slen);
     char ptitle[64] = "";
     CHECK(sfo && inst_sfo_title(sfo, slen, ptitle, sizeof ptitle) == 0 && !strcmp(ptitle, "VCFG-NX"), "param.sfo del PKG");
     free(icon); free(sfo);

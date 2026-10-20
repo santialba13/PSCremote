@@ -48,7 +48,7 @@ static void make_fs(void)
     }
     // un juego sin appmeta: nombre e icono salen de su app.pkg (aca, el PKG de VCFG-NX)
     mkdir("tfs/user/app/CUSA00009", 0755);
-    system("cp ../../dist/VCFG-NX_v2.45.pkg tfs/user/app/CUSA00009/app.pkg");
+    system("cp ../../dist/VCFG-NX_v2.46.pkg tfs/user/app/CUSA00009/app.pkg");
     put("tfs/data/GoldHEN/plugins.ini", "[default]\n/data/GoldHEN/plugins/otro.prx\n\n[CUSA00003]\n" PLUGIN_LINE "\n");
     put("tfs/data/vcfg_nx/CUSA00003.ini", "sr = 1\n");
     put("tfs/app0/plugins/vcfg_nx.prx", "PRX de prueba");
@@ -185,10 +185,45 @@ int main(void)
     CHECK(strstr(diag.save_error, "-31") != NULL, "el error no explica que fallo: '%s'", diag.save_error);
     system("rm -rf tfs/data/GoldHEN/plugins/vcfg_nx.prx");
 
+    // 3b. limpiar todo y reinstalar: borra restos de versiones anteriores
+    mkdir("tfs/data/vcfg_nx/logs", 0755);
+    put("tfs/data/vcfg_nx/logs/CUSA00003.log", "viejo");
+    put("tfs/data/vcfg_nx/CUSA00002.ini", "sr = 3\n");
+    put("tfs/data/vcfg_nx/boot-CUSA00003.txt", "pending");
+    put("tfs/data/GoldHEN/plugins/vcfg_nx.prx", "PRX viejo");
+    put("tfs/data/GoldHEN/plugins/vcfg_nx_old.prx", "otro viejo");
+    put("tfs/data/GoldHEN/plugins/otro.prx", "de otro");
+    put("tfs/data/GoldHEN/plugins.ini.vcfg_nx_backup_1", "copia vieja");
+    put("tfs/data/GoldHEN/plugins.ini.vcfg_tmp", "temporal");
+    nscript = 0;
+    press(ORBIS_PAD_BUTTON_OPTIONS, 1);
+    press(ORBIS_PAD_BUTTON_DOWN, 4);                  // Limpiar todo y reinstalar
+    press(ORBIS_PAD_BUTTON_CROSS, 1);
+    press(ORBIS_PAD_BUTTON_UP, 1);                    // el dialogo arranca en "Cancelar"
+    press(ORBIS_PAD_BUTTON_CROSS, 1);
+    press(ORBIS_PAD_BUTTON_CROSS, 1);                 // Aceptar
+    press(ORBIS_PAD_BUTTON_CIRCLE, 1);
+    press(ORBIS_PAD_BUTTON_CROSS, 1);                 // Salir
+    run_app();
+    CHECK(strstr(clean_result, "Se borraron") != NULL, "limpieza: %s", clean_result);
+    printf("limpieza: %s\n", clean_result);
+    CHECK(!exists(CFG_DIR "/logs/CUSA00003.log") && !exists(CFG_DIR "/CUSA00002.ini") && !exists(CFG_DIR "/boot-CUSA00003.txt"),
+          "quedaron restos en /data/vcfg_nx");
+    CHECK(!exists(ROOT "/data/GoldHEN/plugins/vcfg_nx_old.prx") && !exists(ROOT "/data/GoldHEN/plugins.ini.vcfg_nx_backup_1") && system("ls tfs/data/GoldHEN/plugins.ini.vcfg_nx_backup_* >/dev/null 2>&1") == 0
+          && !exists(ROOT "/data/GoldHEN/plugins.ini.vcfg_tmp"), "quedaron restos en /data/GoldHEN");
+    CHECK(exists(ROOT "/data/GoldHEN/plugins/otro.prx"), "borro un plugin que no es de VCFG-NX");
+    plug = get(PLUGIN_DST);
+    CHECK(!strcmp(plug, "PRX de prueba"), "no se reinstalo el plugin nuevo: %s", plug);
+    free(plug);
+    ini = get(PLUGINS_INI);
+    CHECK(inst_ini_has(ini, "CUSA00003") && strstr(ini, "otro.prx"), "plugins.ini tras limpiar: %s", ini);
+    free(ini);
+    CHECK(exists(CFG_DIR "/config.ini"), "no se escribieron los ajustes por defecto");
+
     // 4. desinstalar
     nscript = 0;
     press(ORBIS_PAD_BUTTON_OPTIONS, 1);
-    press(ORBIS_PAD_BUTTON_DOWN, 4);                  // Desinstalar
+    press(ORBIS_PAD_BUTTON_DOWN, 5);                  // Desinstalar
     press(ORBIS_PAD_BUTTON_CROSS, 1);
     press(ORBIS_PAD_BUTTON_UP, 1);                    // el dialogo arranca en "Cancelar"
     press(ORBIS_PAD_BUTTON_CROSS, 1);
@@ -197,7 +232,7 @@ int main(void)
     CHECK(!strstr(ini, PLUGIN_LINE) && strstr(ini, "otro.prx"), "desinstalar: %s", ini);
     free(ini);
     CHECK(!exists(PLUGIN_DST) && !exists(PROBE_DST), "desinstalar no borro el plugin o la sonda");
-    CHECK(exists(CFG_DIR "/CUSA00002.ini"), "desinstalar borro los ajustes");
+    CHECK(exists(CFG_DIR "/config.ini"), "desinstalar borro los ajustes");
 
     // 5. sin juegos ni GoldHEN ni plugin: no se cuelga y lo explica
     system("rm -rf tfs && mkdir -p tfs");

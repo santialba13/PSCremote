@@ -114,6 +114,8 @@ int main(int argc, char** argv)
     open_modal(M_OPTIONS); modal.row = 4; repaint_modal_options(); check_partial("opciones");
     dump("ui_opciones.ppm");
     open_modal(M_EXIT); dump("ui_salir.ppm");
+    close_modal(); open_modal(M_CONFIRM_CLEAN); dump("ui_limpiar.ppm");
+    close_modal(); open_modal(M_OPTIONS); modal.row = 4; repaint_modal_options(); dump("ui_opciones.ppm");
     snprintf(diag.save_error, sizeof diag.save_error, "%s (c\xf3" "digo -31)", save_error_text(-31));
     open_modal(M_SAVE_ERROR); dump("ui_error.ppm");
     open_modal(M_DIAG); dump("ui_diagnostico.ppm");

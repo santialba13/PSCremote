@@ -1,6 +1,8 @@
 #include "inst_core.h"
 
 #include <dirent.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -313,4 +315,46 @@ int inst_ini_section_plugins(const char* ini, const char* section, char* others,
         p = eol;
     }
     return ours;
+}
+
+// borra una carpeta con todo lo que tenga adentro; devuelve cuantas cosas borro
+int inst_rm_tree(const char* path)
+{
+    struct stat st;
+    if (stat(path, &st) != 0) return 0;
+    if (!S_ISDIR(st.st_mode)) return remove(path) == 0;
+    int n = 0;
+    DIR* d = opendir(path);
+    if (d) {
+        struct dirent* e;
+        char p[512];
+        while ((e = readdir(d))) {
+            if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+            snprintf(p, sizeof p, "%s/%s", path, e->d_name);
+            n += inst_rm_tree(p);
+        }
+        closedir(d);
+    }
+    return n + (rmdir(path) == 0);
+}
+
+// borra los archivos de `dir` cuyo nombre empieza con `prefix` o (si no es
+// NULL) termina en `suffix`; devuelve cuantos borro
+int inst_rm_matching(const char* dir, const char* prefix, const char* suffix)
+{
+    DIR* d = opendir(dir);
+    if (!d) return 0;
+    int n = 0;
+    struct dirent* e;
+    char p[512];
+    while ((e = readdir(d))) {
+        const char* nm = e->d_name;
+        size_t l = strlen(nm), sl = suffix ? strlen(suffix) : 0;
+        int hit = (prefix && !strncmp(nm, prefix, strlen(prefix))) || (suffix && l >= sl && !strcmp(nm + l - sl, suffix));
+        if (!hit || !strcmp(nm, ".") || !strcmp(nm, "..")) continue;
+        snprintf(p, sizeof p, "%s/%s", dir, nm);
+        n += inst_rm_tree(p);
+    }
+    closedir(d);
+    return n;
 }

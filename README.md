@@ -1,4 +1,4 @@
-# VCFG-NX 2.45: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
+# VCFG-NX 2.46: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
 
 Rediseño del **VCFG v2.14** (generador de fotogramas en beta de la comunidad
 de GoldHEN) que además incorpora un **modelo de reescalado/realce propio,
@@ -6,7 +6,7 @@ NXSR**, como alternativa a GNMScale pero sin el granulado que este agrega.
 Todo con la interfaz de VCFG: app instaladora con lista de juegos y menú en
 pantalla con **L3+R3**.
 
-**Descarga:** [`dist/VCFG-NX_v2.45.pkg`](dist/VCFG-NX_v2.45.pkg) (fPKG, app) ·
+**Descarga:** [`dist/VCFG-NX_v2.46.pkg`](dist/VCFG-NX_v2.46.pkg) (fPKG, app) ·
 [`dist/vcfg_nx.prx`](dist/vcfg_nx.prx) (plugin suelto) · [`dist/SHA256SUMS.txt`](dist/SHA256SUMS.txt)
 
 | servicio | qué hace |
@@ -64,6 +64,17 @@ botones mientras está abierto):
   RCAS, contador de FPS (con temperatura) y comparar.
 * Arriba se ven los FPS, la temperatura y el estado (activo, calidad dinámica,
   calor). **Guardar** deja todo para ese juego; **O** cierra.
+
+## Novedades de la 2.46
+
+**OPTIONS → Limpiar todo y reinstalar.** Borra todo lo que dejaron versiones
+anteriores de VCFG-NX: `/data/vcfg_nx` entera (ajustes, registros,
+protecciones, marcas de arranque), cualquier `vcfg_nx*` en
+`/data/GoldHEN/plugins`, archivos temporales `.vcfg_tmp`, copias viejas de
+`plugins.ini` y las líneas de VCFG-NX en `plugins.ini` (antes hace una copia
+nueva; los demás plugins no se tocan). Después instala esta versión de cero en
+los juegos activados, con los ajustes por defecto. Incluye la corrección de
+`exp2f` de la 2.45.
 
 ## Novedades de la 2.45
 
@@ -260,7 +271,7 @@ compartir para arreglar un juego puntual.
 ## Instalar y usar
 
 1. Requiere **GoldHEN** con soporte de plugins.
-2. Instalar `VCFG-NX_v2.45.pkg` y abrir **VCFG-NX**.
+2. Instalar `VCFG-NX_v2.46.pkg` y abrir **VCFG-NX**.
 3. En la cuadrícula: **X** activa o desactiva VCFG-NX en el juego,
    **CUADRADO** abre los ajustes de ese juego, **TRIÁNGULO** los ajustes por
    defecto, **L1/R1** cambia el filtro, **OPTIONS** abre el menú (activar o
