@@ -71,28 +71,39 @@ static size_t tensor_bytes(int h, int w, int c) { return align_up((size_t)h * w 
 
 static size_t max_sz(size_t a, size_t b) { return a > b ? a : b; }
 
-size_t nx_pipeline_mem_size(int W, int H, int Wo, int Ho)
+// Reparto de la arena. Los temporales del FG (flujo, entradas de nivel, capas
+// ocultas) y los del post-proceso (SMAA, intermedios) se usan en fases
+// distintas del mismo trabajo, separadas por barreras de computo, y nunca
+// sobreviven al trabajo: comparten una sola region ("scratch"). Lo que pasa de
+// un fotograma al siguiente (lumas, pooling del fotograma anterior, tmp_img,
+// que lee el post-proceso despues del FG) va aparte.
+static void alloc_fg_scratch(nx_pipeline_t* p, nx_arena_t* a)
 {
-    int Wp = (int)align_up(W, 32), Hp = (int)align_up(H, 32);
-    int w4 = Wp / 4, h4 = Hp / 4, w8 = Wp / 8, h8 = Hp / 8, w16 = w8 / 2, h16 = h8 / 2;
-    size_t s = 0;
-    for (int i = 0; i < K_COUNT; ++i) s += 64 * 1024;                       // codigo (holgado)
-    s += align_up(NX_NUM_PARAMS * 4 + NX_NUM_LAYERS * 512, 4096);            // pesos
-    s += 2 * (tensor_bytes(Hp, Wp, 1) + tensor_bytes(Hp / 2, Wp / 2, 1) + tensor_bytes(Hp / 4, Wp / 4, 1));
-    s += 2 * (tensor_bytes(h8, w8, 3) + tensor_bytes(h4, w4, 3));
-    s += 4 * tensor_bytes(h8, w8, 2) + 2 * tensor_bytes(h8, w8, 5) + 2 * tensor_bytes(h4, w4, 5);
-    s += tensor_bytes(h4, w4, 17);
-    s += 3 * max_sz(tensor_bytes(h16, w16, 32), tensor_bytes(h8, w8, 16));
-    s += max_sz(tensor_bytes(h8, w8, 32), tensor_bytes(h4, w4, 16));
-    s += tensor_bytes(H, (int)align_up(W, 64), 1) + tensor_bytes(Ho, (int)align_up(Wo, 64), 1);
-    s += tensor_bytes(H, (int)align_up(W, 64), 1) + 64 * 1024;               // imagen tras SMAA
-    s += align_up((size_t)W * H * 6, 256) + align_up(sizeof areaTexBytes + sizeof searchTexBytes, 4096);
-    s += 2 * (KERNARG_BYTES + DESC_BYTES) + 4096;
-    s += align_up(sizeof nxsr_weights, 4096) + align_up(sizeof nxsr_hq_weights, 4096);
-    return s + 64 * 1024;
+    for (int lv = 0; lv < 3; ++lv)
+        p->vec[lv] = arena_alloc(a, tensor_bytes(p->h8 >> lv, p->w8 >> lv, 2), 256);
+    p->vtmp = arena_alloc(a, tensor_bytes(p->h8, p->w8, 2), 256);
+    p->flow5 = arena_alloc(a, tensor_bytes(p->h8, p->w8, 5), 256);
+    p->delta5 = arena_alloc(a, tensor_bytes(p->h8, p->w8, 5), 256);
+    p->flow4 = arena_alloc(a, tensor_bytes(p->h4, p->w4, 5), 256);
+    p->delta4 = arena_alloc(a, tensor_bytes(p->h4, p->w4, 5), 256);
+    p->lvl_in = arena_alloc(a, tensor_bytes(p->h4, p->w4, 17), 256);
+    size_t hid = max_sz(tensor_bytes(p->h16, p->w16, 32), tensor_bytes(p->h8, p->w8, 16));
+    p->hA = arena_alloc(a, hid, 256);
+    p->hB = arena_alloc(a, hid, 256);
+    p->hR = arena_alloc(a, hid, 256);
+    p->up = arena_alloc(a, max_sz(tensor_bytes(p->h8, p->w8, 32), tensor_bytes(p->h4, p->w4, 16)), 256);
 }
 
-int nx_pipeline_init(nx_pipeline_t* p, int W, int H, int Wo, int Ho, nx_arena_t arena)
+static void alloc_post_scratch(nx_pipeline_t* p, nx_arena_t* a)
+{
+    p->tmp_img2 = arena_alloc(a, tensor_bytes(p->Ho, (int)align_up(p->Wo, 64), 1), 64 * 1024);
+    p->tmp_aa = arena_alloc(a, tensor_bytes(p->H, (int)align_up(p->W, 64), 1), 64 * 1024);
+    p->smaa_edges = arena_alloc(a, (size_t)p->W * p->H * 2, 256);
+    p->smaa_weights = arena_alloc(a, (size_t)p->W * p->H * 4, 256);
+}
+
+// dry = 1: solo mide (la arena no tiene memoria detras)
+static int layout(nx_pipeline_t* p, int W, int H, int Wo, int Ho, nx_arena_t arena, int dry)
 {
     memset(p, 0, sizeof(*p));
     p->W = W; p->H = H; p->Wo = Wo; p->Ho = Ho;
@@ -110,7 +121,7 @@ int nx_pipeline_init(nx_pipeline_t* p, int W, int H, int Wo, int Ho, nx_arena_t 
         const nx_shader_t* s = &nx_shaders[p->shader[k]];
         p->shader_gpu[k] = arena_alloc(a, s->code_dwords * 4, 256);
         if (!p->shader_gpu[k]) return -2;
-        memcpy(arena_cpu(a, p->shader_gpu[k]), s->code, s->code_dwords * 4);
+        if (!dry) memcpy(arena_cpu(a, p->shader_gpu[k]), s->code, s->code_dwords * 4);
     }
     for (int l = 0; l < NX_NUM_LAYERS; ++l) {
         const nx_layer_t* L = &nx_layers[l];
@@ -118,8 +129,10 @@ int nx_pipeline_init(nx_pipeline_t* p, int W, int H, int Wo, int Ho, nx_arena_t 
         p->w_gpu[l] = arena_alloc(a, wn * 4, 256);
         p->b_gpu[l] = arena_alloc(a, L->cout * 4, 256);
         if (!p->w_gpu[l] || !p->b_gpu[l]) return -3;
-        memcpy(arena_cpu(a, p->w_gpu[l]), L->w, wn * 4);
-        memcpy(arena_cpu(a, p->b_gpu[l]), L->b, L->cout * 4);
+        if (!dry) {
+            memcpy(arena_cpu(a, p->w_gpu[l]), L->w, wn * 4);
+            memcpy(arena_cpu(a, p->b_gpu[l]), L->b, L->cout * 4);
+        }
     }
     for (int s = 0; s < 2; ++s)
         for (int lv = 0; lv < 3; ++lv)
@@ -128,42 +141,56 @@ int nx_pipeline_init(nx_pipeline_t* p, int W, int H, int Wo, int Ho, nx_arena_t 
         p->a8[s] = arena_alloc(a, tensor_bytes(p->h8, p->w8, 3), 256);
         p->a4[s] = arena_alloc(a, tensor_bytes(p->h4, p->w4, 3), 256);
     }
-    for (int lv = 0; lv < 3; ++lv)
-        p->vec[lv] = arena_alloc(a, tensor_bytes(p->h8 >> lv, p->w8 >> lv, 2), 256);
-    p->vtmp = arena_alloc(a, tensor_bytes(p->h8, p->w8, 2), 256);
-    p->flow5 = arena_alloc(a, tensor_bytes(p->h8, p->w8, 5), 256);
-    p->delta5 = arena_alloc(a, tensor_bytes(p->h8, p->w8, 5), 256);
-    p->flow4 = arena_alloc(a, tensor_bytes(p->h4, p->w4, 5), 256);
-    p->delta4 = arena_alloc(a, tensor_bytes(p->h4, p->w4, 5), 256);
-    p->lvl_in = arena_alloc(a, tensor_bytes(p->h4, p->w4, 17), 256);
-    size_t hid = max_sz(tensor_bytes(p->h16, p->w16, 32), tensor_bytes(p->h8, p->w8, 16));
-    p->hA = arena_alloc(a, hid, 256);
-    p->hB = arena_alloc(a, hid, 256);
-    p->hR = arena_alloc(a, hid, 256);
-    p->up = arena_alloc(a, max_sz(tensor_bytes(p->h8, p->w8, 32), tensor_bytes(p->h4, p->w4, 16)), 256);
     p->tmp_img = arena_alloc(a, tensor_bytes(H, (int)align_up(W, 64), 1), 64 * 1024);
-    p->tmp_img2 = arena_alloc(a, tensor_bytes(Ho, (int)align_up(Wo, 64), 1), 64 * 1024);
-    p->tmp_aa = arena_alloc(a, tensor_bytes(H, (int)align_up(W, 64), 1), 64 * 1024);
-    p->smaa_edges = arena_alloc(a, (size_t)W * H * 2, 256);
-    p->smaa_weights = arena_alloc(a, (size_t)W * H * 4, 256);
+
+    // region compartida: del tamano del mayor de los dos grupos
+    nx_arena_t m1 = { NULL, 1u << 20, (size_t)-1 >> 1, 0 }, m2 = m1;   // base != 0: 0 es "sin memoria"
+    nx_pipeline_t probe = *p;
+    alloc_fg_scratch(&probe, &m1);
+    alloc_post_scratch(&probe, &m2);
+    size_t scratch_sz = max_sz(m1.used, m2.used) + 64 * 1024;
+    uint64_t scratch = arena_alloc(a, scratch_sz, 64 * 1024);
+    if (!scratch) return -6;
+    nx_arena_t sa = { dry ? NULL : (uint8_t*)arena_cpu(a, scratch), scratch, scratch_sz, 0 };
+    alloc_fg_scratch(p, &sa);
+    sa.used = 0;
+    alloc_post_scratch(p, &sa);
+
     p->smaa_area = arena_alloc(a, sizeof areaTexBytes, 256);
     p->smaa_search = arena_alloc(a, sizeof searchTexBytes, 256);
     p->nxsr_w = arena_alloc(a, sizeof nxsr_weights, 256);
     p->nxsr_hq_w = arena_alloc(a, sizeof nxsr_hq_weights, 256);
     if (!p->smaa_search || !p->nxsr_w || !p->nxsr_hq_w) return -5;
-    memcpy(arena_cpu(a, p->nxsr_w), nxsr_weights, sizeof nxsr_weights);
-    memcpy(arena_cpu(a, p->nxsr_hq_w), nxsr_hq_weights, sizeof nxsr_hq_weights);
-    memcpy(arena_cpu(a, p->smaa_area), areaTexBytes, sizeof areaTexBytes);
-    memcpy(arena_cpu(a, p->smaa_search), searchTexBytes, sizeof searchTexBytes);
+    if (!dry) {
+        memcpy(arena_cpu(a, p->nxsr_w), nxsr_weights, sizeof nxsr_weights);
+        memcpy(arena_cpu(a, p->nxsr_hq_w), nxsr_hq_weights, sizeof nxsr_hq_weights);
+        memcpy(arena_cpu(a, p->smaa_area), areaTexBytes, sizeof areaTexBytes);
+        memcpy(arena_cpu(a, p->smaa_search), searchTexBytes, sizeof searchTexBytes);
+    }
     for (int s = 0; s < 2; ++s) {
         p->kernarg_base[s] = arena_alloc(a, KERNARG_BYTES, 256);
         p->desc_base[s] = arena_alloc(a, DESC_BYTES, 256);
     }
     p->label_gpu = arena_alloc(a, 256, 256);
-    if (!p->label_gpu || !p->tmp_img2) return -4;
-    p->label_cpu = (volatile uint32_t*)arena_cpu(a, p->label_gpu);
-    *p->label_cpu = 0;
+    if (!p->label_gpu || !p->tmp_img2 || !p->up || !p->smaa_weights) return -4;
+    if (!dry) {
+        p->label_cpu = (volatile uint32_t*)arena_cpu(a, p->label_gpu);
+        *p->label_cpu = 0;
+    }
     return 0;
+}
+
+size_t nx_pipeline_mem_size(int W, int H, int Wo, int Ho)
+{
+    static nx_pipeline_t p;   // grande: fuera de la pila
+    nx_arena_t m = { NULL, 1u << 20, (size_t)-1 >> 1, 0 };
+    if (layout(&p, W, H, Wo, Ho, m, 1) != 0) return 0;
+    return p.arena.used + 64 * 1024;
+}
+
+int nx_pipeline_init(nx_pipeline_t* p, int W, int H, int Wo, int Ho, nx_arena_t arena)
+{
+    return layout(p, W, H, Wo, Ho, arena, 0);
 }
 
 // ------------------------------------------------------------ emision

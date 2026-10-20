@@ -1,0 +1,166 @@
+// Test de punta a punta de la app en el PC: arma un sistema de archivos falso
+// (./tfs), maneja la app con un mando guionado y revisa lo que escribio.
+//   cc -DROOT='"./tfs"' -Itest/fake -Isource test/test_app.c source/inst_core.c ../plugin/source/config.c -lm
+#define main app_main
+#include "../source/main.c"
+#undef main
+
+static int fails;
+#define CHECK(c, ...) do { if (!(c)) { printf("FALLO: " __VA_ARGS__); printf("\n"); ++fails; } } while (0)
+
+static void put(const char* path, const char* text)
+{
+    FILE* f = fopen(path, "wb");
+    fputs(text, f);
+    fclose(f);
+}
+
+static char* get(const char* path) { return read_text(path); }
+
+static int exists(const char* path)
+{
+    struct stat s;
+    return stat(path, &s) == 0;
+}
+
+static void write_sfo(const char* path, const char* title)
+{
+    unsigned char b[256] = { 0, 'P', 'S', 'F', 1, 1, 0, 0 };
+    const char keys[] = "TITLE\0";
+    int keyoff = 20 + 16, dataoff = keyoff + (int)sizeof keys + 1;
+    b[8] = keyoff; b[12] = dataoff; b[16] = 1;
+    memcpy(b + keyoff, keys, sizeof keys);
+    b[20 + 4] = (unsigned char)(strlen(title) + 1); b[20 + 8] = 128;
+    memcpy(b + dataoff, title, strlen(title) + 1);
+    FILE* f = fopen(path, "wb"); fwrite(b, 1, sizeof b, f); fclose(f);
+}
+
+static void make_fs(void)
+{
+    system("rm -rf tfs && mkdir -p tfs/user/app tfs/user/appmeta tfs/data/GoldHEN/plugins tfs/data/vcfg_nx tfs/app0/plugins");
+    const char* ids[] = { "CUSA00003", "CUSA00001", "CUSA00002" };
+    const char* titles[] = { "Gamma", "Alpha", "beta" };
+    for (int i = 0; i < 3; ++i) {
+        char p[128];
+        snprintf(p, sizeof p, "tfs/user/app/%s", ids[i]); mkdir(p, 0755);
+        snprintf(p, sizeof p, "tfs/user/appmeta/%s", ids[i]); mkdir(p, 0755);
+        snprintf(p, sizeof p, "tfs/user/appmeta/%s/param.sfo", ids[i]); write_sfo(p, titles[i]);
+    }
+    put("tfs/data/GoldHEN/plugins.ini", "[default]\n/data/GoldHEN/plugins/otro.prx\n\n[CUSA00003]\n" PLUGIN_LINE "\n");
+    put("tfs/data/vcfg_nx/CUSA00003.ini", "sr = 1\n");
+    put("tfs/app0/plugins/vcfg_nx.prx", "PRX de prueba");
+}
+
+void fake_pad_exhausted(void) { printf("FALLO: el guion termino y la app no salio\n"); ++fails; longjmp(fake_exit, 2); }
+
+// cada boton se aprieta y se suelta
+static uint32_t script[256];
+static int nscript;
+static void press(uint32_t b, int times)
+{
+    for (int i = 0; i < times; ++i) { script[nscript++] = b; script[nscript++] = 0; }
+}
+
+static void run_app(void)
+{
+    fake_pad = script; fake_pad_n = nscript; fake_pad_i = 0;
+    memset(games, 0, sizeof games);
+    ngames = nvis = sel = top_row = filter = dirty = backup_done = 0;
+    fake_exit_armed = 1;
+    if (!setjmp(fake_exit)) app_main();
+    fake_exit_armed = 0;
+}
+
+int main(void)
+{
+    // 1. activar, ajustes propios, volver a por defecto, ajustes generales, guardar
+    make_fs();
+    nscript = 0;
+    press(ORBIS_PAD_BUTTON_CROSS, 1);                 // Alpha: ON
+    press(ORBIS_PAD_BUTTON_RIGHT, 1);                 // beta
+    press(ORBIS_PAD_BUTTON_SQUARE, 1);                // sus ajustes
+    press(ORBIS_PAD_BUTTON_DOWN, 3);                  // NXSR
+    press(ORBIS_PAD_BUTTON_RIGHT, 1);                 // Normal -> Fuerte (pasa a propios)
+    press(ORBIS_PAD_BUTTON_DOWN, 5);                  // Modo ahorro
+    press(ORBIS_PAD_BUTTON_RIGHT, 1);                 // ON
+    press(ORBIS_PAD_BUTTON_CIRCLE, 1);
+    press(ORBIS_PAD_BUTTON_RIGHT, 1);                 // Gamma (tenia ajustes propios)
+    press(ORBIS_PAD_BUTTON_SQUARE, 1);
+    press(ORBIS_PAD_BUTTON_SQUARE, 1);                // volver a por defecto
+    press(ORBIS_PAD_BUTTON_CIRCLE, 1);
+    press(ORBIS_PAD_BUTTON_TRIANGLE, 1);              // ajustes por defecto
+    press(ORBIS_PAD_BUTTON_DOWN, 3);                  // SMAA
+    press(ORBIS_PAD_BUTTON_RIGHT, 1);                 // OFF
+    press(ORBIS_PAD_BUTTON_CIRCLE, 1);
+    press(ORBIS_PAD_BUTTON_CIRCLE, 1);                // guardar y salir
+    run_app();
+    CHECK(ngames == 3 && !strcmp(games[0].title, "Alpha") && !strcmp(games[1].title, "beta"), "lista ordenada");
+    char* ini = get(PLUGINS_INI);
+    CHECK(inst_ini_has(ini, "CUSA00001") && !inst_ini_has(ini, "CUSA00002") && inst_ini_has(ini, "CUSA00003"),
+          "plugins.ini con Alpha y Gamma: %s", ini);
+    CHECK(strstr(ini, "otro.prx") != NULL, "plugins.ini perdio otro plugin");
+    free(ini);
+    CHECK(system("ls tfs/data/GoldHEN/plugins.ini.vcfg_nx_backup_* >/dev/null 2>&1") == 0, "sin copia de seguridad");
+    char* cfg = get(CFG_DIR "/config.ini");
+    CHECK(strstr(cfg, "\naa = 0") != NULL, "config.ini sin el cambio de SMAA: %s", cfg);
+    free(cfg);
+    char* g2 = get(CFG_DIR "/CUSA00002.ini");
+    CHECK(strstr(g2, "\nsr = 3") && strstr(g2, "\neco = 1") && strstr(g2, "\naa = 1"),
+          "ajustes propios de beta: %s", g2);
+    free(g2);
+    CHECK(!exists(CFG_DIR "/CUSA00003.ini"), "Gamma volvio a por defecto pero su .ini sigue");
+    CHECK(exists(PLUGIN_DIR "/vcfg_nx.prx"), "no copio el plugin");
+    // lo que guardo la app lo lee igual el plugin
+    nx_config_t c;
+    nx_config_load(&c, "CUSA00002", NULL);
+    {
+        nx_config_defaults(&c);
+        char* t = get(CFG_DIR "/config.ini"); nx_config_parse(&c, t); free(t);
+        t = get(CFG_DIR "/CUSA00002.ini"); nx_config_parse(&c, t); free(t);
+        CHECK(c.sr == 3 && c.eco == 1 && c.aa == 1, "el plugin leeria otra cosa");
+    }
+
+    // 2. filtro y salir sin guardar: no cambia nada en disco
+    char* before = get(PLUGINS_INI);
+    nscript = 0;
+    press(ORBIS_PAD_BUTTON_R1, 1);                    // Activos
+    press(ORBIS_PAD_BUTTON_CROSS, 1);                 // desactiva el primero
+    press(ORBIS_PAD_BUTTON_OPTIONS, 1);
+    press(ORBIS_PAD_BUTTON_DOWN, 4);                  // Salir sin guardar
+    press(ORBIS_PAD_BUTTON_CROSS, 1);
+    press(ORBIS_PAD_BUTTON_CROSS, 1);                 // confirmar
+    run_app();
+    CHECK(filter == F_ON, "L1/R1 no cambio el filtro");
+    char* after = get(PLUGINS_INI);
+    CHECK(!strcmp(before, after), "salir sin guardar modifico plugins.ini");
+    free(before); free(after);
+
+    // 3. desinstalar
+    nscript = 0;
+    press(ORBIS_PAD_BUTTON_OPTIONS, 1);
+    press(ORBIS_PAD_BUTTON_DOWN, 3);
+    press(ORBIS_PAD_BUTTON_CROSS, 1);
+    press(ORBIS_PAD_BUTTON_CROSS, 1);
+    run_app();
+    ini = get(PLUGINS_INI);
+    CHECK(!strstr(ini, PLUGIN_LINE) && strstr(ini, "otro.prx"), "desinstalar: %s", ini);
+    free(ini);
+    CHECK(!exists(PLUGIN_DIR "/vcfg_nx.prx"), "desinstalar no borro el plugin");
+    CHECK(exists(CFG_DIR "/CUSA00002.ini"), "desinstalar borro los ajustes");
+
+    // 4. sin juegos ni GoldHEN: no se cuelga
+    system("rm -rf tfs && mkdir -p tfs");
+    nscript = 0;
+    press(ORBIS_PAD_BUTTON_RIGHT, 2);
+    press(ORBIS_PAD_BUTTON_SQUARE, 1);
+    press(ORBIS_PAD_BUTTON_CROSS, 1);
+    press(ORBIS_PAD_BUTTON_OPTIONS, 1);
+    press(ORBIS_PAD_BUTTON_DOWN, 4);
+    press(ORBIS_PAD_BUTTON_CROSS, 1);
+    press(ORBIS_PAD_BUTTON_CROSS, 1);
+    run_app();
+    CHECK(ngames == 0 && strstr(msg, "GoldHEN") == NULL, "sin juegos");
+    system("rm -rf tfs");
+    printf(fails ? "%d FALLOS\n" : "OK: app de punta a punta\n", fails);
+    return fails != 0;
+}

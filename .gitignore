@@ -16,3 +16,7 @@ menu_grid.bin
 installer/test/test_core
 installer/test/preview
 *.ppm
+installer/test/test_core
+installer/test/test_app
+installer/test/preview
+installer/test/ui_*.ppm

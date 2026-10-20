@@ -3,19 +3,30 @@
 #pragma once
 #include <stddef.h>
 
+#include "../../plugin/source/config.h"
+
 #define INST_MAX_GAMES 256
 #define PLUGIN_LINE "/data/GoldHEN/plugins/vcfg_nx.prx"
 
 typedef struct {
     char id[16];
     char title[64];
+    char meta[128];   // carpeta con su param.sfo e icon0.png ("" si no se encontro)
     int enabled;      // el plugin figura en la seccion [id] de plugins.ini
+    int custom;       // tiene ajustes propios (/data/vcfg_nx/<id>.ini)
+    int custom_saved; // ...y el archivo existe en disco
+    int cfg_dirty;    // hay que reescribir (o borrar) su .ini al guardar
+    nx_config_t cfg;  // ajustes propios (si custom)
 } inst_game_t;
 
 // titulo (clave TITLE) de un param.sfo en memoria; 0 si lo encontro
 int inst_sfo_title(const unsigned char* sfo, size_t len, char* out, size_t cap);
-// lista /user/app/<CUSAxxxxx> (dir_app) y lee el titulo de dir_meta/<id>/param.sfo
-int inst_list_games(const char* dir_app, const char* dir_meta, inst_game_t* games, int max);
+// agrega los juegos de dir_app (/user/app/<CUSAxxxxx>) a games[0..n) sin repetir
+// ids; el titulo sale del primer metas[k]/<id>/param.sfo que exista (metas
+// termina en NULL). Devuelve el total, ordenado por titulo sin mayusculas.
+int inst_list_games(const char* dir_app, const char* const* metas, inst_game_t* games, int n, int max);
+// lee cfg_dir/<id>.ini sobre los ajustes por defecto: custom = existe
+void inst_load_game_cfg(inst_game_t* g, const nx_config_t* defaults, const char* cfg_dir);
 
 // plugins.ini en memoria (texto). Devuelven texto nuevo (malloc) o NULL si no hay cambios.
 int inst_ini_has(const char* ini, const char* section);

@@ -26,5 +26,7 @@ void nx_config_defaults(nx_config_t* c);
 void nx_config_parse(nx_config_t* c, const char* text);
 // lee /data/vcfg_nx/config.ini y luego /data/vcfg_nx/<TITLE_ID>.ini (si existe)
 void nx_config_load(nx_config_t* c, const char* title_id, nx_read_fn rd);
-// guarda los ajustes visibles en el menu en /data/vcfg_nx/<TITLE_ID>.ini
+// texto ini con todos los ajustes que el usuario puede cambiar (menu y app)
+int nx_config_format(const nx_config_t* c, const char* comment, char* out, int cap);
+// guarda esos ajustes en /data/vcfg_nx/<TITLE_ID>.ini
 int nx_config_save(const nx_config_t* c, const char* title_id, nx_write_fn wr);

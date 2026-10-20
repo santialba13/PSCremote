@@ -30,34 +30,60 @@ int inst_sfo_title(const unsigned char* sfo, size_t len, char* out, size_t cap)
 
 static int cmp_game(const void* a, const void* b)
 {
-    return strcmp(((const inst_game_t*)a)->title, ((const inst_game_t*)b)->title);
+    const unsigned char* p = (const unsigned char*)((const inst_game_t*)a)->title;
+    const unsigned char* q = (const unsigned char*)((const inst_game_t*)b)->title;
+    for (;; ++p, ++q) {
+        int x = *p >= 'a' && *p <= 'z' ? *p - 32 : *p, y = *q >= 'a' && *q <= 'z' ? *q - 32 : *q;
+        if (x != y || !x) return x - y;
+    }
 }
 
-int inst_list_games(const char* dir_app, const char* dir_meta, inst_game_t* games, int max)
+int inst_list_games(const char* dir_app, const char* const* metas, inst_game_t* games, int n, int max)
 {
     DIR* d = opendir(dir_app);
-    if (!d) return 0;
-    int n = 0;
+    if (!d) return n;
     struct dirent* e;
     while ((e = readdir(d)) && n < max) {
         if (strncmp(e->d_name, "CUSA", 4) != 0 || strlen(e->d_name) != 9) continue;
+        int dup = 0;
+        for (int i = 0; i < n; ++i) dup |= !strcmp(games[i].id, e->d_name);
+        if (dup) continue;
         inst_game_t* g = &games[n++];
         memset(g, 0, sizeof *g);
-        snprintf(g->id, sizeof g->id, "%s", e->d_name);
-        snprintf(g->title, sizeof g->title, "%s", e->d_name);
-        char p[256];
-        snprintf(p, sizeof p, "%s/%s/param.sfo", dir_meta, e->d_name);
-        FILE* f = fopen(p, "rb");
-        if (f) {
+        snprintf(g->id, sizeof g->id, "%.9s", e->d_name);
+        snprintf(g->title, sizeof g->title, "%.9s", e->d_name);
+        for (int k = 0; metas && metas[k]; ++k) {
+            char p[256];
+            snprintf(p, sizeof p, "%.200s/%.9s/param.sfo", metas[k], e->d_name);
+            FILE* f = fopen(p, "rb");
+            if (!f) continue;
             unsigned char buf[8192];
             size_t len = fread(buf, 1, sizeof buf, f);
             fclose(f);
             inst_sfo_title(buf, len, g->title, sizeof g->title);
+            snprintf(g->meta, sizeof g->meta, "%.110s/%.9s", metas[k], e->d_name);
+            break;
         }
     }
     closedir(d);
     qsort(games, n, sizeof *games, cmp_game);
     return n;
+}
+
+void inst_load_game_cfg(inst_game_t* g, const nx_config_t* defaults, const char* cfg_dir)
+{
+    char p[160];
+    snprintf(p, sizeof p, "%s/%s.ini", cfg_dir, g->id);
+    g->cfg = *defaults;
+    g->custom = g->custom_saved = g->cfg_dirty = 0;
+    FILE* f = fopen(p, "rb");
+    if (!f) return;
+    static char buf[4096];
+    size_t n = fread(buf, 1, sizeof buf - 1, f);
+    fclose(f);
+    buf[n] = 0;
+    nx_config_parse(&g->cfg, buf);
+    g->custom = g->custom_saved = 1;
 }
 
 // devuelve el inicio de la seccion [s] (la linea del encabezado) o NULL

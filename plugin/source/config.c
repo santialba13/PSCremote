@@ -81,13 +81,20 @@ void nx_config_load(nx_config_t* c, const char* title_id, nx_read_fn rd)
     if (n > 0) { buf[n] = 0; nx_config_parse(c, buf); }
 }
 
+int nx_config_format(const nx_config_t* c, const char* comment, char* out, int cap)
+{
+    return snprintf(out, (size_t)cap,
+                    "; %s\n"
+                    "framegen = %d\nsr = %d\nsr_model = %d\naa = %d\nrcas = %d\ndynamic = %d\neco = %d\n"
+                    "temp_limit = %d\nfps_counter = %d\ncompare = %d\n",
+                    comment, c->framegen, c->sr, c->sr_model, c->aa, c->rcas, c->dynamic, c->eco, c->temp_limit,
+                    c->fps_counter, c->compare);
+}
+
 int nx_config_save(const nx_config_t* c, const char* title_id, nx_write_fn wr)
 {
     char path[96], text[512];
     snprintf(path, sizeof path, CONFIG_DIR "/%s.ini", title_id);
-    int n = snprintf(text, sizeof text,
-                     "; guardado desde el menu de VCFG-NX\n"
-                     "framegen = %d\nsr = %d\nsr_model = %d\neco = %d\naa = %d\nrcas = %d\nfps_counter = %d\ncompare = %d\n",
-                     c->framegen, c->sr, c->sr_model, c->eco, c->aa, c->rcas, c->fps_counter, c->compare);
+    int n = nx_config_format(c, "guardado desde el menu de VCFG-NX", text, sizeof text);
     return wr ? wr(path, text, n) : -1;
 }
