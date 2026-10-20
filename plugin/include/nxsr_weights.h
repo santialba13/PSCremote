@@ -1,6 +1,7 @@
 // Generado por sr/export_sr.py: no editar a mano.
 #pragma once
 #define NXSR_C 16
+#define NXSR_B 1
 #define NXSR_NUM_WEIGHTS 4268
 static const float nxsr_weights[4268] __attribute__((aligned(256))) = {
     -3.70056443e-02f, -1.39062837e-01f, -1.60826549e-01f, -4.00831439e-02f, -7.13953674e-02f,  9.88639891e-02f,  5.26072197e-02f, -1.32973388e-01f,

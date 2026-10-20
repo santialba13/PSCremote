@@ -10,6 +10,8 @@ void nx_config_defaults(nx_config_t* c)
 {
     c->framegen = 1;
     c->sr = 2;
+    c->sr_model = 0;
+    c->dynamic = 1;
     c->aa = 1;
     c->rcas = 0;
     c->fps_counter = 0;
@@ -47,6 +49,8 @@ void nx_config_parse(nx_config_t* c, const char* text)
         int iv = atoi(v);
         if (!strcmp(k, "framegen")) c->framegen = iv != 0;
         else if (!strcmp(k, "sr")) c->sr = clampi(iv, 0, 3);
+        else if (!strcmp(k, "sr_model")) c->sr_model = clampi(iv, 0, 2);
+        else if (!strcmp(k, "dynamic")) c->dynamic = iv != 0;
         else if (!strcmp(k, "aa")) c->aa = iv != 0;
         else if (!strcmp(k, "rcas")) c->rcas = clampi(iv, 0, 3);
         else if (!strcmp(k, "fps_counter")) c->fps_counter = iv != 0;
@@ -79,7 +83,7 @@ int nx_config_save(const nx_config_t* c, const char* title_id, nx_write_fn wr)
     snprintf(path, sizeof path, CONFIG_DIR "/%s.ini", title_id);
     int n = snprintf(text, sizeof text,
                      "; guardado desde el menu de VCFG-NX\n"
-                     "framegen = %d\nsr = %d\naa = %d\nrcas = %d\nfps_counter = %d\ncompare = %d\n",
-                     c->framegen, c->sr, c->aa, c->rcas, c->fps_counter, c->compare);
+                     "framegen = %d\nsr = %d\nsr_model = %d\naa = %d\nrcas = %d\nfps_counter = %d\ncompare = %d\n",
+                     c->framegen, c->sr, c->sr_model, c->aa, c->rcas, c->fps_counter, c->compare);
     return wr ? wr(path, text, n) : -1;
 }

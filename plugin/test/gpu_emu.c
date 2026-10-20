@@ -110,6 +110,7 @@ void smaa_edges(P, int, int, P);
 void smaa_weights(P, int, int, P, P, P);
 void smaa_blend(P, P, P, int, int, P);
 void wg_nxsr(P, int, int, P, P, float);
+void wg_nxsr_hq(P, int, int, P, P, float);
 void osd_draw(P, int, int, P, int, int, P, int, int, int, int);
 void copy_rect(P, P, int, int, int, int);
 
@@ -147,6 +148,7 @@ static void call(const char* n)
     else if (IS("smaa_weights")) smaa_weights(ap(0), ai(1), ai(2), ap(3), ap(4), ap(5));
     else if (IS("smaa_blend")) smaa_blend(ap(0), ap(1), ap(2), ai(3), ai(4), ap(5));
     else if (IS("wg_nxsr")) wg_nxsr(ap(0), ai(1), ai(2), ap(3), ap(4), af(5));
+    else if (IS("wg_nxsr_hq")) wg_nxsr_hq(ap(0), ai(1), ai(2), ap(3), ap(4), af(5));
     else if (IS("osd_draw")) osd_draw(ap(0), ai(1), ai(2), ap(3), ai(4), ai(5), ap(6), ai(7), ai(8), ai(9), ai(10));
     else if (IS("copy_rect")) copy_rect(ap(0), ap(1), ai(2), ai(3), ai(4), ai(5));
     else { fprintf(stderr, "kernel desconocido %s\n", n); exit(4); }
@@ -284,11 +286,12 @@ int main(int argc, char** argv)
     static uint32_t dcb[64 * 1024];
     pm4_t c;
     pm4_init(&c, dcb, sizeof dcb / 4);
-    // modos: 0 FG, 1 FG+RCAS, 2 FG+SMAA, 3 solo NXSR (k=1), 4 FG+NXSR procesando antes de interpolar
+    // modos: 0 FG, 1 FG+RCAS, 2 FG+SMAA, 3 solo NXSR (k=1), 4 FG+NXSR procesando antes de interpolar,
+    //        5 solo NXSR Calidad (k=1)
     nx_job_t job = { .prev = &img[0], .cur = &img[1], .out_mid = &img[2], .out_real = post ? &img[3] : NULL,
                      .slot = 1, .post = post == 1 ? NX_POST_RCAS : NX_POST_NONE, .aa = post == 2,
-                     .sharpness_stops = 0.25f, .seq = 7, .fg = post != 3,
-                     .sr = post >= 3, .sr_k = 1.0f, .enhance_first = post == 4,
+                     .sharpness_stops = 0.25f, .seq = 7, .fg = post != 3 && post != 5,
+                     .sr = post >= 3, .sr_k = 1.0f, .sr_hq = post == 5, .enhance_first = post == 4,
                      .prev_real = &img[4], .prev_real_valid = 0 };
     if (nx_pipeline_build(&p, &c, &job) != 0) { fprintf(stderr, "build fallo\n"); return 1; }
     int d = run_dcb(&p, dcb, c.n);

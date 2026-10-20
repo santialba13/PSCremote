@@ -5,7 +5,7 @@
 CC = clang
 CFLAGS ?= -O2 -Wall -Wextra
 PORTABLE = ../source/pm4.c ../source/gcn_desc.c ../source/nx_pipeline.c ../source/nx_dispatch.c ../source/nx_osd.c
-HEADERS = ../include/nx_shaders.h ../include/nxflow_weights.h ../include/nxsr_weights.h
+HEADERS = ../include/nx_shaders.h ../include/nxflow_weights.h ../include/nxsr_weights.h ../include/nxsr_hq_weights.h
 
 all: host_test gpu_emu console_sim
 
@@ -21,14 +21,19 @@ fsr1_host.o: ../../shaders/fsr1.cl ../../shaders/nx_common.h
 smaa_host.o: ../../shaders/smaa.cl ../../shaders/nx_common.h
 	$(CC) -x cl -cl-std=CL1.2 -target x86_64-unknown-linux-gnu -DNX_HOST -I../../shaders -O2 -c $< -o $@
 
-SR_C = $(shell sed -n 's/^\#define NXSR_C \([0-9]*\)/\1/p' ../include/nxsr_weights.h)
+hdr = $(shell sed -n 's/^\#define $(1) \([0-9]*\)/\1/p' ../include/$(2))
 nxsr_host.o: ../../shaders/nxsr.cl ../../shaders/nx_common.h ../include/nxsr_weights.h
-	$(CC) -x cl -cl-std=CL1.2 -target x86_64-unknown-linux-gnu -DNX_HOST -DSR_C=$(SR_C) -I../../shaders -O2 -c $< -o $@
+	$(CC) -x cl -cl-std=CL1.2 -target x86_64-unknown-linux-gnu -DNX_HOST -DSR_C=$(call hdr,NXSR_C,nxsr_weights.h) \
+	    -DSR_B=$(call hdr,NXSR_B,nxsr_weights.h) -DSR_NAME=wg_nxsr -I../../shaders -O2 -c $< -o $@
+
+nxsr_hq_host.o: ../../shaders/nxsr.cl ../../shaders/nx_common.h ../include/nxsr_hq_weights.h
+	$(CC) -x cl -cl-std=CL1.2 -target x86_64-unknown-linux-gnu -DNX_HOST -DSR_C=$(call hdr,NXSR_HQ_C,nxsr_hq_weights.h) \
+	    -DSR_B=$(call hdr,NXSR_HQ_B,nxsr_hq_weights.h) -DSR_NAME=wg_nxsr_hq -I../../shaders -O2 -c $< -o $@
 
 osd_host.o: ../../shaders/osd.cl ../../shaders/nx_common.h
 	$(CC) -x cl -cl-std=CL1.2 -target x86_64-unknown-linux-gnu -DNX_HOST -I../../shaders -O2 -c $< -o $@
 
-HOSTK = kernels_host.o fsr1_host.o smaa_host.o nxsr_host.o osd_host.o
+HOSTK = kernels_host.o fsr1_host.o smaa_host.o nxsr_host.o nxsr_hq_host.o osd_host.o
 
 gpu_emu: gpu_emu.c $(HOSTK) $(PORTABLE) $(HEADERS)
 	$(CC) $(CFLAGS) -Wno-unused-parameter -I../source -o $@ gpu_emu.c $(HOSTK) $(PORTABLE) -lm

@@ -9,10 +9,16 @@
 //  * Proteccion anti-cierre: antes de activar los efectos se marca la sesion
 //    como "pendiente"; tras ~1 minuto estable se marca "ok". Si el juego se
 //    cerro con la sesion pendiente, la proxima arranca en modo seguro.
-//  * GPU: si nuestro trabajo no termina a tiempo, ese fotograma va intacto;
-//    si pasa seguido, el plugin se degrada a "solo pasar fotogramas".
-//  * Cualquier cosa inesperada (otro handle, indice fuera de rango, formato
-//    HDR, re-registro de buffers) -> el fotograma del juego pasa intacto.
+//  * GPU: si nuestro trabajo no termina a tiempo, ese fotograma va intacto y
+//    la calidad baja un escalon (NXSR Calidad -> Rapido -> sin SMAA -> sin
+//    NXSR -> sin FG). Tras ~1 minuto sin atrasos prueba subir uno; cada subida
+//    que falla duplica la espera para la siguiente (hasta ~4 minutos). Solo si ni sin efectos da
+//    abasto pasa a "solo pasar fotogramas", y lo reintenta pasados unos minutos.
+//  * Re-registro de buffers con la misma geometria (pasa al volver del modo
+//    reposo o al cambiar opciones en algunos juegos): se adoptan las nuevas
+//    direcciones y se sigue. Con otra geometria, o cualquier cosa inesperada
+//    (otro handle, indice fuera de rango, formato HDR) -> el fotograma del
+//    juego pasa intacto.
 #include "nx_engine.h"
 
 #include <stdarg.h>
@@ -31,6 +37,14 @@
 #define WAIT_BUDGET_US 4000     // espera maxima por el trabajo anterior en cada flip
 #define RETRY_FLIPS 900         // reintento de reserva de memoria
 #define MAX_RETRIES 4
+#define DOWN_COOLDOWN 30        // flips entre dos bajadas de calidad seguidas
+#define UP_FLIPS 1800           // ~1 min sin atrasos -> probar subir un escalon
+#define PROBE_FLIPS 600         // si se atrasa en este lapso tras subir, la subida fallo
+#define MAX_UP_FAILS 2          // espera para subir: UP_FLIPS << min(fallos, MAX_UP_FAILS)
+#define SLOW_WAIT_US 1500       // esperar mas que esto por la GPU frena al juego...
+#define SLOW_LIMIT 15           // ...y si pasa tantos fotogramas seguidos, cuenta como atraso
+#define DEGRADED_RETRY_FLIPS 5400   // ~3 min en "solo pasar" -> reintentar con lo minimo
+#define MAX_DEGRADED_RETRIES 2
 #define OSD_COLS 40
 #define OSD_ROWS 12
 
@@ -43,7 +57,7 @@
 #define BTN_CIRCLE 0x2000
 #define BTN_CROSS 0x4000
 
-enum { ROW_FG, ROW_SR, ROW_AA, ROW_RCAS, ROW_FPS, ROW_CMP, ROW_SAVE, ROW_CLOSE, ROW_COUNT };
+enum { ROW_FG, ROW_SR, ROW_MODEL, ROW_AA, ROW_RCAS, ROW_FPS, ROW_CMP, ROW_SAVE, ROW_CLOSE, ROW_COUNT };
 
 static struct {
     const nx_platform_t* pf;
@@ -81,6 +95,10 @@ static struct {
     uint64_t combo_since;
     uint32_t last_buttons;
     int crashes;
+    // calidad dinamica
+    int pro, announced;
+    uint64_t level_since, last_stall, probe_until, degraded_at;
+    int up_fails, degraded_gpu, degraded_retries, slow_run;
 } E;
 
 static void logf_(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
@@ -167,6 +185,7 @@ void nx_engine_init(const nx_platform_t* pf, const char* title_id)
         return;
     }
     guard_check();
+    E.pro = pf->is_pro ? pf->is_pro() != 0 : 0;
     E.info.state = NX_ST_WAIT_BUFFERS;
     set_status(E.info.safe_mode ? "modo seguro" : "esperando el juego");
 }
@@ -176,14 +195,32 @@ void nx_engine_on_register(int handle, int start, void* const* addrs, int num, c
     if (rc < 0 || !a || !addrs) return;
     if (E.info.state == NX_ST_OFF) return;
     if (E.info.state != NX_ST_WAIT_BUFFERS) {
-        // el juego re-registra buffers en nuestro handle (cambio de modo de video,
-        // etc.): dejamos de intervenir por seguridad
-        if (handle == E.handle) {
-            logf_("[engine] re-registro de buffers del juego: pasa a inactivo\n");
+        if (handle != E.handle) return;
+        // el juego re-registra buffers en nuestro handle (vuelta del reposo,
+        // cambio de opciones...). Misma geometria: se adoptan las direcciones.
+        int same = start == E.game_first && num == E.game_num && a->width == E.attr.width
+                   && a->height == E.attr.height && a->format == E.attr.format && a->pitch == E.attr.pitch
+                   && a->tmode == E.attr.tmode;
+        if (same && E.info.state != NX_ST_OFF) {
+            for (int i = 0; i < num; ++i) E.game_img[i].gpu_addr = (uint64_t)(uintptr_t)addrs[i];
+            E.prev_idx = -1;
+            E.prev_real_valid = 0;
+            E.pipe.luma_valid[0] = E.pipe.luma_valid[1] = 0;
+            E.info.readopts++;
+            logf_("[engine] re-registro de buffers con la misma geometria: adoptado\n");
+            return;
+        }
+        if (E.info.full_ready || E.info.state == NX_ST_OFF) {
+            // nuestros buffers ya estan registrados con la geometria vieja
+            logf_("[engine] re-registro de buffers con otra geometria: pasa a inactivo\n");
             E.info.state = E.info.full_ready ? NX_ST_DEGRADED : NX_ST_OFF;
             set_status("el juego cambio sus buffers");
+            return;
         }
-        return;
+        // todavia no reservamos nada de efectos: se toma como un registro nuevo
+        logf_("[engine] re-registro antes de activar efectos: se vuelve a empezar\n");
+        E.info.state = NX_ST_WAIT_BUFFERS;
+        E.prev_idx = -1;
     }
     if (num < 2 || num > 8 || start < 0 || start + num > 16 || (a->width & 1) || (a->height & 1)) return;
     nx_format_t fmt;
@@ -206,6 +243,7 @@ void nx_engine_on_register(int handle, int start, void* const* addrs, int num, c
     }
     E.info.state = NX_ST_WARMUP;
     E.next_try_flip = (uint64_t)E.cfg.warmup_flips;
+    if (E.next_try_flip < E.info.flips + 60) E.next_try_flip = E.info.flips + 60;
     set_status("juego cargando");
     logf_("[engine] buffers del juego: %dx%d x%d, formato 0x%08x\n", E.W, E.H, num, (unsigned)a->format);
 }
@@ -310,7 +348,8 @@ static void try_allocations(void)
     if (E.info.state == NX_ST_WARMUP) {
         E.info.state = NX_ST_RUN;
         set_status("listo");
-        notify(E.info.safe_mode ? "VCFG-NX en modo seguro (el juego se cerro la ultima vez). L3+R3: menu"
+        if (!E.announced++)
+            notify(E.info.safe_mode ? "VCFG-NX en modo seguro (el juego se cerro la ultima vez). L3+R3: menu"
                                 : "VCFG-NX listo. Mantener L3+R3: menu");
     }
     if (E.info.full_ready || E.info.safe_mode || !effects_wanted() || E.retries >= MAX_RETRIES) return;
@@ -345,11 +384,17 @@ static void build_menu_text(void)
     uint8_t* t = E.osd_text[0];
     snprintf(l, sizeof l, " VCFG-NX  %s  juego %.0f fps", E.title, E.info.game_fps);
     osd_line(t, 0, l);
-    snprintf(l, sizeof l, " estado: %.40s", E.info.status);
+    if (E.info.level > 0)
+        snprintf(l, sizeof l, " estado: %.24s (carga: -%d)", E.info.status, E.info.level);
+    else
+        snprintf(l, sizeof l, " estado: %.40s", E.info.status);
     osd_line(t, 1, l);
     // \xf3 = o con tilde (Latin-1)
     snprintf(l, sizeof l, "  Generaci\xf3n de fotogramas   [%s]", onoff(E.cfg.framegen)); osd_line(t, 2 + ROW_FG, l);
     snprintf(l, sizeof l, "  Reescalado IA (NXSR)      [%s]", sr_names[E.cfg.sr]); osd_line(t, 2 + ROW_SR, l);
+    static const char* model_names[] = { "Auto", "R\xe1pido", "Calidad" };
+    snprintf(l, sizeof l, "  Modelo IA                 [%s]", model_names[E.cfg.sr_model]);
+    osd_line(t, 2 + ROW_MODEL, l);
     snprintf(l, sizeof l, "  Antialiasing SMAA         [%s]", onoff(E.cfg.aa)); osd_line(t, 2 + ROW_AA, l);
     snprintf(l, sizeof l, "  Nitidez FSR1 (RCAS)       [%s]", rc_names[E.cfg.rcas]); osd_line(t, 2 + ROW_RCAS, l);
     snprintf(l, sizeof l, "  Contador de FPS           [%s]", onoff(E.cfg.fps_counter)); osd_line(t, 2 + ROW_FPS, l);
@@ -374,12 +419,18 @@ static void menu_change(int row, int dir)
     switch (row) {
     case ROW_FG: c->framegen = !c->framegen; break;
     case ROW_SR: c->sr = (c->sr + (dir > 0 ? 1 : 3)) % 4; break;
+    case ROW_MODEL: c->sr_model = (c->sr_model + (dir > 0 ? 1 : 2)) % 3; break;
     case ROW_AA: c->aa = !c->aa; break;
     case ROW_RCAS: c->rcas = (c->rcas + (dir > 0 ? 1 : 3)) % 4; break;
     case ROW_FPS: c->fps_counter = !c->fps_counter; break;
     case ROW_CMP: c->compare = !c->compare; break;
     default: break;
     }
+    // el usuario eligio otra cosa: la calidad dinamica vuelve a empezar desde arriba
+    E.info.level = 0;
+    E.info.level_locked = 0;
+    E.up_fails = 0;
+    E.level_since = E.info.flips;
     if (E.info.safe_mode && effects_wanted()) {
         // el usuario reactiva a mano: salimos del modo seguro
         E.info.safe_mode = 0;
@@ -453,6 +504,51 @@ static void set_rate_forced(int on)
 
 const nx_engine_info_t* nx_engine_info(void) { return &E.info; }
 
+// ------------------------------------------------------- calidad dinamica
+// escalones, del mas caro al mas barato; solo cuentan los que estan en uso
+static void quality_ladder(int* fg, int* sr, int* hq, int* aa, int* rcas)
+{
+    int steps = 0, lv = E.cfg.dynamic ? E.info.level : 0;
+    if (*sr && *hq) { if (lv > steps) *hq = 0; steps++; }
+    if (*aa) { if (lv > steps) *aa = 0; steps++; }
+    if (*sr || *rcas) { if (lv > steps) *sr = *rcas = *hq = 0; steps++; }
+    if (*fg) { if (lv > steps) *fg = 0; steps++; }
+    E.info.level_max = steps;
+    if (E.info.level > steps) E.info.level = steps;
+}
+
+static void on_stall(void)
+{
+    uint64_t f = E.info.flips;
+    E.last_stall = f;
+    if (E.probe_until && f < E.probe_until) {   // acababa de subir: no alcanzo
+        E.probe_until = 0;
+        ++E.up_fails;
+        E.info.level_locked = E.up_fails >= MAX_UP_FAILS;
+        logf_("[engine] calidad dinamica: la subida no se sostuvo (%d)\n", E.up_fails);
+    }
+    if (!E.cfg.dynamic || E.info.level >= E.info.level_max || f < E.level_since + DOWN_COOLDOWN) return;
+    if (E.info.level == 0) notify("VCFG-NX: carga alta, bajando calidad para no trabar el juego");
+    E.info.level++;
+    E.level_since = f;
+    E.stall_run = 0;     // a "solo pasar" se llega solo si ni con lo minimo alcanza
+    logf_("[engine] calidad dinamica: baja a -%d\n", E.info.level);
+}
+
+static void maybe_level_up(void)
+{
+    uint64_t f = E.info.flips;
+    if (E.probe_until && f >= E.probe_until) E.probe_until = 0;   // la subida se sostuvo
+    if (!E.cfg.dynamic || E.info.level == 0) return;
+    uint64_t since = E.level_since > E.last_stall ? E.level_since : E.last_stall;
+    int sh = E.up_fails < MAX_UP_FAILS ? E.up_fails : MAX_UP_FAILS;
+    if (f < since + ((uint64_t)UP_FLIPS << sh)) return;
+    E.info.level--;
+    E.level_since = f;
+    E.probe_until = f + PROBE_FLIPS;
+    logf_("[engine] calidad dinamica: prueba subir a -%d\n", E.info.level);
+}
+
 int nx_engine_on_submit_flip(const nx_submit_t* s)
 {
     E.info.flips++;
@@ -464,6 +560,18 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
     E.last_flip_us = t;
 
     nx_state_t st = E.info.state;
+    if (st == NX_ST_DEGRADED && E.degraded_gpu && E.degraded_retries < MAX_DEGRADED_RETRIES
+        && E.info.flips >= E.degraded_at + DEGRADED_RETRY_FLIPS) {
+        // reintento con lo minimo; la calidad dinamica sube sola si ahora alcanza
+        E.degraded_gpu = 0;
+        E.degraded_retries++;
+        E.info.state = st = NX_ST_RUN;
+        E.info.level = 99;
+        E.level_since = E.last_stall = E.info.flips;
+        E.stall_run = 0;
+        set_status("activo");
+        logf_("[engine] reintento tras degradado (%d)\n", E.degraded_retries);
+    }
     if (st == NX_ST_OFF || st == NX_ST_WAIT_BUFFERS) return passthrough(s);
     if ((st == NX_ST_WARMUP || st == NX_ST_RUN) && E.info.flips >= E.next_try_flip) try_allocations();
     st = E.info.state;
@@ -479,11 +587,22 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
     int want_fg = effects && E.cfg.framegen && !E.cfg.compare && E.info.game_fps > 1.0f
                   && E.info.game_fps < (float)E.cfg.max_game_fps;
     int sr = effects && E.cfg.sr > 0;
-    int want_post = effects && (sr || E.cfg.aa || E.cfg.rcas || E.post == NX_POST_EASU);
+    int hq = sr && (E.cfg.sr_model == 2 || (E.cfg.sr_model == 0 && E.pro));
+    int aa = effects && E.cfg.aa;
+    int rcas = effects && E.cfg.rcas && !sr;
+    quality_ladder(&want_fg, &sr, &hq, &aa, &rcas);
+    E.info.hq = hq;
+    int want_post = effects && (sr || aa || rcas || E.post == NX_POST_EASU);
     int osd_menu = E.info.menu_open, osd_fps = E.cfg.fps_counter;
     if (!want_fg && !want_post && !osd_menu && !osd_fps) {
         E.prev_idx = -1;
         set_rate_forced(0);
+        // con todo bajado por la calidad dinamica no hay trabajo propio: se mira
+        // si la GPU ya se puso al dia para volver a subir
+        if (E.info.level > 0) {
+            if (*E.label_cpu >= E.seq) maybe_level_up();
+            else E.last_stall = E.info.flips;
+        }
         return passthrough(s);
     }
 
@@ -497,16 +616,27 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
     if (*E.label_cpu < E.slot_seq[sl]) {
         E.info.stalls++;
         E.prev_idx = -1;
-        if (++E.stall_run >= STALL_LIMIT) {
+        ++E.stall_run;
+        on_stall();
+        if (E.stall_run >= STALL_LIMIT) {
             E.info.state = NX_ST_DEGRADED;
+            E.degraded_gpu = 1;
+            E.degraded_at = E.info.flips;
             set_status("GPU saturada: desactivado");
             set_rate_forced(0);
-            notify("VCFG-NX: la GPU no da abasto en este juego; se desactivo");
+            notify("VCFG-NX: la GPU no da abasto en este juego; en pausa");
             logf_("[engine] %d fotogramas seguidos con la GPU atrasada: degradado\n", E.stall_run);
         }
         return passthrough(s);
     }
     E.stall_run = 0;
+    // la GPU llego, pero esperarla frena al juego: si es sostenido, bajar calidad
+    if (waited >= SLOW_WAIT_US) {
+        if (++E.slow_run >= SLOW_LIMIT) { E.slow_run = 0; on_stall(); }
+    } else {
+        E.slow_run = 0;
+        maybe_level_up();
+    }
 
     // 1. el trabajo del juego, sin flip (en un flip de CPU ya lo envio el juego)
     int rc = s->count ? E.pf->submit(s) : 0;
@@ -542,11 +672,11 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
         .cur = &E.game_img[gi],
         .out_mid = want_fg ? &E.mid_img[m] : NULL,
         .out_real = want_post ? &E.real_img[m] : NULL,
-        .slot = sl, .post = want_post ? E.post : NX_POST_NONE, .aa = effects && E.cfg.aa,
+        .slot = sl, .post = want_post ? E.post : NX_POST_NONE, .aa = aa,
         .sharpness_stops = E.cfg.rcas ? 0.75f - 0.25f * (float)E.cfg.rcas : 2.0f,
         .seq = E.seq + 1,
-        .fg = want_fg, .sr = sr, .sr_k = sr ? 0.5f + 0.25f * (float)(E.cfg.sr - 1) : 0.0f,
-        .rcas = effects && E.cfg.rcas && !sr,
+        .fg = want_fg, .sr = sr, .sr_k = sr ? 0.5f + 0.25f * (float)(E.cfg.sr - 1) : 0.0f, .sr_hq = hq,
+        .rcas = rcas,
         .enhance_first = enhance_first,
         .prev_real = enhance_first ? &E.real_img[m ^ 1] : NULL,
         .prev_real_valid = E.prev_real_valid,

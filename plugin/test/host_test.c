@@ -70,6 +70,8 @@ static const layout_t layouts[] = {
         O(ka_smaa_blend_t, W), O(ka_smaa_blend_t, H), O(ka_smaa_blend_t, dst) } },
     { "wg_nxsr", 6, { O(ka_nxsr_t, src), O(ka_nxsr_t, W), O(ka_nxsr_t, H), O(ka_nxsr_t, w), O(ka_nxsr_t, dst),
         O(ka_nxsr_t, k) } },
+    { "wg_nxsr_hq", 6, { O(ka_nxsr_t, src), O(ka_nxsr_t, W), O(ka_nxsr_t, H), O(ka_nxsr_t, w), O(ka_nxsr_t, dst),
+        O(ka_nxsr_t, k) } },
     { "osd_draw", 11, { O(ka_osd_t, dst), O(ka_osd_t, W), O(ka_osd_t, H), O(ka_osd_t, text), O(ka_osd_t, cols),
         O(ka_osd_t, rows), O(ka_osd_t, font), O(ka_osd_t, x0), O(ka_osd_t, y0), O(ka_osd_t, scale),
         O(ka_osd_t, sel_row) } },

@@ -8,15 +8,22 @@ OUT=${OUT:-build}
 mkdir -p "$OUT"
 CLFLAGS="-target amdgcn-amd-amdhsa -mcpu=gfx701 -nogpulib -O3 -cl-std=CL1.2"
 
-# canales de NXSR: los fija el modelo exportado
-SR_C=$(sed -n 's/^#define NXSR_C \([0-9]*\)/\1/p' ../plugin/include/nxsr_weights.h)
+# NXSR: canales y capas los fija cada modelo exportado (Rapido y Calidad)
+hdr() { sed -n "s/^#define $1 \\([0-9]*\\)/\\1/p" "../plugin/include/$2"; }
+SR_FLAGS="-DSR_C=$(hdr NXSR_C nxsr_weights.h) -DSR_B=$(hdr NXSR_B nxsr_weights.h) -DSR_NAME=wg_nxsr"
+HQ_FLAGS="-DSR_C=$(hdr NXSR_HQ_C nxsr_hq_weights.h) -DSR_B=$(hdr NXSR_HQ_B nxsr_hq_weights.h) -DSR_NAME=wg_nxsr_hq"
 clang $CLFLAGS -emit-llvm -c gcn_image.ll -o "$OUT/gcn_image.bc"
-for k in nxflow fsr1 smaa nxsr osd; do
-    clang $CLFLAGS -I. -DSR_C="$SR_C" -emit-llvm -c "$k.cl" -o "$OUT/$k.bc"
+for k in nxflow fsr1 smaa nxsr nxsr_hq osd; do
+    case $k in
+        nxsr) src=nxsr.cl; flags=$SR_FLAGS ;;
+        nxsr_hq) src=nxsr.cl; flags=$HQ_FLAGS ;;
+        *) src=$k.cl; flags= ;;
+    esac
+    clang $CLFLAGS -I. $flags -emit-llvm -c "$src" -o "$OUT/$k.bc"
     llvm-link "$OUT/$k.bc" "$OUT/gcn_image.bc" -o "$OUT/$k.linked.bc"
     clang -target amdgcn-amd-amdhsa -mcpu=gfx701 -nogpulib -O3 "$OUT/$k.linked.bc" -o "$OUT/$k.co"
     clang -target amdgcn-amd-amdhsa -mcpu=gfx701 -nogpulib -O3 -S "$OUT/$k.linked.bc" -o "$OUT/$k.s"
 done
-python3 ../tools/gcn_pack.py "$OUT/nxflow.co" "$OUT/fsr1.co" "$OUT/smaa.co" "$OUT/nxsr.co" "$OUT/osd.co" \
-    --asm "$OUT/nxflow.s" "$OUT/fsr1.s" "$OUT/smaa.s" "$OUT/nxsr.s" "$OUT/osd.s" \
+python3 ../tools/gcn_pack.py "$OUT/nxflow.co" "$OUT/fsr1.co" "$OUT/smaa.co" "$OUT/nxsr.co" "$OUT/nxsr_hq.co" "$OUT/osd.co" \
+    --asm "$OUT/nxflow.s" "$OUT/fsr1.s" "$OUT/smaa.s" "$OUT/nxsr.s" "$OUT/nxsr_hq.s" "$OUT/osd.s" \
     -o ../plugin/include/nx_shaders.h

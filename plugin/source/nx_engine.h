@@ -40,6 +40,7 @@ typedef struct {
     void (*log)(const char* msg);
     int (*read_file)(const char* path, char* buf, int cap); // bytes leidos o < 0
     int (*write_file)(const char* path, const char* data, int len);
+    int (*is_pro)(void);                                    // 1 = el juego corre en modo PS4 Pro (puede ser NULL)
 } nx_platform_t;
 
 typedef enum {
@@ -47,7 +48,7 @@ typedef enum {
     NX_ST_WAIT_BUFFERS,  // esperando que el juego registre sus framebuffers
     NX_ST_WARMUP,        // juego arrancando: no se reserva nada todavia
     NX_ST_RUN,           // listo (con o sin memoria para los efectos)
-    NX_ST_DEGRADED,      // la GPU no da abasto: solo pasa los fotogramas del juego
+    NX_ST_DEGRADED,      // la GPU no da abasto ni sin efectos, o algo inesperado: solo pasa los fotogramas
 } nx_state_t;
 
 typedef struct {
@@ -56,6 +57,10 @@ typedef struct {
     int safe_mode;        // la sesion anterior se cerro con el plugin activo
     int menu_open, menu_row;
     float game_fps;
+    int level, level_max;   // calidad dinamica: escalones bajados / posibles (0 = como se configuro)
+    int level_locked;       // las subidas fallaron varias veces: espera el maximo entre intentos
+    int hq;                 // NXSR Calidad en uso
+    uint64_t readopts;      // re-registros de buffers del juego adoptados sin apagarse
     uint64_t flips, our_jobs, passthrough, stalls, alloc_fail;
     char status[64];
     const uint8_t* menu_text;   // grilla del menu (menu_cols x menu_rows, Latin-1), para pruebas

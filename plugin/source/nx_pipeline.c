@@ -6,6 +6,7 @@
 #include "../include/nx_shaders.h"
 #include "../include/nxflow_weights.h"
 #include "../include/nxsr_weights.h"
+#include "../include/nxsr_hq_weights.h"
 #include "../../third_party/smaa/AreaTex.h"
 #include "../../third_party/smaa/SearchTex.h"
 
@@ -13,14 +14,14 @@ enum {
     K_CONV_14_32, K_CONV_17_32, K_CONV_32_32, K_CONV_32_5, K_CONV_17_16, K_CONV_16_16, K_CONV_16_5,
     K_AVGPOOL, K_RESIZE, K_UPSAMPLE5, K_BUILD_INPUT, K_BM_TO_FLOW, K_LUMA_FULL, K_LUMA_DOWN2,
     K_BM_SEARCH, K_BM_MEDIAN3, K_WARP_BLEND, K_EASU, K_RCAS,
-    K_SMAA_EDGES, K_SMAA_WEIGHTS, K_SMAA_BLEND, K_NXSR, K_COUNT
+    K_SMAA_EDGES, K_SMAA_WEIGHTS, K_SMAA_BLEND, K_NXSR, K_NXSR_HQ, K_COUNT
 };
 static const char* const k_names[K_COUNT] = {
     "conv3x3_14_32", "conv3x3_17_32", "conv3x3_32_32", "conv3x3_32_5",
     "conv3x3_17_16", "conv3x3_16_16", "conv3x3_16_5",
     "avgpool_rgb", "resize_bilinear", "upsample5", "build_level_input", "bm_to_flow", "luma_full",
     "luma_down2", "bm_search", "bm_median3", "warp_blend", "easu", "rcas",
-    "smaa_edges", "smaa_weights", "smaa_blend", "wg_nxsr",
+    "smaa_edges", "smaa_weights", "smaa_blend", "wg_nxsr", "wg_nxsr_hq",
 };
 
 // primera capa y numero de capas de cada bloque en nx_layers[] (model/export.py)
@@ -87,7 +88,7 @@ size_t nx_pipeline_mem_size(int W, int H, int Wo, int Ho)
     s += tensor_bytes(H, (int)align_up(W, 64), 1) + 64 * 1024;               // imagen tras SMAA
     s += align_up((size_t)W * H * 6, 256) + align_up(sizeof areaTexBytes + sizeof searchTexBytes, 4096);
     s += 2 * (KERNARG_BYTES + DESC_BYTES) + 4096;
-    s += align_up(sizeof nxsr_weights, 4096);
+    s += align_up(sizeof nxsr_weights, 4096) + align_up(sizeof nxsr_hq_weights, 4096);
     return s + 64 * 1024;
 }
 
@@ -148,8 +149,10 @@ int nx_pipeline_init(nx_pipeline_t* p, int W, int H, int Wo, int Ho, nx_arena_t 
     p->smaa_area = arena_alloc(a, sizeof areaTexBytes, 256);
     p->smaa_search = arena_alloc(a, sizeof searchTexBytes, 256);
     p->nxsr_w = arena_alloc(a, sizeof nxsr_weights, 256);
-    if (!p->smaa_search || !p->nxsr_w) return -5;
+    p->nxsr_hq_w = arena_alloc(a, sizeof nxsr_hq_weights, 256);
+    if (!p->smaa_search || !p->nxsr_w || !p->nxsr_hq_w) return -5;
     memcpy(arena_cpu(a, p->nxsr_w), nxsr_weights, sizeof nxsr_weights);
+    memcpy(arena_cpu(a, p->nxsr_hq_w), nxsr_hq_weights, sizeof nxsr_hq_weights);
     memcpy(arena_cpu(a, p->smaa_area), areaTexBytes, sizeof areaTexBytes);
     memcpy(arena_cpu(a, p->smaa_search), searchTexBytes, sizeof searchTexBytes);
     for (int s = 0; s < 2; ++s) {
@@ -326,8 +329,8 @@ static void post(ctx_t* x, const nx_job_t* job, const nx_image_t* src, const nx_
             ka_easu_t e = { tsharp(x, cur), p->H, p->W, tsharp(x, o), p->Ho, p->Wo };
             run(x, K_EASU, &e, sizeof e, p->Wo, p->Ho);
         } else if (st[i] == ST_NXSR) {
-            ka_nxsr_t r = { tsharp(x, cur), w, h, p->nxsr_w, tsharp(x, o), job->sr_k };
-            run(x, K_NXSR, &r, sizeof r, w / 2, h / 2);
+            ka_nxsr_t r = { tsharp(x, cur), w, h, job->sr_hq ? p->nxsr_hq_w : p->nxsr_w, tsharp(x, o), job->sr_k };
+            run(x, job->sr_hq ? K_NXSR_HQ : K_NXSR, &r, sizeof r, w / 2, h / 2);
         } else {
             ka_rcas_t r = { tsharp(x, cur), tsharp(x, o), w, h, exp2f(-job->sharpness_stops), 0 };
             run(x, K_RCAS, &r, sizeof r, w, h);

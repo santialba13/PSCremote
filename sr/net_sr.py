@@ -54,18 +54,47 @@ def local_minmax(x, r=None):
     return stack.min(0), stack.max(0)
 
 
-def init(key, C=16, n_body=2, s=2):
-    ks = jax.random.split(key, n_body + 2)
+def init(key, C=16, n_body=2, s=2, rep=False):
+    """rep: cada conv lleva en paralelo una rama 1x1 (y la identidad si C->C) que
+    se pliegan en el 3x3 al exportar (fold): mas capacidad al entrenar, mismo
+    coste en la consola."""
+    ks = jax.random.split(key, 2 * n_body + 4)
     cin = 3 * s * s
     he = lambda k, kh, ci, co: jax.random.normal(k, (kh, kh, ci, co)) * np.sqrt(2.0 / (kh * kh * ci))
-    p = {"head": {"w": he(ks[0], 3, cin, C), "b": jnp.zeros(C)}}
+
+    def layer(k3, k1, ci, co, ident):
+        l = {"w": he(k3, 3, ci, co), "b": jnp.zeros(co)}
+        if rep:
+            l["w1"] = he(k1, 1, ci, co) * 0.5
+            if ident:
+                l["w"] = l["w"] * 0.5
+                l["id"] = jnp.ones(())
+        return l
+
+    p = {"head": layer(ks[0], ks[1], cin, C, False)}
     for i in range(n_body):
-        p[f"body{i}"] = {"w": he(ks[1 + i], 3, C, C), "b": jnp.zeros(C)}
+        p[f"body{i}"] = layer(ks[2 + 2 * i], ks[3 + 2 * i], C, C, True)
     p["tail"] = {"w": he(ks[-1], 1, C, cin) * 0.1, "b": jnp.zeros(cin)}
     return p
 
 
+def fold(p):
+    """Pliega las ramas de re-parametrizacion: devuelve solo convs 3x3 (y la cola 1x1)."""
+    out = {}
+    for k, l in p.items():
+        if "w1" not in l:
+            out[k] = {"w": l["w"], "b": l["b"]}
+            continue
+        w = l["w"] + jnp.pad(l["w1"], ((1, 1), (1, 1), (0, 0), (0, 0)))
+        if "id" in l:
+            c = w.shape[-1]
+            w = w + jnp.zeros_like(w).at[1, 1].set(jnp.eye(c))   # "id" solo marca la rama (no se entrena)
+        out[k] = {"w": w, "b": l["b"]}
+    return out
+
+
 def residual(p, x):
+    p = fold(p)
     s = int(round(np.sqrt(p["tail"]["w"].shape[-1] / 3)))
     h = conv(s2d(x, s), p["head"]["w"], p["head"]["b"], True)
     r = h
@@ -89,6 +118,18 @@ def apply(p, x, k=1.0, limit=True, margin=None):
         d = hi - lo
         y = jnp.clip(y, lo - m * d, hi + m * d)
     return y
+
+
+def shift_pair(fn, x, dy, dx, m=8):
+    """Consistencia ante desplazamientos de 1 pixel: s2d hace que la red vea
+    otra fase de celda cuando la camara se mueve un pixel, y si la salida
+    cambia aparece parpadeo. Devuelve (fn(x) desplazado, fn(x desplazado)),
+    sin los bordes."""
+    H, W = x.shape[1:3]
+    a = fn(x)
+    b = fn(x[:, dy:H - 2 + dy, dx:W - 2 + dx])  # tamano par para s2d
+    a = a[:, dy:H - 2 + dy, dx:W - 2 + dx]
+    return a[:, m:-m, m:-m], b[:, m:-m, m:-m]
 
 
 def macs_per_pixel(p):

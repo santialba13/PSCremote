@@ -35,7 +35,7 @@ typedef struct {
     uint64_t luma[2][3], a8[2], a4[2];
     uint64_t vec[3], vtmp, flow5, delta5, flow4, delta4, lvl_in, hA, hB, hR, up;
     uint64_t tmp_img, tmp_img2, tmp_aa;   // imagenes intermedias para el post-proceso
-    uint64_t smaa_edges, smaa_weights, smaa_area, smaa_search, nxsr_w;
+    uint64_t smaa_edges, smaa_weights, smaa_area, smaa_search, nxsr_w, nxsr_hq_w;
     uint64_t kernarg_base[2], desc_base[2];
     uint64_t label_gpu;
     volatile uint32_t* label_cpu;
@@ -55,6 +55,7 @@ typedef struct {
     int fg;                     // 0 = solo post-proceso del fotograma real
     int sr;                     // NXSR (reemplaza a RCAS)
     float sr_k;                 // intensidad de NXSR, 0..1 (nunca extrapola)
+    int sr_hq;                  // 1 = modelo Calidad (wg_nxsr_hq), 0 = Rapido
     int rcas;                   // nitidez RCAS
     int enhance_first;          // FG sobre los reales ya procesados (misma resolucion)
     const nx_image_t* prev_real;  // real procesado del fotograma anterior

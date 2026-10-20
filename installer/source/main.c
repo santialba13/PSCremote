@@ -31,7 +31,7 @@
 #define PLUGIN_DIR "/data/GoldHEN/plugins"
 #define PLUGINS_INI "/data/GoldHEN/plugins.ini"
 #define CFG_DIR "/data/vcfg_nx"
-#define VERSION "2.0"
+#define VERSION "2.1"
 
 #define C_BG 0xFF0E1220u
 #define C_PANEL 0xFF161C2Cu
@@ -156,7 +156,7 @@ static int copy_file(const char* src, const char* dst)
 // --------------------------------------------------------------- estado
 static inst_game_t games[INST_MAX_GAMES];
 static int ngames, sel, top, dirty, backup_done;
-static int set_fg = 1, set_sr = 2, set_aa = 1, set_rcas = 0;
+static int set_fg = 1, set_sr = 2, set_model = 0, set_dyn = 1, set_aa = 1, set_rcas = 0;
 static char msg[128];
 static uint32_t msg_color = C_DIM;
 
@@ -168,7 +168,13 @@ static void load_defaults(void)
     if ((p = strstr(t, "\nsr ="))) set_sr = atoi(p + 5);
     if ((p = strstr(t, "\naa ="))) set_aa = atoi(p + 5) != 0;
     if ((p = strstr(t, "\nrcas ="))) set_rcas = atoi(p + 7);
+    if ((p = strstr(t, "\nsr_model ="))) set_model = atoi(p + 11);
+    if ((p = strstr(t, "\ndynamic ="))) set_dyn = atoi(p + 10) != 0;
     free(t);
+    // un ini editado a mano no puede dejar indices fuera de rango
+    if (set_sr < 0 || set_sr > 3) set_sr = 2;
+    if (set_rcas < 0 || set_rcas > 3) set_rcas = 0;
+    if (set_model < 0 || set_model > 2) set_model = 0;
 }
 
 static int save_all(int uninstall)
@@ -204,13 +210,16 @@ static int save_all(int uninstall)
     char cfg[512];
     snprintf(cfg, sizeof cfg,
              "; VCFG-NX: ajustes por defecto (cada juego puede guardar los suyos desde el menu L3+R3)\n"
-             "framegen = %d\nsr = %d\naa = %d\nrcas = %d\n", set_fg, set_sr, set_aa, set_rcas);
+             "framegen = %d\nsr = %d\nsr_model = %d\ndynamic = %d\naa = %d\nrcas = %d\n", set_fg, set_sr, set_model,
+             set_dyn, set_aa, set_rcas);
     return write_text_verified(CFG_DIR "/config.ini", cfg) == 0 ? 0 : -40;
 }
 
 // ---------------------------------------------------------------- vistas
 static const char* SR_N[] = { "OFF", "Suave", "Normal", "Fuerte" };
 static const char* RC_N[] = { "OFF", "Baja", "Media", "Alta" };
+static const char* MD_N[] = { "Auto", "R\xe1pido", "Calidad" };
+#define SET_ROWS 6
 
 static void header(void)
 {
@@ -249,8 +258,9 @@ static void draw_games(void)
     }
     if (!ngames) text(90, y0, 2, C_WARN, "No se encontraron juegos en /user/app");
     rect(60, 900, W - 120, 2, C_PANEL);
-    text(80, 920, 2, C_DIM, "Ajustes por defecto:  FG %s   NXSR %s   SMAA %s   RCAS %s",
-         set_fg ? "ON" : "OFF", SR_N[set_sr], set_aa ? "ON" : "OFF", RC_N[set_rcas]);
+    text(80, 920, 2, C_DIM, "Ajustes por defecto:  FG %s   NXSR %s (%s)   SMAA %s   RCAS %s   din\xe1mica %s",
+         set_fg ? "ON" : "OFF", SR_N[set_sr], MD_N[set_model], set_aa ? "ON" : "OFF", RC_N[set_rcas],
+         set_dyn ? "ON" : "OFF");
     footer("X activar/desactivar   TRI todos   CUAD ajustes   OPTIONS desinstalar   O guardar y salir");
 }
 
@@ -258,18 +268,21 @@ static void draw_settings(int row)
 {
     header();
     text(80, 180, 3, C_TEXT, "Ajustes por defecto");
-    const char* labels[] = { "Generaci\xf3n de fotogramas (30 -> 60)", "Reescalado IA (NXSR)", "Antialiasing SMAA",
-                             "Nitidez FSR1 (RCAS, sin NXSR)" };
-    const char* vals[] = { set_fg ? "ON" : "OFF", SR_N[set_sr], set_aa ? "ON" : "OFF", RC_N[set_rcas] };
-    for (int i = 0; i < 4; ++i) {
+    const char* labels[SET_ROWS] = { "Generaci\xf3n de fotogramas (30 -> 60)", "Reescalado IA (NXSR)",
+                                     "Modelo IA (Calidad: mejor en PS4 Pro)", "Antialiasing SMAA",
+                                     "Nitidez FSR1 (RCAS, sin NXSR)", "Calidad din\xe1mica (evita tirones)" };
+    const char* vals[SET_ROWS] = { set_fg ? "ON" : "OFF", SR_N[set_sr], MD_N[set_model], set_aa ? "ON" : "OFF",
+                                   RC_N[set_rcas], set_dyn ? "ON" : "OFF" };
+    for (int i = 0; i < SET_ROWS; ++i) {
         int y = 270 + i * 70;
         if (i == row) rect(60, y - 10, W - 120, 56, C_SEL);
         text(100, y, 3, C_TEXT, "%s", labels[i]);
         text(1300, y, 3, C_ACCENT, "< %s >", vals[i]);
     }
-    text(100, 600, 2, C_DIM, "Dentro del juego: mantener L3+R3 abre el men\xfa de VCFG-NX (cada juego guarda lo suyo).");
-    text(100, 640, 2, C_DIM, "NXSR nunca agrega grano: su salida queda acotada al rango de los p\xedxeles vecinos.");
-    text(100, 680, 2, C_WARN, "Beta: si un juego se cierra con VCFG-NX activo, la pr\xf3xima vez arranca en modo seguro.");
+    text(100, 720, 2, C_DIM, "Dentro del juego: mantener L3+R3 abre el men\xfa de VCFG-NX (cada juego guarda lo suyo).");
+    text(100, 760, 2, C_DIM, "NXSR nunca agrega grano: su salida queda acotada al rango de los p\xedxeles vecinos.");
+    text(100, 800, 2, C_DIM, "Calidad din\xe1mica: si la GPU no da abasto baja un escal\xf3n en vez de trabar el juego.");
+    text(100, 840, 2, C_WARN, "Beta: si un juego se cierra con VCFG-NX activo, la pr\xf3xima vez arranca en modo seguro.");
     footer("arriba/abajo elegir   izq/der cambiar   O volver");
 }
 
@@ -361,14 +374,16 @@ int main(void)
             }
             draw_games();
         } else if (view == 1) {
-            if (b & ORBIS_PAD_BUTTON_UP) srow = (srow + 3) % 4;
-            if (b & ORBIS_PAD_BUTTON_DOWN) srow = (srow + 1) % 4;
+            if (b & ORBIS_PAD_BUTTON_UP) srow = (srow + SET_ROWS - 1) % SET_ROWS;
+            if (b & ORBIS_PAD_BUTTON_DOWN) srow = (srow + 1) % SET_ROWS;
             if (b & (ORBIS_PAD_BUTTON_LEFT | ORBIS_PAD_BUTTON_RIGHT | ORBIS_PAD_BUTTON_CROSS)) {
                 int d = (b & ORBIS_PAD_BUTTON_LEFT) ? 3 : 1;
                 if (srow == 0) set_fg ^= 1;
                 if (srow == 1) set_sr = (set_sr + d) % 4;
-                if (srow == 2) set_aa ^= 1;
-                if (srow == 3) set_rcas = (set_rcas + d) % 4;
+                if (srow == 2) set_model = (set_model + (d == 3 ? 2 : 1)) % 3;
+                if (srow == 3) set_aa ^= 1;
+                if (srow == 4) set_rcas = (set_rcas + d) % 4;
+                if (srow == 5) set_dyn ^= 1;
                 dirty = 1;
             }
             if (b & ORBIS_PAD_BUTTON_CIRCLE) view = 0;

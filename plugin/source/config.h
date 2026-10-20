@@ -3,6 +3,8 @@
 typedef struct {
     int framegen;          // 1 = generar fotogramas intermedios (30 -> 60)
     int sr;                // reescalado IA NXSR: 0 off, 1 suave, 2 normal, 3 fuerte
+    int sr_model;          // modelo NXSR: 0 auto (Calidad en PS4 Pro), 1 Rapido, 2 Calidad
+    int dynamic;           // 1 = calidad dinamica: baja escalones si la GPU no da abasto
     int aa;                // 1 = SMAA 1x (antialiasing de bordes)
     int rcas;              // nitidez FSR1 RCAS: 0 off, 1 baja, 2 media, 3 alta (sin efecto con NXSR activo)
     int fps_counter;       // 1 = contador de FPS en pantalla

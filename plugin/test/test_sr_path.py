@@ -2,6 +2,7 @@
 barreras emuladas) contra sr/net_sr.py con los mismos pesos.
 
   make -C plugin/test all && python3 plugin/test/test_sr_path.py weights/nxsr.pkl imagen.png
+  python3 plugin/test/test_sr_path.py weights/nxsr_hq.pkl imagen.png hq     # modelo Calidad
 """
 import os
 import pickle
@@ -20,6 +21,7 @@ import net_sr  # noqa: E402
 
 def main():
     w, src = sys.argv[1], sys.argv[2]
+    mode = "5" if len(sys.argv) > 3 and sys.argv[3] == "hq" else "3"
     img = np.asarray(Image.open(src).convert("RGB"))
     H, W = img.shape[0] // 16 * 16, img.shape[1] // 16 * 16
     img = img[:H, :W]
@@ -30,7 +32,7 @@ def main():
         f = os.path.join(td, "f")
         np.dstack([img, np.full((H, W), 255, np.uint8)]).tofile(f)
         out, real = os.path.join(td, "o"), os.path.join(td, "r")
-        subprocess.run([os.path.join(ROOT, "plugin", "test", "gpu_emu"), str(W), str(H), f, f, out, "3", real],
+        subprocess.run([os.path.join(ROOT, "plugin", "test", "gpu_emu"), str(W), str(H), f, f, out, mode, real],
                        check=True, stdout=subprocess.DEVNULL)
         gpu = np.fromfile(real, np.uint8).reshape(H, W, 4)[..., :3].astype(np.float64)
     d = np.abs(gpu - ref8)
