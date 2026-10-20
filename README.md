@@ -12,9 +12,12 @@ fotograma intermedio entre cada par, y agrega un escalado/nitidez tipo FSR.
 | Escalado / nitidez | RCAS solo en el generado | **FSR1 completo** (EASU + RCAS) en real y generado |
 | Shaders | arrays de ISA GCN a mano | OpenCL C → ISA GCN gfx701 con clang, empaquetado automático |
 
-> **Estado:** el modelo está entrenado y verificado en PC; los shaders compilan
-> a ISA de PS4 y el armado de command buffers se testea en PC. El plugin
-> **todavía no se probó en una consola**: ver "Qué falta" en
+> **Estado:** el modelo está entrenado, pero con entrenamiento en CPU mejora
+> muy poco al block-matching del original (+0,16 dB en escenas tipo juego,
+> empate en video; ver [`docs/resultados.md`](docs/resultados.md)). Los
+> shaders compilan a ISA de PS4 y el command buffer del plugin se ejecuta en
+> un emulador en PC que coincide con el modelo de referencia (error ≤ 1/255).
+> El plugin **todavía no se probó en una consola**: ver "Qué falta validar" en
 > [`docs/DISENO_NX.md`](docs/DISENO_NX.md).
 
 ## Contenido
@@ -22,7 +25,7 @@ fotograma intermedio entre cada par, y agrega un escalado/nitidez tipo FSR.
 ```
 docs/ANALISIS_VCFG_v2.14.md   qué hay dentro del PKG original y cómo funciona
 docs/DISENO_NX.md             arquitectura nueva, costes, ABI de los shaders, pendientes
-docs/resultados.md            métricas: original vs nuevo
+docs/resultados.md            métricas: original vs nuevo, FSR1, verificación del camino GPU
 tools/pkg/                    extraer un fPKG: tabla de entradas, PFS, fSELF -> ELF
 tools/gcn_pack.py             code object AMDGPU -> cabecera C para el plugin
 model/                        datos, red (JAX), entrenamiento, evaluación, export
@@ -30,7 +33,7 @@ upscale/fsr1.py               port de referencia de AMD FSR1 (EASU + RCAS)
 pipeline/run.py               demo en PC: video 30 fps -> 60 fps + FSR1
 shaders/                      kernels de GPU (.cl) y script de compilación a GCN
 plugin/                       plugin GoldHEN (C): hooks, PM4, descriptores, pipeline
-plugin/test/                  test en PC del armado del DCB y del ABI de kernargs
+plugin/test/                  tests en PC: ABI de kernargs, PM4 y emulador que ejecuta el DCB
 weights/nxflow.pkl            pesos entrenados
 ```
 
@@ -57,7 +60,8 @@ python model/export.py weights/nxflow.pkl plugin/include/nxflow_weights.h
 
 ```sh
 shaders/build_gcn.sh                      # .cl -> ISA gfx701 -> plugin/include/nx_shaders.h
-make -C plugin/test run                   # test en PC (ABI de kernargs + PM4)
+make -C plugin/test all && plugin/test/host_test           # ABI de kernargs + PM4
+python3 plugin/test/test_gpu_path.py video.mp4 weights/nxflow.pkl  # DCB emulado vs modelo
 # plugin: copiar plugin/ a GoldHEN_Plugins_Repository/plugin_src/vcfg_nx y
 make -C GoldHEN_Plugins_Repository/plugin_src/vcfg_nx   # requiere OpenOrbis + GoldHEN SDK
 ```

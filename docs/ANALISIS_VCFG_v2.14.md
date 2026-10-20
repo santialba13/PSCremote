@@ -106,6 +106,9 @@ se identifican unos 30 bloques de código.
 ## 5. Medición del enfoque original
 
 `model/baseline_bm.py` reimplementa la parte central (pirámide + búsqueda por
-bloques + mediana + warp simétrico). En los datos de validación mejora ~1,5 dB
-de PSNR sobre la mezcla 50/50, pero queda claramente por debajo del modelo
-nuevo. Ver `docs/resultados.md`.
+bloques + mediana + warp simétrico). En los datos de validación mejora entre
+1,3 y 2,7 dB de PSNR sobre la mezcla 50/50: la base técnica del original es
+sólida. El modelo nuevo apenas lo supera por ahora (ver `docs/resultados.md`);
+las mejoras más claras del rediseño están en el resto del sistema (FSR1 en
+todos los fotogramas, shaders generados desde código fuente y verificados,
+plugin sin telemetría de depuración).
