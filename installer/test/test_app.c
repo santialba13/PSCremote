@@ -48,13 +48,18 @@ static void make_fs(void)
     }
     // un juego sin appmeta: nombre e icono salen de su app.pkg (aca, el PKG de VCFG-NX)
     mkdir("tfs/user/app/CUSA00009", 0755);
-    system("cp ../../dist/VCFG-NX_v2.41.pkg tfs/user/app/CUSA00009/app.pkg");
+    system("cp ../../dist/VCFG-NX_v2.42.pkg tfs/user/app/CUSA00009/app.pkg");
     put("tfs/data/GoldHEN/plugins.ini", "[default]\n/data/GoldHEN/plugins/otro.prx\n\n[CUSA00003]\n" PLUGIN_LINE "\n");
     put("tfs/data/vcfg_nx/CUSA00003.ini", "sr = 1\n");
     put("tfs/app0/plugins/vcfg_nx.prx", "PRX de prueba");
 }
 
-void fake_pad_exhausted(void) { printf("FALLO: el guion termino y la app no salio\n"); ++fails; longjmp(fake_exit, 2); }
+static int closed_by_ps;   // el guion termina a proposito: como cerrar la app con el boton PS
+void fake_pad_exhausted(void)
+{
+    if (!closed_by_ps) { printf("FALLO: el guion termino y la app no salio\n"); ++fails; }
+    longjmp(fake_exit, 2);
+}
 
 // cada boton se aprieta y se suelta
 static uint32_t script[256];
@@ -101,7 +106,7 @@ int main(void)
     press(ORBIS_PAD_BUTTON_RIGHT, 1);                 // OFF
     press(ORBIS_PAD_BUTTON_CIRCLE, 1);
     press(ORBIS_PAD_BUTTON_CIRCLE, 1);                // Salir...
-    press(ORBIS_PAD_BUTTON_CROSS, 1);                 // ...Guardar y salir
+    press(ORBIS_PAD_BUTTON_CROSS, 1);                 // ...Salir (guarda lo pendiente)
     fake_hide_app0 = 1;                               // como en la consola: fuera del sandbox no hay /app0
     run_app();
     CHECK(ngames == 4 && !strcmp(games[0].title, "Alpha") && !strcmp(games[1].title, "beta"), "lista ordenada");
@@ -134,31 +139,39 @@ int main(void)
         CHECK(c.sr == 3 && c.eco == 1 && c.aa == 1, "el plugin leeria otra cosa");
     }
 
-    // 2. filtro y salir sin guardar: no cambia nada en disco
-    char* before = get(PLUGINS_INI);
+    // 2. guardado automatico: se desactiva un juego, se deja el mando quieto
+    //    y se cierra la app "con el boton PS" (sin pasar por Salir)
     nscript = 0;
     press(ORBIS_PAD_BUTTON_R1, 1);                    // Activos
-    press(ORBIS_PAD_BUTTON_CROSS, 1);                 // desactiva el primero
-    press(ORBIS_PAD_BUTTON_CIRCLE, 1);                // Salir...
-    press(ORBIS_PAD_BUTTON_DOWN, 1);
-    press(ORBIS_PAD_BUTTON_CROSS, 1);                 // ...sin guardar
-    run_app();
+    press(ORBIS_PAD_BUTTON_CROSS, 1);                 // desactiva el primero (Alpha)
+    for (int i = 0; i < 40; ++i) script[nscript++] = 0;   // ~0,6 s sin tocar nada
+    closed_by_ps = 1;
+    run_app();                                        // el guion se acaba: la app "se cierra"
     CHECK(filter == F_ON, "L1/R1 no cambio el filtro");
     char* after = get(PLUGINS_INI);
-    CHECK(!strcmp(before, after), "salir sin guardar modifico plugins.ini");
-    free(before); free(after);
+    CHECK(!inst_ini_has(after, "CUSA00001") && inst_ini_has(after, "CUSA00003"), "no se guardo solo: %s", after);
+    free(after);
+    // y la app instala el plugin al abrirse aunque no se toque nada
+    system("rm -f tfs/data/GoldHEN/plugins/vcfg_nx.prx");
+    nscript = 0;
+    press(ORBIS_PAD_BUTTON_CIRCLE, 1);
+    press(ORBIS_PAD_BUTTON_UP, 1);
+    run_app();
+    closed_by_ps = 0;
+    CHECK(exists(PLUGIN_DST), "al abrir la app no se instalo el plugin");
 
     // 3. error al guardar: el plugin no se puede escribir -> dialogo con el motivo, sin colgarse
     system("rm -f tfs/data/GoldHEN/plugins/vcfg_nx.prx && mkdir -p tfs/data/GoldHEN/plugins/vcfg_nx.prx/x");
     nscript = 0;
     press(ORBIS_PAD_BUTTON_CIRCLE, 1);
-    press(ORBIS_PAD_BUTTON_CROSS, 1);                 // Guardar y salir -> falla
+    press(ORBIS_PAD_BUTTON_CROSS, 1);                 // Salir -> guardar falla
     press(ORBIS_PAD_BUTTON_DOWN, 1);
     press(ORBIS_PAD_BUTTON_CROSS, 1);                 // Ver diagnostico
     press(ORBIS_PAD_BUTTON_CIRCLE, 1);                // vuelve a Opciones
     press(ORBIS_PAD_BUTTON_CIRCLE, 1);                // cierra
     press(ORBIS_PAD_BUTTON_CIRCLE, 1);                // Salir...
-    press(ORBIS_PAD_BUTTON_DOWN, 1);
+    press(ORBIS_PAD_BUTTON_CROSS, 1);                 // falla otra vez
+    press(ORBIS_PAD_BUTTON_DOWN, 2);
     press(ORBIS_PAD_BUTTON_CROSS, 1);                 // ...sin guardar
     run_app();
     CHECK(strstr(diag.save_error, "-31") != NULL, "el error no explica que fallo: '%s'", diag.save_error);
@@ -186,7 +199,7 @@ int main(void)
     press(ORBIS_PAD_BUTTON_CROSS, 1);
     press(ORBIS_PAD_BUTTON_L1, 1);
     press(ORBIS_PAD_BUTTON_CIRCLE, 1);
-    press(ORBIS_PAD_BUTTON_CROSS, 1);                 // Guardar y salir -> no hay plugin en la app
+    press(ORBIS_PAD_BUTTON_CROSS, 1);                 // Salir -> no hay plugin en la app
     press(ORBIS_PAD_BUTTON_DOWN, 2);
     press(ORBIS_PAD_BUTTON_CROSS, 1);                 // Salir sin guardar
     run_app();

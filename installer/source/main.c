@@ -57,7 +57,7 @@
 #define CFG_DIR ROOT "/data/vcfg_nx"
 #define TITLE_ID "VCNX00001"
 #define CONTENT_ID "IV0000-VCNX00001_00-VCFGNXINSTALL000"
-#define VERSION "2.4.1"
+#define VERSION "2.4.2"
 
 #define W 1920
 #define H 1080
@@ -972,7 +972,7 @@ static void draw_settings_view(void)
     ui_text(FONT_SMALL, PANEL_X + 46, PANEL_Y + 72, C_FAINT,
             gi >= 0 ? (games[gi].custom ? "Este juego guarda sus propios ajustes."
                                         : "Sigue los ajustes por defecto: cambi\xe1 cualquier valor para tener propios.")
-                    : "Se aplican al guardar y salir.");
+                    : "Se guardan solos al cambiarlos.");
     for (int r = gi >= 0 ? R_ENABLED : R_FG; r < R_COUNT; ++r) draw_settings_row(r);
     draw_settings_help();
     if (view != V_GAME) return;
@@ -1193,10 +1193,10 @@ static void open_modal(int kind)
     switch (kind) {
     case M_EXIT:
         modal.title = "\xbfSalir de VCFG-NX?";
-        modal.body[0] = dirty_cfg ? "Hay cambios sin guardar." : "No hay cambios pendientes.";
-        modal.body[1] = "Guardar instala el plugin y actualiza plugins.ini (con copia de seguridad).";
-        modal.opts[0] = "Guardar y salir"; modal.opts[1] = "Salir sin guardar"; modal.opts[2] = "Cancelar";
-        modal.nopts = 3;
+        modal.body[0] = "Los cambios se guardan solos apenas los hac\xe9s: el plugin ya queda instalado";
+        modal.body[1] = "y activo en los juegos marcados, aunque cierres la app con el bot\xf3n PS.";
+        modal.opts[0] = "Salir"; modal.opts[1] = "Cancelar";
+        modal.nopts = 2;
         break;
     case M_OPTIONS:
         modal.title = "Opciones";
@@ -1218,7 +1218,7 @@ static void open_modal(int kind)
     case M_CONFIRM_RESET:
         modal.title = "\xbfQuitar los ajustes propios?"; modal.title_color = C_WARN;
         modal.body[0] = "Todos los juegos pasan a usar los ajustes por defecto.";
-        modal.body[1] = "Se aplica al guardar y salir.";
+        modal.body[1] = "Se guarda enseguida.";
         modal.opts[0] = "Quitar"; modal.opts[1] = "Cancelar"; modal.nopts = 2; modal.row = 1;
         break;
     case M_SAVE_ERROR:
@@ -1447,7 +1447,7 @@ static int handle_modal(uint32_t b, int* quit)
                 ui_sound_play(SND_ERROR);
                 open_modal(M_SAVE_ERROR);
             }
-        } else if ((modal_kind == M_EXIT && r == 1) || (modal_kind == M_SAVE_ERROR && r == 2)) {
+        } else if (modal_kind == M_SAVE_ERROR && r == 2) {
             ui_sound_play(SND_BACK);
             *quit = 1;
         } else if (modal_kind == M_SAVE_ERROR && r == 1) {
@@ -1463,7 +1463,7 @@ static int handle_modal(uint32_t b, int* quit)
         if (r == 0 || r == 1) {
             for (int i = 0; i < ngames; ++i) games[i].enabled = r == 0;
             dirty_cfg = 1;
-            set_msg(C_DIM, "VCFG-NX %s en todos los juegos (se aplica al guardar).", r == 0 ? "activado" : "desactivado");
+            set_msg(C_DIM, "VCFG-NX %s en todos los juegos.", r == 0 ? "activado" : "desactivado");
             rebuild_visible();
             close_modal();
         } else if (r == 2) {
@@ -1491,7 +1491,7 @@ static int handle_modal(uint32_t b, int* quit)
             for (int i = 0; i < ngames; ++i)
                 if (games[i].custom) { games[i].custom = 0; games[i].cfg_dirty = 1; }
             dirty_cfg = 1;
-            set_msg(C_DIM, "Ajustes propios quitados (se aplica al guardar).");
+            set_msg(C_DIM, "Ajustes propios quitados.");
             rebuild_visible();
             ui_sound_play(SND_SELECT);
             close_modal();
@@ -1596,9 +1596,30 @@ static void handle_settings(uint32_t b)
         ui_sound_play(SND_BACK);
         view = V_GRID;
         rebuild_visible();
-        set_msg(C_DIM, "%s", dirty_cfg ? "Cambios pendientes: se guardan al salir." : "");
+        set_msg(C_DIM, "%s", dirty_cfg ? "Guardando..." : "");
         repaint_all();
     }
+}
+
+// guardado automatico: cada cambio se escribe enseguida (como VCFG v2.23).
+// Antes habia que salir con "Guardar y salir"; quien cerraba la app con el
+// boton PS se quedaba sin plugin instalado ni plugins.ini actualizado.
+static void autosave(int quiet)
+{
+    if (jailed || !prx) return;
+    errno = 0;
+    int e = save_all(0);
+    if (e == 0) {
+        dirty_cfg = 0;
+        diag.save_error[0] = 0;
+        if (!quiet) set_msg(C_OK, "Guardado: listo para jugar (L3+R3 en el juego abre el men\xfa).");
+    } else {
+        dirty_cfg = 1;
+        snprintf(diag.save_error, sizeof diag.save_error, "%s (c\xf3" "digo %d%s%s)", save_error_text(e), e,
+                 errno ? ", " : "", errno ? strerror(errno) : "");
+        set_msg(C_DANGER, "No se pudo guardar: %s", diag.save_error);
+    }
+    if (view != V_MODAL) repaint(0, 1000, W, H - 1000);
 }
 
 int main(void)
@@ -1640,12 +1661,17 @@ int main(void)
         set_msg(C_WARN, "No se encontr\xf3 el plugin dentro de la app: reinstal\xe1 el PKG.");
     else
         set_msg(C_DIM, "Eleg\xed un juego con las flechas.");
+    // instala o actualiza el plugin enseguida (una version nueva de la app trae
+    // un plugin nuevo) y deja plugins.ini al dia con lo marcado
+    autosave(1);
     repaint_all();
     present();
 
-    int quit = 0;
+    int quit = 0, idle = 0;
     while (!quit) {
         uint32_t b = read_pad();
+        idle = b ? 0 : idle + 1;
+        if (dirty_cfg && idle == 30 && view != V_MODAL) autosave(0);   // ~0,5 s sin tocar nada
         if (b) {
             if (view == V_MODAL) handle_modal(b, &quit);
             else if (view == V_GRID) handle_grid(b);

@@ -1,4 +1,4 @@
-# VCFG-NX 2.41: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
+# VCFG-NX 2.42: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
 
 Rediseño del **VCFG v2.14** (generador de fotogramas en beta de la comunidad
 de GoldHEN) que además incorpora un **modelo de reescalado/realce propio,
@@ -6,7 +6,7 @@ NXSR**, como alternativa a GNMScale pero sin el granulado que este agrega.
 Todo con la interfaz de VCFG: app instaladora con lista de juegos y menú en
 pantalla con **L3+R3**.
 
-**Descarga:** [`dist/VCFG-NX_v2.41.pkg`](dist/VCFG-NX_v2.41.pkg) (fPKG, app) ·
+**Descarga:** [`dist/VCFG-NX_v2.42.pkg`](dist/VCFG-NX_v2.42.pkg) (fPKG, app) ·
 [`dist/vcfg_nx.prx`](dist/vcfg_nx.prx) (plugin suelto) · [`dist/SHA256SUMS.txt`](dist/SHA256SUMS.txt)
 
 | servicio | qué hace |
@@ -64,6 +64,15 @@ botones mientras está abierto):
   RCAS, contador de FPS (con temperatura) y comparar.
 * Arriba se ven los FPS, la temperatura y el estado (activo, calidad dinámica,
   calor). **Guardar** deja todo para ese juego; **O** cierra.
+
+## Novedades de la 2.42
+
+**Guardado automático.** Hasta la 2.41 la app solo instalaba el plugin y
+escribía `plugins.ini` al salir con CÍRCULO → "Guardar y salir". Si se cerraba
+con el botón PS (lo habitual), los juegos se veían activados pero en disco no
+había nada: GoldHEN no cargaba VCFG-NX en ningún juego. Ahora, como VCFG v2.23,
+cada cambio se guarda solo medio segundo después, y al abrir la app se
+instala/actualiza el plugin enseguida.
 
 ## Novedades de la 2.41
 
@@ -209,12 +218,12 @@ compartir para arreglar un juego puntual.
 ## Instalar y usar
 
 1. Requiere **GoldHEN** con soporte de plugins.
-2. Instalar `VCFG-NX_v2.41.pkg` y abrir **VCFG-NX**.
+2. Instalar `VCFG-NX_v2.42.pkg` y abrir **VCFG-NX**.
 3. En la cuadrícula: **X** activa o desactiva VCFG-NX en el juego,
    **CUADRADO** abre los ajustes de ese juego, **TRIÁNGULO** los ajustes por
    defecto, **L1/R1** cambia el filtro, **OPTIONS** abre el menú (activar o
    desactivar todos, quitar ajustes propios, diagnóstico, desinstalar) y
-   **CÍRCULO** abre el diálogo de salida (guardar y salir / salir sin guardar).
+   **CÍRCULO** sale. Todo se guarda solo al cambiarlo.
    En los ajustes de un juego, cambiar cualquier valor lo pasa a "ajustes
    propios"; **CUADRADO** lo devuelve a los ajustes por defecto.
 4. En el juego: mantener **L3+R3** 1,5 s abre el menú (el juego no recibe los
