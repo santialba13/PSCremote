@@ -57,28 +57,34 @@
 #define CFG_DIR ROOT "/data/vcfg_nx"
 #define TITLE_ID "VCNX00001"
 #define CONTENT_ID "IV0000-VCNX00001_00-VCFGNXINSTALL000"
-#define VERSION "2.3.2"
+#define VERSION "2.4.0"
 
 #define W 1920
 #define H 1080
 
 // ------------------------------------------------------------- paleta
-#define C_TEXT 0xFFF2F5FFu
-#define C_DIM 0xFFA3AECBu
-#define C_FAINT 0xFF6B7697u
-#define C_ACCENT 0xFF4F8CFFu
-#define C_ACCENT2 0xFF8B5CFFu
-#define C_OK 0xFF34D399u
-#define C_WARN 0xFFFFB547u
-#define C_DANGER 0xFFFF5D6Cu
-#define C_INK 0xFF0B1020u
-#define C_GLASS 0x10FFFFFFu
-#define C_STROKE 0x1CFFFFFFu
+// "Aurora": grafito casi negro, luz turquesa y violeta, vidrio esmerilado
+#define C_TEXT 0xFFF4F6FAu
+#define C_DIM 0xFFA7AFBEu
+#define C_FAINT 0xFF6C7383u
+#define C_ACCENT 0xFF3FE0CFu    // turquesa
+#define C_ACCENT2 0xFFA78BFAu   // violeta
+#define C_OK 0xFF4ADE9Au
+#define C_WARN 0xFFFBC062u
+#define C_DANGER 0xFFFB7185u
+#define C_INK 0xFF07080Cu
+#define C_GLASS 0x0FFFFFFFu
+#define C_STROKE 0x1AFFFFFFu
+#define C_EDGE_TOP 0x40FFFFFFu  // borde del vidrio: brilla arriba...
+#define C_EDGE_BOT 0x0AFFFFFFu  // ...y casi desaparece abajo
 
 // ----------------------------------------------------------- pantalla
 static uint32_t* fb[2];
 static int video, cur_fb;
 static ui_surf_t canvas, bg;
+static ui_surf_t frost;   // el fondo esmerilado (desenfocado y aclarado): lo que se ve a traves del vidrio
+static ui_surf_t under;   // lo que queda detras de un dialogo, desenfocado
+static int under_ok;
 static struct { int x0, y0, x1, y1; } dirty[2];   // zona del lienzo que falta copiar a cada framebuffer
 
 static void mark(int x, int y, int w, int h)
@@ -113,7 +119,9 @@ static int video_init(void)
     fb[1] = (uint32_t*)((uint8_t*)mem + sz);
     canvas = (ui_surf_t){ malloc(sz), W, H, W };
     bg = (ui_surf_t){ malloc(sz), W, H, W };
-    if (!canvas.px || !bg.px) return -5;
+    frost = (ui_surf_t){ malloc(sz), W, H, W };
+    under = (ui_surf_t){ malloc(sz), W, H, W };
+    if (!canvas.px || !bg.px || !frost.px || !under.px) return -5;
     OrbisVideoOutBufferAttribute attr;
     sceVideoOutSetBufferAttribute(&attr, 0x80000000, 1, 0, W, H, W);   // A8R8G8B8_SRGB lineal
     sceVideoOutSetFlipRate(video, 0);
@@ -135,44 +143,50 @@ static void present(void)
     sceKernelUsleep(16700);   // el flip ocurre en el proximo vsync: recien ahi se puede tocar el otro buffer
 }
 
-// fondo: degradado azul noche, dos brillos difusos y un poco de ruido (sin bandas)
+// fondo: grafito con tres auroras difusas (turquesa, violeta, rosa) y grano
+// fino para que no haya bandas. Despues, la version esmerilada para el vidrio.
 static void build_background(void)
 {
+    static const struct { float x, y, rx, ry, k, r, g, b; } A[] = {
+        { 330, -140, 1050, 760, 0.42f, 20, 184, 166 },    // turquesa arriba a la izquierda
+        { 1700, 300, 900, 820, 0.36f, 124, 92, 246 },     // violeta a la derecha
+        { 1040, 1240, 1150, 560, 0.20f, 236, 72, 153 },   // rosa abajo, muy suave
+        { 120, 1080, 700, 520, 0.14f, 56, 120, 255 },     // azul en la esquina
+    };
     uint32_t seed = 12345;
     for (int y = 0; y < H; ++y) {
         uint32_t* p = bg.px + (size_t)y * W;
         float t = (float)y / H;
-        float br = 11 + 7 * t, bgc = 15 + 11 * t, bb = 30 + 21 * t;
+        float br = 7 + 4 * t, bgc = 8 + 4 * t, bb = 12 + 6 * t;
         for (int x = 0; x < W; ++x) {
-            float dx1 = (x - 260.0f) / 1100, dy1 = (y + 160.0f) / 900;
-            float g1 = 1.0f - (dx1 * dx1 + dy1 * dy1);
-            float dx2 = (x - 1760.0f) / 1200, dy2 = (y - 1180.0f) / 950;
-            float g2 = 1.0f - (dx2 * dx2 + dy2 * dy2);
-            g1 = g1 > 0 ? g1 * g1 * 0.32f : 0;
-            g2 = g2 > 0 ? g2 * g2 * 0.24f : 0;
+            float r = br, g = bgc, b = bb;
+            for (int k = 0; k < 4; ++k) {
+                float dx = (x - A[k].x) / A[k].rx, dy = (y - A[k].y) / A[k].ry;
+                float q = 1.0f - (dx * dx + dy * dy);
+                if (q <= 0) continue;
+                q = q * q * A[k].k;
+                r += A[k].r * q; g += A[k].g * q; b += A[k].b * q;
+            }
+            // vineta: los bordes un poco mas oscuros
+            float vx = (x - W * 0.5f) / (W * 0.75f), vy = (y - H * 0.45f) / (H * 0.9f);
+            float v = 1.0f - 0.35f * (vx * vx + vy * vy);
             seed = seed * 1664525u + 1013904223u;
             float n = (float)((seed >> 24) & 3) - 1.5f;
-            float r = br + 79 * g1 + 139 * g2 + n, g = bgc + 140 * g1 + 92 * g2 + n, b = bb + 255 * g1 + 255 * g2 + n;
-            p[x] = 0xFF000000u | (uint32_t)(r > 255 ? 255 : r) << 16 | (uint32_t)(g > 255 ? 255 : g) << 8 |
-                   (uint32_t)(b > 255 ? 255 : b);
+            r = r * v + n; g = g * v + n; b = b * v + n;
+            p[x] = 0xFF000000u | (uint32_t)(r < 0 ? 0 : r > 255 ? 255 : r) << 16 |
+                   (uint32_t)(g < 0 ? 0 : g > 255 ? 255 : g) << 8 | (uint32_t)(b < 0 ? 0 : b > 255 ? 255 : b);
         }
     }
-    // linea de luz bajo la barra superior
-    ui_surf_t* s = &bg;
-    for (int x = 0; x < W; ++x) {
-        float k = 1.0f - fabsf(x - 700.0f) / 1300.0f;
-        if (k <= 0) continue;
-        uint32_t* p = s->px + (size_t)118 * W + x;
-        unsigned a = (unsigned)(k * 120);
-        uint32_t c = C_ACCENT;
-        for (int j = 0; j < 2; ++j, p += W) {
-            uint32_t d = *p;
-            unsigned r = ((d >> 16 & 0xFF) * (255 - a) + (c >> 16 & 0xFF) * a) / 255;
-            unsigned g = ((d >> 8 & 0xFF) * (255 - a) + (c >> 8 & 0xFF) * a) / 255;
-            unsigned b = ((d & 0xFF) * (255 - a) + (c & 0xFF) * a) / 255;
-            *p = 0xFF000000u | r << 16 | g << 8 | b;
-            a /= 3;
-        }
+    // vidrio: fondo desenfocado, con mas luz y color (como un cristal que junta la luz)
+    memcpy(frost.px, bg.px, (size_t)W * H * 4);
+    ui_blur(&frost, 0, 0, W, H, 48);
+    for (size_t i = 0; i < (size_t)W * H; ++i) {
+        uint32_t c = frost.px[i];
+        int r = c >> 16 & 0xFF, g = c >> 8 & 0xFF, b = c & 0xFF;
+        int l = (r + g + b) / 3;
+        r = l + (r - l) * 3 / 2 + 14; g = l + (g - l) * 3 / 2 + 15; b = l + (b - l) * 3 / 2 + 19;
+        frost.px[i] = 0xFF000000u | (uint32_t)(r > 255 ? 255 : r < 0 ? 0 : r) << 16 |
+                      (uint32_t)(g > 255 ? 255 : g < 0 ? 0 : g) << 8 | (uint32_t)(b > 255 ? 255 : b < 0 ? 0 : b);
     }
 }
 
@@ -377,7 +391,7 @@ static int save_all(int uninstall)
 // icon0.png (512x512) reducido por promedio de area y con esquinas redondeadas.
 // Los de la cuadricula se guardan (ICON_CACHE), el grande de la pantalla de
 // ajustes es uno solo. Se decodifican de a uno cuando no se toca el mando.
-#define ICON 204
+#define ICON 248
 #define BIG_ICON 360
 #define ICON_CACHE 36
 typedef struct { int game; ui_img_t img; int state; unsigned used; } icon_t;   // state: 1 ok, -1 sin icono
@@ -463,7 +477,7 @@ static void icon_load(int gi)
         if (icons[k].used < slot->used) slot = &icons[k];
     ui_img_free(&slot->img);
     slot->game = gi;
-    slot->img = decode_icon(gi, ICON, 22);
+    slot->img = decode_icon(gi, ICON, 30);
     slot->state = slot->img.px ? 1 : -1;
     slot->used = ++icon_clock;
 }
@@ -546,74 +560,111 @@ static void change(nx_config_t* c, int row, int dir)
 static const nx_config_t* effective(const inst_game_t* g) { return g->custom ? &g->cfg : &defaults; }
 
 // --------------------------------------------------------- piezas visuales
+// cuadricula de portadas: 6 x 2, cada una con el titulo y el estado debajo
 #define COLS 6
 #define ROWS 2
-#define CARD_W 250
-#define CARD_H 330
-#define GAP_X 30
+#define CARD_W ICON
+#define CARD_H (ICON + 86)
+#define GAP_X 62
 #define GAP_Y 30
 #define GRID_X ((W - COLS * CARD_W - (COLS - 1) * GAP_X) / 2)
-#define GRID_Y 214
-#define LIFT 8
+#define GRID_Y 168
+#define LIFT 10
+#define RING 7     // separacion del anillo de la portada elegida
 
-static ui_img_t spr_shadow, spr_glow, spr_sheen, spr_modal_shadow, spr_big_glow, spr_card, spr_card_sel;
+static ui_img_t spr_shadow, spr_glow, spr_ring, spr_sheen, spr_big_glow, spr_mark;
 
-// marco de una tarjeta (degradado + borde suavizado) dibujado una vez en un sprite
-static ui_img_t make_card(uint32_t top, uint32_t bottom, int stroke, uint32_t stroke_c)
+// recolorea un sprite con un degradado diagonal turquesa -> violeta (conserva el alfa)
+static void aurora_tint(ui_img_t* im, uint32_t c0, uint32_t c1)
 {
-    ui_img_t im = ui_img_new(CARD_W, CARD_H);
-    if (!im.px) return im;
-    ui_surf_t s = { im.px, CARD_W, CARD_H, CARD_W };
-    ui_target(&s);
-    ui_rrect_grad(0, 0, CARD_W, CARD_H, 0, top, bottom);   // relleno opaco entero...
-    ui_rrect_stroke(0, 0, CARD_W, CARD_H, 24, stroke, stroke_c);
-    ui_img_round(&im, 24);   // ...y las esquinas salen del alfa (sin borde oscuro)
-    ui_img_spans(&im);
-    ui_target(&canvas);
-    return im;
+    for (int y = 0; y < im->h; ++y)
+        for (int x = 0; x < im->w; ++x) {
+            uint32_t* p = &im->px[y * im->w + x];
+            if (!(*p >> 24)) continue;
+            int t = (x + y) * 255 / (im->w + im->h);
+            uint32_t c = 0;
+            for (int sh = 0; sh < 24; sh += 8) {
+                int a = (int)(c0 >> sh & 0xFF), b = (int)(c1 >> sh & 0xFF);
+                c |= (uint32_t)(a + (b - a) * t / 255) << sh;
+            }
+            *p = (*p & 0xFF000000u) | c;
+        }
 }
 
 static void build_sprites(void)
 {
-    spr_card = make_card(0xFF1D2744u, 0xFF151C33u, 1, 0xFF2A3350u);
-    spr_card_sel = make_card(0xFF2B3E78u, 0xFF1C2952u, 3, 0xFF6FA3FFu);
-    spr_shadow = ui_make_shadow(CARD_W, CARD_H, 24, 26, 0xA0000000u);
-    spr_glow = ui_make_shadow(CARD_W, CARD_H, 24, 30, 0xE05A96FFu);
-    // lo que la tarjeta tapa siempre no se dibuja (la sombra va 10 px mas abajo)
-    ui_img_hole(&spr_shadow, 26, 16, CARD_W, CARD_H, 24);
-    ui_img_hole(&spr_glow, 30, 30, CARD_W, CARD_H, 24);
+    // sombra suave de cada portada y brillo de color de la elegida
+    spr_shadow = ui_make_shadow(ICON, ICON, 30, 24, 0x90000000u);
+    ui_img_hole(&spr_shadow, 24, 10, ICON, ICON, 30);   // lo que la portada tapa siempre
     ui_img_spans(&spr_shadow);
+    spr_glow = ui_make_shadow(ICON + 2 * RING, ICON + 2 * RING, 36, 40, 0xC8FFFFFFu);
+    aurora_tint(&spr_glow, C_ACCENT, C_ACCENT2);
+    ui_img_hole(&spr_glow, 40 + RING, 40 + RING, ICON, ICON, 30);
     ui_img_spans(&spr_glow);
-    spr_big_glow = ui_make_shadow(BIG_ICON, BIG_ICON, 34, 44, 0x904F8CFFu);
-    spr_modal_shadow = ui_make_shadow(820, 560, 30, 50, 0xC0000000u);
-    // brillo diagonal para la tarjeta elegida
-    spr_sheen = ui_img_new(CARD_W, CARD_H);
-    for (int y = 0; spr_sheen.px && y < CARD_H; ++y)
-        for (int x = 0; x < CARD_W; ++x) {
-            float t = 1.0f - (x * 0.55f + y) / (CARD_H * 0.75f);
-            if (t > 0) spr_sheen.px[y * CARD_W + x] = (uint32_t)(t * t * 70) << 24 | 0xFFFFFF;
+    // anillo con degradado alrededor de la elegida
+    spr_ring = ui_img_new(ICON + 2 * RING, ICON + 2 * RING);
+    if (spr_ring.px) {
+        ui_surf_t s = { spr_ring.px, spr_ring.w, spr_ring.h, spr_ring.w };
+        ui_target(&s);
+        ui_rrect_stroke(0, 0, spr_ring.w, spr_ring.h, 30 + RING, 3, 0xFFFFFFFFu);
+        aurora_tint(&spr_ring, 0xFF7CF5E6u, 0xFFC4B5FDu);
+        ui_img_spans(&spr_ring);
+        ui_target(&canvas);
+    }
+    // reflejo diagonal sobre la portada elegida
+    spr_sheen = ui_img_new(ICON, ICON);
+    for (int y = 0; spr_sheen.px && y < ICON; ++y)
+        for (int x = 0; x < ICON; ++x) {
+            float t = 1.0f - (x * 0.6f + y) / (ICON * 0.8f);
+            if (t > 0) spr_sheen.px[y * ICON + x] = (uint32_t)(t * t * 64) << 24 | 0xFFFFFF;
         }
-    if (spr_sheen.px) { ui_img_round(&spr_sheen, 24); ui_img_spans(&spr_sheen); }
-    spr_big_glow.px ? ui_img_spans(&spr_big_glow) : (void)0;
-    spr_modal_shadow.px ? ui_img_spans(&spr_modal_shadow) : (void)0;
+    if (spr_sheen.px) { ui_img_round(&spr_sheen, 30); ui_img_spans(&spr_sheen); }
+    spr_big_glow = ui_make_shadow(BIG_ICON, BIG_ICON, 40, 56, 0x90FFFFFFu);
+    aurora_tint(&spr_big_glow, C_ACCENT, C_ACCENT2);
+    ui_img_hole(&spr_big_glow, 56, 46, BIG_ICON, BIG_ICON, 40);
+    ui_img_spans(&spr_big_glow);
+    // marca del logo: gota de luz con degradado
+    spr_mark = ui_make_shadow(18, 18, 9, 12, 0xFFFFFFFFu);
+    aurora_tint(&spr_mark, C_ACCENT, C_ACCENT2);
+    ui_img_spans(&spr_mark);
+}
+
+// panel de vidrio: el fondo esmerilado, un velo claro y un borde que brilla arriba
+static void glass(int x, int y, int w, int h, int r, uint32_t veil)
+{
+    ui_rrect_src(x, y, w, h, r, under_ok && view == V_MODAL ? &under : &frost);
+    if (veil >> 24) ui_rrect(x, y, w, h, r, veil);
+    ui_rrect_stroke_grad(x, y, w, h, r, 1, C_EDGE_TOP, C_EDGE_BOT);
 }
 
 // pastilla con texto; devuelve el x siguiente
 static int pill(int x, int y, int font, uint32_t bgc, uint32_t fg, const char* label)
 {
-    int w = ui_text_w(font, label) + 28, h = ui_line_h(font) + 10;
+    int w = ui_text_w(font, label) + 24, h = ui_line_h(font) + 10;
     ui_rrect(x, y, w, h, h / 2, bgc);
-    ui_text(font, x + 14, y + 5, fg, label);
+    ui_rrect_stroke_grad(x, y, w, h, h / 2, 1, 0x30FFFFFFu, 0x08FFFFFFu);
+    ui_text(font, x + 12, y + 5, fg, label);
     return x + w;
 }
 
-// pastilla de estado con punto de color
+// estado: punto de color con halo y texto (sin caja: minimalista)
+static int status_dot(int x, int y, int font, uint32_t dot, uint32_t fg, const char* label)
+{
+    int h = ui_line_h(font), cy = y + h / 2 + 1;
+    ui_circle(x + 5, cy, 9, (dot & 0xFFFFFFu) | 0x30000000u);
+    ui_circle(x + 5, cy, 4, dot);
+    return ui_text(font, x + 18, y, fg, label);
+}
+
+// pastilla de vidrio con punto de color
 static int status_pill(int x, int y, uint32_t dot, const char* label)
 {
-    int w = ui_text_w(FONT_SMALL, label) + 46, h = ui_line_h(FONT_SMALL) + 12;
-    ui_rrect(x, y, w, h, h / 2, 0x1EFFFFFFu);
-    ui_circle(x + 20, y + h / 2, 6, dot);
-    ui_text(FONT_SMALL, x + 34, y + 6, C_TEXT, label);
+    int w = ui_text_w(FONT_SMALL, label) + 46, h = ui_line_h(FONT_SMALL) + 14;
+    ui_rrect(x, y, w, h, h / 2, 0x12FFFFFFu);
+    ui_rrect_stroke_grad(x, y, w, h, h / 2, 1, 0x2EFFFFFFu, 0x08FFFFFFu);
+    ui_circle(x + 20, y + h / 2, 8, (dot & 0xFFFFFFu) | 0x38000000u);
+    ui_circle(x + 20, y + h / 2, 4, dot);
+    ui_text(FONT_SMALL, x + 34, y + 7, C_TEXT, label);
     return x + w;
 }
 
@@ -621,35 +672,37 @@ typedef struct { int btn; const char* chip; const char* label; } hint_t;   // bt
 
 static void draw_hints(const hint_t* h, int n)
 {
-    int x = 60, y = 1016;
+    int x = 60, y = 1018;
     for (int i = 0; i < n; ++i) {
         if (h[i].btn >= 0) {
             ui_button(h[i].btn, x, y);
             x += ui_button_size() + 10;
         } else {
-            x = pill(x, y + 4, FONT_TINY, 0x2CFFFFFFu, C_TEXT, h[i].chip) + 10;
+            x = pill(x, y + 6, FONT_TINY, 0x14FFFFFFu, C_DIM, h[i].chip) + 10;
         }
-        x = ui_text(FONT_SMALL, x, y + 8, C_DIM, h[i].label) + 34;
+        x = ui_text(FONT_SMALL, x, y + 9, C_DIM, h[i].label) + 36;
     }
     char fit[200];
     ui_text_fit(FONT_SMALL, msg, W - 60 - x, fit, sizeof fit);
-    ui_text(FONT_SMALL, W - 60 - ui_text_w(FONT_SMALL, fit), y + 8, msg_color, fit);
+    ui_text(FONT_SMALL, W - 60 - ui_text_w(FONT_SMALL, fit), y + 9, msg_color, fit);
 }
+
+static void draw_tabs(void);
 
 static void draw_topbar(void)
 {
-    int x = ui_text(FONT_LOGO, 60, 28, C_TEXT, "VCFG");
-    x = ui_text(FONT_LOGO, x, 28, C_ACCENT, "-NX");
-    pill(x + 16, 44, FONT_TINY, 0x334F8CFFu, 0xFFBFD4FFu, "v" VERSION);
+    ui_blit(&spr_mark, 60, 46, 255);
+    int x = ui_text(FONT_LOGO, 100, 36, C_TEXT, "vcfg");
+    x = ui_text(FONT_LOGO, x + 2, 36, C_ACCENT, "nx");
+    ui_text(FONT_TINY, x + 14, 62, C_FAINT, "v" VERSION);
     int on = 0;
     for (int i = 0; i < ngames; ++i) on += games[i].enabled;
     char t[64];
-    snprintf(t, sizeof t, "%d juegos \xb7 %d con VCFG-NX", ngames, on);
-    int w1 = ui_text_w(FONT_SMALL, t) + 46;
-    const char* gh = jailed ? "GoldHEN: sin acceso" : "GoldHEN listo";
-    int w2 = ui_text_w(FONT_SMALL, gh) + 46;
-    status_pill(W - 60 - w1 - 14 - w2, 46, jailed ? C_WARN : C_OK, gh);
-    status_pill(W - 60 - w1, 46, C_ACCENT, t);
+    snprintf(t, sizeof t, "%d de %d juegos activos", on, ngames);
+    const char* gh = jailed ? "GoldHEN sin acceso" : "GoldHEN listo";
+    int w1 = ui_text_w(FONT_SMALL, t) + 18, w2 = ui_text_w(FONT_SMALL, gh) + 18;
+    status_dot(W - 60 - w1, 54, FONT_SMALL, C_ACCENT2, C_DIM, t);
+    status_dot(W - 60 - w1 - 40 - w2, 54, FONT_SMALL, jailed ? C_WARN : C_OK, C_DIM, gh);
 }
 
 // ------------------------------------------------------------- cuadricula
@@ -666,104 +719,110 @@ static void draw_card(int k)
     card_rect(k, &x, &y);
     const inst_game_t* g = &games[vis[k]];
     int is_sel = k == sel;
-    if (is_sel) ui_blit(&spr_glow, x - 30, y - 30, 255);
-    ui_blit(&spr_shadow, x - 26, y - 26 + 10, 255);
-    ui_blit(is_sel ? &spr_card_sel : &spr_card, x, y, 255);
-    int ix = x + (CARD_W - ICON) / 2, iy = y + 18;
+    if (is_sel) ui_blit(&spr_glow, x - RING - 40, y - RING - 40, 255);
+    ui_blit(&spr_shadow, x - 24, y - 24 + 14, 255);
     icon_t* ic = icon_lookup(vis[k]);
     if (ic && ic->state == 1) {
-        ui_blit(&ic->img, ix, iy, 255);
-    } else {   // sin icono (o todavia cargando): degradado con las iniciales
-        ui_rrect_grad(ix, iy, ICON, ICON, 22, 0xFF2A3558u, 0xFF1A2240u);
+        ui_blit(&ic->img, x, y, 255);
+    } else {   // sin icono (o todavia cargando): vidrio con las iniciales
+        ui_rrect_grad(x, y, ICON, ICON, 30, 0xFF1C1F2Au, 0xFF121319u);
+        ui_rrect_stroke_grad(x, y, ICON, ICON, 30, 1, 0x30FFFFFFu, 0x06FFFFFFu);
         char ini[3] = { g->title[0] ? g->title[0] : '?', g->title[0] && g->title[1] ? g->title[1] : 0, 0 };
-        ui_text(FONT_LOGO, ix + (ICON - ui_text_w(FONT_LOGO, ini)) / 2, iy + ICON / 2 - 34,
+        ui_text(FONT_LOGO, x + (ICON - ui_text_w(FONT_LOGO, ini)) / 2, y + ICON / 2 - 30,
                 ic ? C_FAINT : 0x40FFFFFFu, ini);
     }
-    if (!g->enabled) ui_rrect(ix, iy, ICON, ICON, 22, 0x88060A14u);
-    if (is_sel) ui_blit(&spr_sheen, x, y, 255);
-    // estado
-    if (g->enabled) {
-        int w = ui_text_w(FONT_TINY, "ON") + 34;
-        ui_rrect(ix + 10, iy + 10, w, 26, 13, 0xE6152A22u);
-        ui_circle(ix + 23, iy + 23, 5, C_OK);
-        ui_text(FONT_TINY, ix + 33, iy + 14, C_OK, "ON");
-    } else {
-        pill(ix + 10, iy + 10, FONT_TINY, 0xE61A2036u, C_DIM, "OFF");
+    // las que no estan elegidas quedan un poco atras; las apagadas, bastante
+    if (!g->enabled) ui_rrect(x, y, ICON, ICON, 30, is_sel ? 0x70070810u : 0xA8070810u);
+    else if (!is_sel) ui_rrect(x, y, ICON, ICON, 30, 0x30070810u);
+    if (is_sel) {
+        ui_blit(&spr_sheen, x, y, 255);
+        ui_blit(&spr_ring, x - RING, y - RING, 255);
     }
-    if (g->custom) {
-        int w = ui_text_w(FONT_TINY, "PROPIO") + 28;
-        pill(ix + ICON - 10 - w, iy + 10, FONT_TINY, 0xF0FFB547u, C_INK, "PROPIO");
+    if (g->custom) {   // ajustes propios: chip de vidrio en la esquina
+        int w = ui_text_w(FONT_TINY, "PROPIO") + 22;
+        ui_rrect(x + ICON - 12 - w, y + 12, w, 26, 13, 0xB80D0F16u);
+        ui_rrect_stroke_grad(x + ICON - 12 - w, y + 12, w, 26, 13, 1, 0x50FBC062u, 0x18FBC062u);
+        ui_text(FONT_TINY, x + ICON - 1 - w, y + 17, C_WARN, "PROPIO");
     }
-    // titulo en dos lineas
-    char l1[96], l2[96];
-    ui_text_wrap2(FONT_CARD, g->title, CARD_W - 32, l1, l2, sizeof l1);
-    ui_text(FONT_CARD, x + 16, iy + ICON + 10, C_TEXT, l1);
-    ui_text(FONT_CARD, x + 16, iy + ICON + 10 + ui_line_h(FONT_CARD), C_TEXT, l2);
-    ui_text(FONT_TINY, x + 16, y + CARD_H - 28, is_sel ? 0xFFBFD4FFu : C_FAINT, g->id);
+    // titulo en una linea y estado debajo (el titulo entero esta en la barra de detalle)
+    char t[96];
+    ui_text_fit(FONT_CARD, g->title, CARD_W - 4, t, sizeof t);
+    ui_text(FONT_CARD, x + 2, y + ICON + 16, is_sel ? C_TEXT : 0xFFC9CED8u, t);
+    status_dot(x + 2, y + ICON + 20 + ui_line_h(FONT_CARD), FONT_TINY, g->enabled ? C_OK : C_FAINT,
+               is_sel ? C_DIM : C_FAINT, g->enabled ? "ACTIVO" : "APAGADO");
 }
 
 static void card_region(int k, int* x, int* y, int* w, int* h)
 {
     int cx, cy;
     card_rect(k, &cx, &cy);
-    *x = cx - 34; *y = cy - 34 - LIFT; *w = CARD_W + 68; *h = CARD_H + 80 + LIFT;
+    *x = cx - RING - 42; *y = cy - RING - 42 - LIFT; *w = CARD_W + 2 * (RING + 42);
+    *h = CARD_H + RING + 42 + 2 * LIFT + 8;
 }
 
+// filtros: control segmentado de vidrio, centrado arriba
 static void draw_tabs(void)
 {
-    static const char* names[F_COUNT] = { "Todos", "Activos", "Con ajustes propios" };
+    static const char* names[F_COUNT] = { "Todos", "Activos", "Propios" };
     int counts[F_COUNT] = { ngames, 0, 0 };
     for (int i = 0; i < ngames; ++i) { counts[F_ON] += games[i].enabled; counts[F_CUSTOM] += games[i].custom; }
-    char l[F_COUNT][48];
-    int tw = 0;
+    char l[F_COUNT][48], n[F_COUNT][8];
+    int tw = 0, seg[F_COUNT];
     for (int f = 0; f < F_COUNT; ++f) {
-        snprintf(l[f], sizeof l[f], "%s  %d", names[f], counts[f]);
-        tw += ui_text_w(FONT_BODY, l[f]) + 56;
+        snprintf(l[f], sizeof l[f], "%s", names[f]);
+        snprintf(n[f], sizeof n[f], "%d", counts[f]);
+        seg[f] = ui_text_w(FONT_BODY, l[f]) + ui_text_w(FONT_TINY, n[f]) + 64;
+        tw += seg[f];
     }
-    int x = 60, y = 138, h = 52;
-    pill(x, y + 12, FONT_TINY, 0x2CFFFFFFu, C_TEXT, "L1");
-    x += 52;
-    ui_rrect(x, y, tw + 12, h, h / 2, C_GLASS);
-    ui_rrect_stroke(x, y, tw + 12, h, h / 2, 1, C_STROKE);
-    int sx = x + 6;
+    int h = 54, w = tw + 12 + 2 * 50, x = (W - w) / 2, y = 36;
+    glass(x, y, w, h, h / 2, 0x0AFFFFFFu);
+    ui_text(FONT_TINY, x + 20, y + 19, C_FAINT, "L1");
+    ui_text(FONT_TINY, x + w - 20 - ui_text_w(FONT_TINY, "R1"), y + 19, C_FAINT, "R1");
+    int sx = x + 56;
     for (int f = 0; f < F_COUNT; ++f) {
-        int w = ui_text_w(FONT_BODY, l[f]) + 56;
-        if (f == filter) ui_rrect_grad(sx, y + 6, w, h - 12, (h - 12) / 2, C_ACCENT, 0xFF3D6FE0u);
-        ui_text(FONT_BODY, sx + 28, y + 12, f == filter ? C_TEXT : C_DIM, l[f]);
-        sx += w;
+        int on = f == filter;
+        if (on) {
+            ui_rrect_grad(sx, y + 6, seg[f], h - 12, (h - 12) / 2, 0x3D3FE0CFu, 0x3DA78BFAu);
+            ui_rrect_stroke_grad(sx, y + 6, seg[f], h - 12, (h - 12) / 2, 1, 0x80FFFFFFu, 0x18FFFFFFu);
+        }
+        int tx = ui_text(FONT_BODY, sx + 26, y + 13, on ? C_TEXT : C_DIM, l[f]);
+        ui_text(FONT_TINY, tx + 10, y + 20, on ? C_ACCENT : C_FAINT, n[f]);
+        sx += seg[f];
     }
-    pill(x + tw + 24, y + 12, FONT_TINY, 0x2CFFFFFFu, C_TEXT, "R1");
 }
 
 static void summary(const nx_config_t* c, char* out, size_t n)
 {
     char t[16];
     value_text(c, R_TEMP, t, sizeof t);
-    snprintf(out, n, "FG %s   \xb7   NXSR %s (%s)   \xb7   SMAA %s   \xb7   Din\xe1mica %s   \xb7   Ahorro %s   \xb7   L\xedmite %s",
+    snprintf(out, n, "Fotogramas %s   \xb7   NXSR %s (%s)   \xb7   SMAA %s   \xb7   Din\xe1mica %s   \xb7   Ahorro %s   \xb7   L\xedmite %s",
              c->framegen ? "ON" : "OFF", SR_N[c->sr & 3], MD_N[c->sr_model % 3], c->aa ? "ON" : "OFF",
              c->dynamic ? "ON" : "OFF", c->eco ? "ON" : "OFF", t);
 }
 
-#define DETAIL_Y 916
+// barra de detalle: vidrio flotante con el juego elegido
+#define DETAIL_Y 900
+#define DETAIL_H 92
 static void draw_details(void)
 {
-    ui_rrect(60, DETAIL_Y, W - 120, 88, 24, 0x14FFFFFFu);
-    ui_rrect_stroke(60, DETAIL_Y, W - 120, 88, 24, 1, C_STROKE);
+    glass(60, DETAIL_Y, W - 120, DETAIL_H, 28, 0x08FFFFFFu);
     if (!nvis) {
-        ui_text(FONT_H2, 90, DETAIL_Y + 30, C_WARN, ngames ? "No hay juegos en este filtro (L1 / R1 para cambiarlo)."
+        ui_text(FONT_H2, 96, DETAIL_Y + 30, C_WARN, ngames ? "No hay juegos en este filtro (L1 / R1 para cambiarlo)."
                                                             : "No se encontraron juegos instalados.");
         return;
     }
     const inst_game_t* g = &games[vis[sel]];
     char t[96];
-    ui_text_fit(FONT_H2, g->title, 900, t, sizeof t);
-    int x = ui_text(FONT_H2, 92, DETAIL_Y + 10, C_TEXT, t) + 20;
-    x = status_pill(x, DETAIL_Y + 10, g->enabled ? C_OK : C_FAINT, g->enabled ? "VCFG-NX activo" : "VCFG-NX apagado") + 12;
-    x = status_pill(x, DETAIL_Y + 10, g->custom ? C_WARN : C_ACCENT, g->custom ? "Ajustes propios" : "Ajustes por defecto") + 16;
-    ui_text(FONT_SMALL, x, DETAIL_Y + 16, C_FAINT, g->id);
+    ui_text_fit(FONT_H2, g->title, 860, t, sizeof t);
+    int x = ui_text(FONT_H2, 96, DETAIL_Y + 14, C_TEXT, t) + 28;
+    x = status_dot(x, DETAIL_Y + 20, FONT_SMALL, g->enabled ? C_OK : C_FAINT, C_DIM,
+                   g->enabled ? "VCFG-NX activo" : "VCFG-NX apagado") + 28;
+    x = status_dot(x, DETAIL_Y + 20, FONT_SMALL, g->custom ? C_WARN : C_ACCENT2, C_DIM,
+                   g->custom ? "Ajustes propios" : "Ajustes por defecto") + 28;
+    ui_text(FONT_SMALL, x, DETAIL_Y + 20, C_FAINT, g->id);
     char s[220];
     summary(effective(g), s, sizeof s);
-    ui_text(FONT_SMALL, 92, DETAIL_Y + 52, g->enabled ? C_DIM : C_FAINT, s);
+    ui_text(FONT_SMALL, 96, DETAIL_Y + 56, g->enabled ? C_DIM : C_FAINT, s);
 }
 
 static void draw_scrollbar(void)
@@ -771,9 +830,9 @@ static void draw_scrollbar(void)
     int total_rows = (nvis + COLS - 1) / COLS;
     if (total_rows <= ROWS) return;
     int bh = ROWS * (CARD_H + GAP_Y) - GAP_Y, th = bh * ROWS / total_rows;
-    int x = W - 36;
-    ui_rrect(x, GRID_Y, 6, bh, 3, 0x18FFFFFFu);
-    ui_rrect(x, GRID_Y + (bh - th) * top_row / (total_rows - ROWS), 6, th, 3, C_ACCENT);
+    int x = W - 30;
+    ui_rrect(x, GRID_Y, 4, bh, 2, 0x14FFFFFFu);
+    ui_rrect_grad(x, GRID_Y + (bh - th) * top_row / (total_rows - ROWS), 4, th, 2, C_ACCENT, C_ACCENT2);
 }
 
 static const hint_t HINTS_GRID[] = {
@@ -800,10 +859,10 @@ static void draw_grid_view(void)
 
 // --------------------------------------------------------------- ajustes
 #define PANEL_X 600
-#define PANEL_Y 138
+#define PANEL_Y 128
 #define PANEL_W (W - 60 - PANEL_X)
-#define PANEL_H 852
-#define ROW_Y0 (PANEL_Y + 112)
+#define PANEL_H 864
+#define ROW_Y0 (PANEL_Y + 118)
 #define ROW_H 60
 
 static int settings_game = -1;   // -1: ajustes por defecto
@@ -811,18 +870,27 @@ static int settings_row;
 
 static void draw_switch(int x, int y, int on, int dim)
 {
-    uint32_t track = on ? (dim ? 0xFF2F6E58u : C_OK) : 0x30FFFFFFu;
-    ui_rrect(x, y, 74, 38, 19, track);
-    ui_circle(on ? x + 55 : x + 19, y + 19, 15, dim ? 0xFFB8C0D6u : 0xFFFFFFFFu);
+    if (on) {
+        ui_rrect_grad(x, y, 74, 38, 19, dim ? 0xFF2A6B62u : 0xFF3FE0CFu, dim ? 0xFF2A5E58u : 0xFF2BB8A9u);
+        if (!dim) ui_rrect_stroke_grad(x, y, 74, 38, 19, 1, 0x70FFFFFFu, 0x10FFFFFFu);
+    } else {
+        ui_rrect(x, y, 74, 38, 19, 0x1CFFFFFFu);
+        ui_rrect_stroke_grad(x, y, 74, 38, 19, 1, 0x30FFFFFFu, 0x08FFFFFFu);
+    }
+    int kx = on ? x + 55 : x + 19;
+    ui_circle(kx, y + 21, 15, 0x40000000u);   // sombra del boton
+    ui_circle(kx, y + 19, 15, dim ? 0xFFB9BFCAu : 0xFFFFFFFFu);
 }
 
 static void draw_selector(int x, int y, const char* v, int selected, int dim)
 {
-    int w = 230;
-    ui_rrect(x, y, w, 42, 21, selected ? 0x30FFFFFFu : 0x16FFFFFFu);
-    ui_text(FONT_BODY, x + 16, y + 6, selected ? C_TEXT : C_FAINT, "\xab");
-    ui_text(FONT_BODY, x + w - 30, y + 6, selected ? C_TEXT : C_FAINT, "\xbb");
-    ui_text(FONT_BODY, x + (w - ui_text_w(FONT_BODY, v)) / 2, y + 6, dim ? C_DIM : C_TEXT, v);
+    int w = 236;
+    ui_rrect(x, y, w, 42, 21, selected ? 0x1EFFFFFFu : 0x0EFFFFFFu);
+    ui_rrect_stroke_grad(x, y, w, 42, 21, 1, selected ? 0x50FFFFFFu : 0x22FFFFFFu, 0x06FFFFFFu);
+    uint32_t ch = selected ? C_ACCENT : C_FAINT;
+    ui_text(FONT_BODY, x + 16, y + 7, ch, "\xab");
+    ui_text(FONT_BODY, x + w - 30, y + 7, ch, "\xbb");
+    ui_text(FONT_BODY, x + (w - ui_text_w(FONT_BODY, v)) / 2, y + 7, dim ? C_DIM : C_TEXT, v);
 }
 
 static void row_region(int row, int* x, int* y, int* w, int* h)
@@ -838,30 +906,31 @@ static void draw_settings_row(int row)
     const nx_config_t* c = gi >= 0 ? effective(&games[gi]) : &defaults;
     int inherited = gi >= 0 && !games[gi].custom && row > R_MODE;
     int y = ROW_Y0 + (row - first) * ROW_H, s = row == settings_row;
-    if (s) {
-        ui_rrect_grad(PANEL_X + 16, y - 2, PANEL_W - 32, ROW_H - 8, 16, 0x664F8CFFu, 0x334F8CFFu);
-        ui_rrect(PANEL_X + 16, y + 10, 5, ROW_H - 32, 2, C_ACCENT);
+    if (s) {   // fila elegida: vidrio mas claro con una linea de luz a la izquierda
+        ui_rrect(PANEL_X + 16, y - 2, PANEL_W - 32, ROW_H - 8, 18, 0x14FFFFFFu);
+        ui_rrect_stroke_grad(PANEL_X + 16, y - 2, PANEL_W - 32, ROW_H - 8, 18, 1, 0x3CFFFFFFu, 0x0AFFFFFFu);
+        ui_rrect_grad(PANEL_X + 26, y + 12, 4, ROW_H - 32, 2, C_ACCENT, C_ACCENT2);
     }
-    ui_text(FONT_BODY, PANEL_X + 44, y + 10, inherited && !s ? C_DIM : C_TEXT, ROW_LABEL[row]);
+    ui_text(FONT_BODY, PANEL_X + 46, y + 10, inherited && !s ? C_DIM : C_TEXT, ROW_LABEL[row]);
     int cx = PANEL_X + PANEL_W - 40;
-    if (inherited) ui_text(FONT_TINY, cx - 300, y + 18, C_FAINT, "por defecto");
+    if (inherited) ui_text(FONT_TINY, cx - 330, y + 18, C_FAINT, "POR DEFECTO");
     if (row == R_ENABLED) {
         draw_switch(cx - 74, y + 6, games[gi].enabled, 0);
     } else if (row == R_MODE) {
-        draw_selector(cx - 230, y + 4, games[gi].custom ? "Propios" : "Por defecto", s, 0);
+        draw_selector(cx - 236, y + 4, games[gi].custom ? "Propios" : "Por defecto", s, 0);
     } else if (is_switch(row)) {
         draw_switch(cx - 74, y + 6, row_on(c, row), inherited);
     } else {
         char v[32];
         value_text(c, row, v, sizeof v);
-        draw_selector(cx - 230, y + 4, v, s, inherited);
+        draw_selector(cx - 236, y + 4, v, s, inherited);
     }
-    if (row == R_MODE) ui_fill(PANEL_X + 40, y + ROW_H - 6, PANEL_W - 80, 1, C_STROKE);
+    if (row == R_MODE) ui_fill(PANEL_X + 40, y + ROW_H - 6, PANEL_W - 80, 1, 0x14FFFFFFu);
 }
 
 static void draw_settings_help(void)
 {
-    ui_text(FONT_SMALL, PANEL_X + 44, PANEL_Y + PANEL_H - 56, C_DIM, ROW_HELP[settings_row]);
+    ui_text(FONT_SMALL, PANEL_X + 46, PANEL_Y + PANEL_H - 54, C_DIM, ROW_HELP[settings_row]);
 }
 
 static const hint_t HINTS_SETTINGS[] = {
@@ -880,38 +949,38 @@ static void draw_settings_view(void)
     if (gi >= 0) {
         const inst_game_t* g = &games[gi];
         int ix = 60 + (PANEL_X - 60 - 40 - BIG_ICON) / 2, iy = 150;
-        ui_blit(&spr_big_glow, ix - 44, iy - 44 + 12, 255);
+        ui_blit(&spr_big_glow, ix - 56, iy - 56 + 10, 255);
         if (big_icon.game == gi && big_icon.state == 1) {
             ui_blit(&big_icon.img, ix, iy, 255);
         } else {
-            ui_rrect_grad(ix, iy, BIG_ICON, BIG_ICON, 34, 0xFF2A3558u, 0xFF1A2240u);
+            ui_rrect_grad(ix, iy, BIG_ICON, BIG_ICON, 40, 0xFF1C1F2Au, 0xFF121319u);
             char ini[3] = { g->title[0], g->title[0] ? g->title[1] : 0, 0 };
-            ui_text(FONT_LOGO, ix + (BIG_ICON - ui_text_w(FONT_LOGO, ini)) / 2, iy + BIG_ICON / 2 - 34, C_FAINT, ini);
+            ui_text(FONT_LOGO, ix + (BIG_ICON - ui_text_w(FONT_LOGO, ini)) / 2, iy + BIG_ICON / 2 - 30, C_FAINT, ini);
         }
+        ui_rrect_stroke_grad(ix, iy, BIG_ICON, BIG_ICON, 40, 1, 0x50FFFFFFu, 0x08FFFFFFu);
         char l1[96], l2[96];
         ui_text_wrap2(FONT_H1, g->title, PANEL_X - 100, l1, l2, sizeof l1);
-        int y = iy + BIG_ICON + 30;
+        int y = iy + BIG_ICON + 34;
         ui_text(FONT_H1, 60, y, C_TEXT, l1);
         if (l2[0]) { y += ui_line_h(FONT_H1); ui_text(FONT_H1, 60, y, C_TEXT, l2); }
         y += ui_line_h(FONT_H1) + 8;
         ui_text(FONT_SMALL, 60, y, C_FAINT, g->id);
-        y += 40;
-        int x = status_pill(60, y, g->enabled ? C_OK : C_FAINT, g->enabled ? "Activo" : "Apagado") + 12;
-        status_pill(x, y, g->custom ? C_WARN : C_ACCENT, g->custom ? "Ajustes propios" : "Ajustes por defecto");
+        y += 44;
+        int x = status_dot(62, y, FONT_SMALL, g->enabled ? C_OK : C_FAINT, C_DIM, g->enabled ? "Activo" : "Apagado") + 28;
+        status_dot(x, y, FONT_SMALL, g->custom ? C_WARN : C_ACCENT2, C_DIM, g->custom ? "Ajustes propios" : "Ajustes por defecto");
     } else {
         ui_text(FONT_H1, 60, 170, C_TEXT, "Ajustes por");
         ui_text(FONT_H1, 60, 170 + ui_line_h(FONT_H1), C_TEXT, "defecto");
-        ui_text(FONT_BODY, 60, 290, C_DIM, "Los usan todos los juegos");
-        ui_text(FONT_BODY, 60, 324, C_DIM, "que no tienen ajustes propios.");
-        ui_text(FONT_SMALL, 60, 400, C_FAINT, "Cada juego puede tener los suyos:");
-        ui_text(FONT_SMALL, 60, 430, C_FAINT, "en la cuadr\xed" "cula, CUADRADO sobre el juego,");
-        ui_text(FONT_SMALL, 60, 460, C_FAINT, "o L3+R3 dentro del juego.");
+        ui_text(FONT_BODY, 60, 296, C_DIM, "Los usan todos los juegos");
+        ui_text(FONT_BODY, 60, 330, C_DIM, "que no tienen ajustes propios.");
+        ui_text(FONT_SMALL, 60, 404, C_FAINT, "Cada juego puede tener los suyos:");
+        ui_text(FONT_SMALL, 60, 434, C_FAINT, "en la cuadr\xed" "cula, CUADRADO sobre el juego,");
+        ui_text(FONT_SMALL, 60, 464, C_FAINT, "o L3+R3 dentro del juego.");
     }
-    // panel derecho
-    ui_rrect(PANEL_X, PANEL_Y, PANEL_W, PANEL_H, 30, 0x12FFFFFFu);
-    ui_rrect_stroke(PANEL_X, PANEL_Y, PANEL_W, PANEL_H, 30, 1, C_STROKE);
-    ui_text(FONT_H2, PANEL_X + 44, PANEL_Y + 30, C_TEXT, gi >= 0 ? "Ajustes de este juego" : "Ajustes generales");
-    ui_text(FONT_SMALL, PANEL_X + 44, PANEL_Y + 68, C_FAINT,
+    // panel derecho de vidrio
+    glass(PANEL_X, PANEL_Y, PANEL_W, PANEL_H, 32, 0x08FFFFFFu);
+    ui_text(FONT_H2, PANEL_X + 46, PANEL_Y + 32, C_TEXT, gi >= 0 ? "Ajustes de este juego" : "Ajustes generales");
+    ui_text(FONT_SMALL, PANEL_X + 46, PANEL_Y + 72, C_FAINT,
             gi >= 0 ? (games[gi].custom ? "Este juego guarda sus propios ajustes."
                                         : "Sigue los ajustes por defecto: cambi\xe1 cualquier valor para tener propios.")
                     : "Se aplican al guardar y salir.");
@@ -923,8 +992,8 @@ static void draw_settings_view(void)
 }
 
 // ---------------------------------------------------------------- dialogos
-#define MODAL_W 820
-#define MODAL_H 560
+#define MODAL_W 860
+#define MODAL_H 580
 #define MODAL_X ((W - MODAL_W) / 2)
 #define MODAL_Y ((H - MODAL_H) / 2)
 
@@ -937,28 +1006,56 @@ typedef struct {
 } modal_t;
 static modal_t modal;
 
+static void draw_view(void);
+
+// lo de atras del dialogo se dibuja una vez, se desenfoca y se oscurece: el
+// dialogo es un vidrio de verdad sobre la pantalla anterior
+static void snapshot_under(void)
+{
+    if (!under.px) return;
+    ui_target(&under);
+    ui_copy(&bg, 0, 0, W, H);
+    under_ok = 0;
+    int v = view;
+    view = V_MODAL;   // sin las ayudas de abajo
+    if (modal_of == V_GRID) draw_grid_view();
+    else draw_settings_view();
+    view = v;
+    ui_blur(&under, 0, 0, W, H, 30);
+    for (size_t i = 0; i < (size_t)W * H; ++i) {
+        uint32_t c = under.px[i];
+        unsigned r = (c >> 16 & 0xFF) * 120 / 255 + 3, g = (c >> 8 & 0xFF) * 120 / 255 + 4, b = (c & 0xFF) * 120 / 255 + 7;
+        under.px[i] = 0xFF000000u | r << 16 | g << 8 | b;
+    }
+    under_ok = 1;
+    ui_target(&canvas);
+}
+
 static void draw_modal(void)
 {
-    ui_fill(0, 0, W, H, 0x9C04060Cu);
-    ui_blit(&spr_modal_shadow, MODAL_X - 50, MODAL_Y - 50 + 16, 255);
-    ui_rrect_grad(MODAL_X, MODAL_Y, MODAL_W, MODAL_H, 30, 0xFF1F2A4Au, 0xFF151C34u);
-    ui_rrect_stroke(MODAL_X, MODAL_Y, MODAL_W, MODAL_H, 30, 1, 0x2EFFFFFFu);
-    ui_text(FONT_H1, MODAL_X + 48, MODAL_Y + 40, modal.title_color, modal.title);
-    int y = MODAL_Y + 106;
+    if (!under_ok) ui_fill(0, 0, W, H, 0xA004060Cu);
+    glass(MODAL_X, MODAL_Y, MODAL_W, MODAL_H, 34, 0x12FFFFFFu);
+    ui_rrect_grad(MODAL_X + 48, MODAL_Y + 36, 40, 4, 2, C_ACCENT, C_ACCENT2);
+    ui_text(FONT_H1, MODAL_X + 48, MODAL_Y + 52, modal.title_color, modal.title);
+    int y = MODAL_Y + 120;
     for (int i = 0; i < 5 && modal.body[i]; ++i) {
         char l1[200], l2[200];
         ui_text_wrap2(FONT_SMALL, modal.body[i], MODAL_W - 96, l1, l2, sizeof l1);
         ui_text(FONT_SMALL, MODAL_X + 48, y, C_DIM, l1);
-        y += 30;
-        if (l2[0]) { ui_text(FONT_SMALL, MODAL_X + 48, y, C_DIM, l2); y += 30; }
+        y += 29;
+        if (l2[0]) { ui_text(FONT_SMALL, MODAL_X + 48, y, C_DIM, l2); y += 29; }
         y += 6;
     }
     int oy = MODAL_Y + MODAL_H - 40 - modal.nopts * 58;
     for (int i = 0; i < modal.nopts; ++i, oy += 58) {
         int s = i == modal.row;
-        if (s) ui_rrect_grad(MODAL_X + 32, oy, MODAL_W - 64, 50, 25, C_ACCENT, 0xFF3D6FE0u);
-        else ui_rrect(MODAL_X + 32, oy, MODAL_W - 64, 50, 25, 0x12FFFFFFu);
-        ui_text(FONT_BODY, MODAL_X + 64, oy + 10, s ? C_TEXT : C_DIM, modal.opts[i]);
+        if (s) {
+            ui_rrect_grad(MODAL_X + 32, oy, MODAL_W - 64, 50, 25, 0x4D3FE0CFu, 0x4DA78BFAu);
+            ui_rrect_stroke_grad(MODAL_X + 32, oy, MODAL_W - 64, 50, 25, 1, 0x90FFFFFFu, 0x20FFFFFFu);
+        } else {
+            ui_rrect(MODAL_X + 32, oy, MODAL_W - 64, 50, 25, 0x0AFFFFFFu);
+        }
+        ui_text(FONT_BODY, MODAL_X + 64, oy + 11, s ? C_TEXT : C_DIM, modal.opts[i]);
     }
 }
 
@@ -968,13 +1065,17 @@ static const hint_t HINTS_MODAL[] = { { UI_BTN_CROSS, NULL, "Aceptar" }, { UI_BT
 
 static void draw_view(void)
 {
-    int under = view == V_MODAL ? modal_of : view;
-    if (under == V_GRID) draw_grid_view();
-    else draw_settings_view();
     if (view == V_MODAL) {
+        if (!under_ok) {   // sin memoria para el desenfoque: la vista de atras, oscurecida
+            if (modal_of == V_GRID) draw_grid_view();
+            else draw_settings_view();
+        }
         draw_modal();
         draw_hints(HINTS_MODAL, 2);
+        return;
     }
+    if (view == V_GRID) draw_grid_view();
+    else draw_settings_view();
 }
 
 // redibuja una zona: fondo + toda la vista recortada a esa zona
@@ -982,7 +1083,7 @@ static void repaint(int x, int y, int w, int h)
 {
     ui_target(&canvas);
     ui_clip(x, y, w, h);
-    ui_copy(&bg, x, y, w, h);
+    ui_copy(view == V_MODAL && under_ok ? &under : &bg, x, y, w, h);
     draw_view();
     ui_clip_all();
     mark(x, y, w, h);
@@ -1011,7 +1112,10 @@ static void open_modal(int kind)
     memset(&modal, 0, sizeof modal);
     modal_kind = kind;
     modal.title_color = C_TEXT;
-    if (view != V_MODAL) modal_of = view;
+    if (view != V_MODAL) {
+        modal_of = view;
+        snapshot_under();
+    }
     view = V_MODAL;
     switch (kind) {
     case M_EXIT:
@@ -1086,6 +1190,7 @@ static void open_modal(int kind)
 
 static void close_modal(void)
 {
+    under_ok = 0;
     view = modal_of;
     modal_kind = M_NONE;
     repaint_all();
@@ -1204,7 +1309,7 @@ static int load_one_icon(void)
         if (gi >= 0 && big_icon.game != gi) {
             ui_img_free(&big_icon.img);
             big_icon.game = gi;
-            big_icon.img = decode_icon(gi, BIG_ICON, 34);
+            big_icon.img = decode_icon(gi, BIG_ICON, 40);
             big_icon.state = big_icon.img.px ? 1 : -1;
             if (view == V_GAME) repaint(60, 100, PANEL_X - 60, BIG_ICON + 120);
             return 1;

@@ -18,14 +18,14 @@ static float rr_cov(float px, float py, float w, float h, float r)
 static float4 palette(int a)
 {
     switch (a) {
-    case 1: return (float4)(0.64f, 0.69f, 0.80f, 1.0f);   // atenuado
-    case 2: return (float4)(0.20f, 0.83f, 0.60f, 1.0f);   // ON (verde)
-    case 3: return (float4)(0.45f, 0.49f, 0.60f, 1.0f);   // OFF (gris)
-    case 4: return (float4)(0.40f, 0.62f, 1.00f, 1.0f);   // acento (azul)
-    case 5: return (float4)(1.00f, 0.71f, 0.28f, 1.0f);   // aviso (ambar)
+    case 1: return (float4)(0.65f, 0.69f, 0.75f, 1.0f);   // atenuado
+    case 2: return (float4)(0.29f, 0.87f, 0.60f, 1.0f);   // ON (verde)
+    case 3: return (float4)(0.42f, 0.45f, 0.51f, 1.0f);   // OFF (gris)
+    case 4: return (float4)(0.25f, 0.88f, 0.81f, 1.0f);   // acento (turquesa)
+    case 5: return (float4)(0.98f, 0.75f, 0.38f, 1.0f);   // aviso (ambar)
     case 6: return (float4)(1.00f, 1.00f, 1.00f, 1.0f);   // titulo
-    case 7: return (float4)(1.00f, 0.37f, 0.42f, 1.0f);   // error (rojo)
-    default: return (float4)(0.95f, 0.96f, 1.00f, 1.0f);
+    case 7: return (float4)(0.98f, 0.44f, 0.52f, 1.0f);   // error (rojo)
+    default: return (float4)(0.96f, 0.96f, 0.98f, 1.0f);
     }
 }
 
@@ -46,18 +46,26 @@ NX_KERNEL void osd_draw(tdesc_t dst, int W, int H,
     float cov = rr_cov(px, py, (float)pw, (float)ph, r);
     if (cov <= 0.0f) return;   // fuera de las esquinas: el juego intacto
     float4 c = nx_load(dst, x, y);
-    // fondo translucido con un leve degradado y borde de luz
-    float t = (float)ly / ph;
-    float4 bg = (float4)(0.055f + 0.02f * t, 0.075f + 0.025f * t, 0.14f + 0.04f * t, 1.0f);
-    c = c + (bg - c) * (0.86f * cov);
-    float ring = cov - rr_cov(px - 1.5f * scale, py - 1.5f * scale, pw - 3.0f * scale, ph - 3.0f * scale,
-                              r - 1.5f * scale);
-    c = c + ((float4)(0.40f, 0.62f, 1.0f, 1.0f) - c) * (0.55f * nx_clampf(ring, 0.0f, 1.0f));
-    // fila elegida: pastilla azul que sobresale 8 px a cada lado del texto
+    // vidrio oscuro translucido con una aurora tenue (turquesa arriba a la
+    // izquierda, violeta abajo a la derecha): el juego se sigue viendo detras
+    float t = (float)ly / ph, u = (float)lx / pw, d = 0.5f * (t + u);
+    float4 aur = (float4)(0.25f, 0.88f, 0.81f, 1.0f) + ((float4)(0.65f, 0.55f, 0.98f, 1.0f) - (float4)(0.25f, 0.88f, 0.81f, 1.0f)) * d;
+    float4 bg = (float4)(0.035f, 0.04f, 0.06f, 1.0f) + (aur - (float4)(0.035f, 0.04f, 0.06f, 1.0f)) * 0.10f;
+    c = c + (bg - c) * (0.74f * cov);
+    // borde de vidrio: brilla arriba y se apaga hacia abajo
+    float ring = cov - rr_cov(px - 1.25f * scale, py - 1.25f * scale, pw - 2.5f * scale, ph - 2.5f * scale,
+                              r - 1.25f * scale);
+    c = c + ((float4)(1.0f, 1.0f, 1.0f, 1.0f) - c) * ((0.50f - 0.38f * t) * nx_clampf(ring, 0.0f, 1.0f));
+    // fila elegida: pastilla con degradado turquesa -> violeta y filo claro arriba
     if (sel_row >= 0 && ly >= pad + sel_row * ch * scale && ly < pad + (sel_row + 1) * ch * scale) {
         float hx = lx - (pad - 8 * scale) + 0.5f, hy = ly - (pad + sel_row * ch * scale) + 0.5f;
-        float hc = rr_cov(hx, hy, (float)(cols * cw * scale + 16 * scale), (float)(ch * scale), 9.0f * scale);
-        c = c + ((float4)(0.22f, 0.42f, 0.86f, 1.0f) - c) * (0.75f * hc);
+        float hw = (float)(cols * cw * scale + 16 * scale), hh = (float)(ch * scale);
+        float hc = rr_cov(hx, hy, hw, hh, 9.0f * scale);
+        float k = nx_clampf(hx / hw, 0.0f, 1.0f);
+        float4 pill = (float4)(0.16f, 0.55f, 0.52f, 1.0f) + ((float4)(0.40f, 0.32f, 0.66f, 1.0f) - (float4)(0.16f, 0.55f, 0.52f, 1.0f)) * k;
+        c = c + (pill - c) * (0.62f * hc);
+        float edge = hc - rr_cov(hx, hy - 1.0f * scale, hw, hh, 9.0f * scale);
+        c = c + ((float4)(1.0f, 1.0f, 1.0f, 1.0f) - c) * (0.45f * nx_clampf(edge, 0.0f, 1.0f));
     }
     int tx = (lx - pad) / scale, ty = (ly - pad) / scale;
     if (lx >= pad && ly >= pad && tx < cols * cw && ty < rows * ch) {

@@ -20,6 +20,12 @@ void ui_fill(int x, int y, int w, int h, uint32_t c);   // mezcla si alfa < 255
 void ui_rrect(int x, int y, int w, int h, int r, uint32_t c);
 void ui_rrect_grad(int x, int y, int w, int h, int r, uint32_t top, uint32_t bottom);
 void ui_rrect_stroke(int x, int y, int w, int h, int r, int t, uint32_t c);
+void ui_rrect_stroke_grad(int x, int y, int w, int h, int r, int t, uint32_t top, uint32_t bottom);
+// vidrio: copia los pixeles de src (del mismo tamano que el destino) dentro del
+// rectangulo redondeado, con bordes suavizados
+void ui_rrect_src(int x, int y, int w, int h, int r, const ui_surf_t* src);
+// desenfoque (~gaussiano, 3 pasadas de caja) de una zona de s, en el lugar
+void ui_blur(ui_surf_t* s, int x, int y, int w, int h, int radius);
 void ui_circle(int cx, int cy, int r, uint32_t c);
 // copia una zona de otra superficie del mismo tamano (restaurar el fondo)
 void ui_copy(const ui_surf_t* src, int x, int y, int w, int h);

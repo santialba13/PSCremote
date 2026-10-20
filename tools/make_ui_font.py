@@ -19,13 +19,14 @@ OUT = os.path.join(ROOT, "installer", "source", "ui_font_data.h")
 
 # (nombre, archivo, tamano en px)
 FONTS = [
-    ("FONT_LOGO", "Inter-ExtraBold.otf", 50),
-    ("FONT_H1", "Inter-Bold.otf", 36),
-    ("FONT_H2", "Inter-SemiBold.otf", 27),
-    ("FONT_BODY", "Inter-Medium.otf", 25),
-    ("FONT_CARD", "Inter-SemiBold.otf", 22),
-    ("FONT_SMALL", "Inter-Medium.otf", 20),
-    ("FONT_TINY", "Inter-Bold.otf", 15),
+    # estilo "Aurora": Inter Display liviana para titulos, Inter normal para leer
+    ("FONT_LOGO", "InterDisplay-Light.otf", 44),
+    ("FONT_H1", "InterDisplay-SemiBold.otf", 38),
+    ("FONT_H2", "InterDisplay-Medium.otf", 28),
+    ("FONT_BODY", "Inter-Regular.otf", 24),
+    ("FONT_CARD", "Inter-Medium.otf", 21),
+    ("FONT_SMALL", "Inter-Regular.otf", 19),
+    ("FONT_TINY", "Inter-SemiBold.otf", 14),
 ]
 FIRST, LAST = 32, 255
 
@@ -53,13 +54,26 @@ def render_font(path, size):
 
 
 def button_sprite(kind, size=40):
-    """Icono de boton estilo PlayStation: disco oscuro con el simbolo de color."""
+    """Icono de boton: disco de vidrio (claro arriba) con el simbolo de color suave."""
     ss = 4
     S = size * ss
     im = Image.new("RGBA", (S, S), (0, 0, 0, 0))
     d = ImageDraw.Draw(im)
-    d.ellipse([ss, ss, S - ss - 1, S - ss - 1], fill=(32, 38, 56, 255), outline=(255, 255, 255, 40), width=ss)
-    col = {"cross": (110, 160, 255), "circle": (255, 98, 108), "square": (236, 140, 206), "triangle": (70, 214, 162)}[kind]
+    # disco translucido con degradado vertical y borde brillante arriba
+    disc = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    grad = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    gd = ImageDraw.Draw(grad)
+    for y in range(S):
+        t = y / S
+        gd.line([(0, y), (S, y)], fill=(255, 255, 255, int(46 - 26 * t)))
+    mask = Image.new("L", (S, S), 0)
+    ImageDraw.Draw(mask).ellipse([ss, ss, S - ss - 1, S - ss - 1], fill=255)
+    disc.paste(grad, (0, 0), mask)
+    im = Image.alpha_composite(im, disc)
+    d = ImageDraw.Draw(im)
+    d.arc([ss, ss, S - ss - 1, S - ss - 1], 200, 340, fill=(255, 255, 255, 110), width=ss)
+    d.arc([ss, ss, S - ss - 1, S - ss - 1], 20, 160, fill=(255, 255, 255, 30), width=ss)
+    col = {"cross": (150, 196, 255), "circle": (255, 132, 150), "square": (240, 170, 230), "triangle": (110, 236, 200)}[kind]
     w = int(S * 0.085)
     c = S / 2
     r = S * 0.24

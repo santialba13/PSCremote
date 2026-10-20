@@ -81,7 +81,14 @@ static inline uint32_t lerp_color(uint32_t a, uint32_t b, int t, int n)
     return out;
 }
 
+// src != NULL: en vez de un color, copia los pixeles de src (vidrio esmerilado)
+static void rrect_impl2(int x, int y, int w, int h, int r, uint32_t top, uint32_t bottom, const ui_surf_t* src);
 static void rrect_impl(int x, int y, int w, int h, int r, uint32_t top, uint32_t bottom)
+{
+    rrect_impl2(x, y, w, h, r, top, bottom, NULL);
+}
+
+static void rrect_impl2(int x, int y, int w, int h, int r, uint32_t top, uint32_t bottom, const ui_surf_t* src)
 {
     if (r * 2 > w) r = w / 2;
     if (r * 2 > h) r = h / 2;
@@ -90,12 +97,14 @@ static void rrect_impl(int x, int y, int w, int h, int r, uint32_t top, uint32_t
     if (xa >= xb) return;
     for (int j = y0; j < y1; ++j) {
         uint32_t c = top == bottom ? top : lerp_color(top, bottom, j - y, h - 1);
-        unsigned a = c >> 24;
+        unsigned a = src ? 255 : c >> 24;
         if (!a) continue;
         uint32_t* p = row(j);
+        const uint32_t* q = src ? src->px + (size_t)j * src->stride : NULL;
         int in_top = j < y + r, in_bot = j >= y + h - r;
         if (!in_top && !in_bot) {
-            for (int i = xa; i < xb; ++i) p[i] = blend(p[i], c, a);
+            if (q) memcpy(p + xa, q + xa, (size_t)(xb - xa) * 4);
+            else for (int i = xa; i < xb; ++i) p[i] = blend(p[i], c, a);
             continue;
         }
         float ccy = in_top ? (float)(y + r) : (float)(y + h - r);
@@ -104,7 +113,7 @@ static void rrect_impl(int x, int y, int w, int h, int r, uint32_t top, uint32_t
             unsigned cov = 255;
             if (i < x + r) cov = corner_cov(i + 0.5f, py, (float)(x + r), ccy, (float)r);
             else if (i >= x + w - r) cov = corner_cov(i + 0.5f, py, (float)(x + w - r), ccy, (float)r);
-            if (cov) p[i] = blend(p[i], c, cov * a / 255);
+            if (cov) p[i] = blend(p[i], q ? q[i] : c, cov * a / 255);
         }
     }
 }
@@ -126,11 +135,20 @@ static float rrect_cov(float px, float py, float x, float y, float w, float h, f
     return d <= -0.5f ? 1.0f : (d >= 0.5f ? 0.0f : 0.5f - d);
 }
 
-void ui_rrect_stroke(int x, int y, int w, int h, int r, int t, uint32_t c)
+void ui_rrect_src(int x, int y, int w, int h, int r, const ui_surf_t* src)
 {
-    unsigned a = c >> 24;
+    if (src && src->w == T->w && src->h == T->h) rrect_impl2(x, y, w, h, r, 0, 0, src);
+}
+
+void ui_rrect_stroke(int x, int y, int w, int h, int r, int t, uint32_t c) { ui_rrect_stroke_grad(x, y, w, h, r, t, c, c); }
+
+void ui_rrect_stroke_grad(int x, int y, int w, int h, int r, int t, uint32_t top, uint32_t bottom)
+{
     int y0 = y < cy0 ? cy0 : y, y1 = y + h > cy1 ? cy1 : y + h;
     for (int j = y0; j < y1; ++j) {
+        uint32_t c = top == bottom ? top : lerp_color(top, bottom, j - y, h - 1);
+        unsigned a = c >> 24;
+        if (!a) continue;
         uint32_t* p = row(j);
         int band = j < y + r + t + 1 || j >= y + h - r - t - 1;
         int xa = x < cx0 ? cx0 : x, xb = x + w > cx1 ? cx1 : x + w;
@@ -143,6 +161,43 @@ void ui_rrect_stroke(int x, int y, int w, int h, int r, int t, uint32_t c)
             if (cov > 0.004f) p[i] = blend(p[i], c, (unsigned)(cov * a + 0.5f));
         }
     }
+}
+
+// desenfoque de caja (3 pasadas ~ gaussiano) de una zona de s, en el lugar
+static void box_line(uint32_t* p, int n, int step, int r, uint32_t* tmp)
+{
+    if (n <= 1 || r <= 0) return;
+    for (int i = 0; i < n; ++i) tmp[i] = p[(size_t)i * step];
+    unsigned sr = 0, sg = 0, sb = 0, div = (unsigned)(2 * r + 1);
+    for (int k = -r; k <= r; ++k) {
+        uint32_t c = tmp[k < 0 ? 0 : (k >= n ? n - 1 : k)];
+        sr += c >> 16 & 0xFF; sg += c >> 8 & 0xFF; sb += c & 0xFF;
+    }
+    for (int i = 0; i < n; ++i) {
+        p[(size_t)i * step] = 0xFF000000u | (sr / div) << 16 | (sg / div) << 8 | (sb / div);
+        int out = i - r, in = i + r + 1;
+        uint32_t co = tmp[out < 0 ? 0 : out], ci = tmp[in >= n ? n - 1 : in];
+        sr += (ci >> 16 & 0xFF) - (co >> 16 & 0xFF);
+        sg += (ci >> 8 & 0xFF) - (co >> 8 & 0xFF);
+        sb += (ci & 0xFF) - (co & 0xFF);
+    }
+}
+
+void ui_blur(ui_surf_t* s, int x, int y, int w, int h, int radius)
+{
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > s->w) w = s->w - x;
+    if (y + h > s->h) h = s->h - y;
+    if (w <= 0 || h <= 0 || radius <= 0) return;
+    uint32_t* tmp = malloc((size_t)(w > h ? w : h) * 4);
+    if (!tmp) return;
+    int r = radius / 3 > 0 ? radius / 3 : 1;
+    for (int pass = 0; pass < 3; ++pass) {
+        for (int j = 0; j < h; ++j) box_line(s->px + (size_t)(y + j) * s->stride + x, w, 1, r, tmp);
+        for (int i = 0; i < w; ++i) box_line(s->px + (size_t)y * s->stride + x + i, h, s->stride, r, tmp);
+    }
+    free(tmp);
 }
 
 void ui_circle(int ccx, int ccy, int r, uint32_t c) { ui_rrect(ccx - r, ccy - r, 2 * r, 2 * r, r, c); }

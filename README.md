@@ -1,4 +1,4 @@
-# VCFG-NX 2.3: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
+# VCFG-NX 2.4: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
 
 Rediseño del **VCFG v2.14** (generador de fotogramas en beta de la comunidad
 de GoldHEN) que además incorpora un **modelo de reescalado/realce propio,
@@ -6,7 +6,7 @@ NXSR**, como alternativa a GNMScale pero sin el granulado que este agrega.
 Todo con la interfaz de VCFG: app instaladora con lista de juegos y menú en
 pantalla con **L3+R3**.
 
-**Descarga:** [`dist/VCFG-NX_v2.32.pkg`](dist/VCFG-NX_v2.32.pkg) (fPKG, app) ·
+**Descarga:** [`dist/VCFG-NX_v2.40.pkg`](dist/VCFG-NX_v2.40.pkg) (fPKG, app) ·
 [`dist/vcfg_nx.prx`](dist/vcfg_nx.prx) (plugin suelto) · [`dist/SHA256SUMS.txt`](dist/SHA256SUMS.txt)
 
 | servicio | qué hace |
@@ -64,6 +64,39 @@ botones mientras está abierto):
   RCAS, contador de FPS (con temperatura) y comparar.
 * Arriba se ven los FPS, la temperatura y el estado (activo, calidad dinámica,
   calor). **Guardar** deja todo para ese juego; **O** cierra.
+
+## Novedades de la 2.4
+
+**Funcionar en los juegos.** En GTA V y Marvel's Spider-Man el plugin no hacía
+nada y L3+R3 no respondía. Comparando con VCFG v2.23 (que sí anda) se
+encontraron y corrigieron estas causas posibles:
+
+- **Una importación que el juego no resuelve.** La 2.3 importaba
+  `sceKernelGetCpuTemperature`, que solo exportan algunos módulos del sistema:
+  si el proceso del juego no la tiene, GoldHEN no puede cargar el plugin y el
+  juego corre como si nada. Ahora esa función (y las lecturas `Ext` del mando)
+  se buscan por nombre en los módulos cargados; si no están, se sigue sin ellas.
+- **Archivos con la libc.** Ahora se usan las llamadas del kernel
+  (`sceKernelOpen/Read/Write/Mkdir`), como v2.23.
+- **El mando.** Antes L3+R3 dependía de enganchar `scePadReadState/scePadRead`;
+  muchos juegos leen por `scePadReadStateExt/ReadExt` u otra vía. Ahora un hilo
+  del plugin lee el mando por su cuenta cada 16 ms (como v2.23) y los hooks
+  quedan solo para que el juego no reciba botones con el menú abierto. Si el
+  menú todavía no puede abrirse, una notificación dice por qué.
+- **Registro de pantallas más tolerante.** Antes había que registrar 2 a 8
+  buffers de una sola vez en ciertos formatos; si no, el plugin quedaba
+  esperando para siempre (y con él el menú). Ahora acepta buffers registrados
+  de a uno, en cualquier índice, ignora otras salidas, y un formato raro ya no
+  lo apaga si después llega la pantalla real.
+- **Aviso al cargar**: al abrir el juego aparece "VCFG-NX cargado. Mantener
+  L3+R3 para el menu". Si no aparece, GoldHEN no cargó el plugin en ese juego.
+- **Registro por juego** en `/data/vcfg_nx/logs/` y su resumen en Diagnóstico.
+
+**Interfaz nueva "Aurora"**, distinta de GNMScale: fondo grafito con luces
+turquesa y violeta, paneles de vidrio esmerilado de verdad (lo de atrás se ve
+desenfocado), bordes que brillan arriba, portadas sin marco con anillo de luz
+al elegir, filtros en un control de vidrio centrado, tipografía Inter Display
+liviana, icono nuevo y el menú del juego con el mismo estilo.
 
 ## Novedades de la 2.3
 
@@ -152,13 +185,21 @@ las tres formas en que los juegos de PS4 presentan la imagen
 `sceVideoOutSubmitFlip` desde la CPU), salida SDR de 8 y 10 bits de 720p a 4K
 (PS4 Pro), y juegos que renderizan por debajo de la salida (900p/720p → 1080p
 con EASU). Si el juego ya va a más de `max_game_fps` (48), la generación se
-apaga sola y solo queda la mejora de imagen. No se toca: salida HDR, apps que
-no son juegos (`CUSA`/`PLAS`).
+apaga sola y solo queda la mejora de imagen. Con salida HDR solo se ofrece el
+menú (los efectos se calibraron en SDR). No se toca: apps que no son juegos
+(`CUSA`/`PLAS`).
+
+**Si un juego no responde**, abrir la app → OPTIONS → **Diagnóstico** con ese
+juego elegido: resume lo que el plugin dejó en `/data/vcfg_nx/logs/<ID>.log`
+(si cargó, qué formato de pantalla usa el juego, cuántos fotogramas procesó y
+por qué pasó intactos los demás). `/data/vcfg_nx/logs/cargas.txt` lista cada
+vez que el plugin cargó en un juego. Ese archivo `.log` es lo que hay que
+compartir para arreglar un juego puntual.
 
 ## Instalar y usar
 
 1. Requiere **GoldHEN** con soporte de plugins.
-2. Instalar `VCFG-NX_v2.32.pkg` y abrir **VCFG-NX**.
+2. Instalar `VCFG-NX_v2.40.pkg` y abrir **VCFG-NX**.
 3. En la cuadrícula: **X** activa o desactiva VCFG-NX en el juego,
    **CUADRADO** abre los ajustes de ese juego, **TRIÁNGULO** los ajustes por
    defecto, **L1/R1** cambia el filtro, **OPTIONS** abre el menú (activar o
