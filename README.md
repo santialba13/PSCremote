@@ -1,4 +1,4 @@
-# VCFG-NX 2.48: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
+# VCFG-NX 2.49: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
 
 Rediseño del **VCFG v2.14** (generador de fotogramas en beta de la comunidad
 de GoldHEN) que además incorpora un **modelo de reescalado/realce propio,
@@ -6,7 +6,7 @@ NXSR**, como alternativa a GNMScale pero sin el granulado que este agrega.
 Todo con la interfaz de VCFG: app instaladora con lista de juegos y menú en
 pantalla con **L3+R3**.
 
-**Descarga:** [`dist/VCFG-NX_v2.48.pkg`](dist/VCFG-NX_v2.48.pkg) (fPKG, app) ·
+**Descarga:** [`dist/VCFG-NX_v2.49.pkg`](dist/VCFG-NX_v2.49.pkg) (fPKG, app) ·
 [`dist/vcfg_nx.prx`](dist/vcfg_nx.prx) (plugin suelto) · [`dist/SHA256SUMS.txt`](dist/SHA256SUMS.txt)
 
 | servicio | qué hace |
@@ -64,6 +64,24 @@ botones mientras está abierto):
   RCAS, contador de FPS (con temperatura) y comparar.
 * Arriba se ven los FPS, la temperatura y el estado (activo, calidad dinámica,
   calor). **Guardar** deja todo para ese juego; **O** cierra.
+
+## Novedades de la 2.49
+
+Con la 2.48 el plugin ya carga (aparece el aviso), pero GTA V se cerraba al
+arrancar. Cambios:
+
+- **Sin la reserva de 112 MiB al arrancar** (principal sospechosa: GTA V se
+  queda sin memoria). Solo se reservan 4 MiB para el menú; los efectos piden
+  memoria más tarde y solo si queda margen.
+- **Arranque por niveles** (como el crash guard de v2.23): si un arranque no
+  llega a jugarse (~30 s de fotogramas), el siguiente usa un nivel más
+  prudente — 0 normal, 1 sin reserva temprana, 2 pasivo (sin hooks) — y el
+  que funciona queda guardado para ese juego. Aviso en pantalla con el nivel.
+- **Etapas anotadas al momento** en `logs/cargas.txt` (inicio, memoria,
+  hooks, primer fotograma, pantalla registrada, menú, efectos, jugando); el
+  Diagnóstico muestra hasta dónde llegó el último arranque de cada juego.
+- La sonda se retira (ya cumplió) y sin el hook de
+  `sceKernelAllocateMainDirectMemory`.
 
 ## Novedades de la 2.48
 
@@ -294,7 +312,7 @@ compartir para arreglar un juego puntual.
 ## Instalar y usar
 
 1. Requiere **GoldHEN** con soporte de plugins.
-2. Instalar `VCFG-NX_v2.48.pkg` y abrir **VCFG-NX**.
+2. Instalar `VCFG-NX_v2.49.pkg` y abrir **VCFG-NX**.
 3. En la cuadrícula: **X** activa o desactiva VCFG-NX en el juego,
    **CUADRADO** abre los ajustes de ese juego, **TRIÁNGULO** los ajustes por
    defecto, **L1/R1** cambia el filtro, **OPTIONS** abre el menú (activar o

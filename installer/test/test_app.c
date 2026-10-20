@@ -48,7 +48,7 @@ static void make_fs(void)
     }
     // un juego sin appmeta: nombre e icono salen de su app.pkg (aca, el PKG de VCFG-NX)
     mkdir("tfs/user/app/CUSA00009", 0755);
-    system("cp ../../dist/VCFG-NX_v2.48.pkg tfs/user/app/CUSA00009/app.pkg");
+    system("cp ../../dist/VCFG-NX_v2.49.pkg tfs/user/app/CUSA00009/app.pkg");
     put("tfs/data/GoldHEN/plugins.ini", "[default]\n/data/GoldHEN/plugins/otro.prx\n/data/GoldHEN/plugins/vcfg16.prx\n\n"
         "[CUSA00003]\n" PLUGIN_LINE "\n/data/GoldHEN/plugins/gnmscale_plugin.prx\n");
     put("tfs/data/vcfg_nx/CUSA00003.ini", "sr = 1\n");
@@ -135,16 +135,14 @@ int main(void)
     CHECK(!strcmp(plug, "PRX de prueba"), "el plugin instalado no es el de la app (/app0 oculto tras el jailbreak)");
     free(plug);
     {
-        struct stat st1, st2, st3;
-        CHECK(stat(PLUGIN_DST, &st1) == 0 && (st1.st_mode & 0777) == 0777 && stat(PROBE_DST, &st2) == 0
-              && (st2.st_mode & 0777) == 0777 && stat(PLUGINS_INI, &st3) == 0 && (st3.st_mode & 0777) == 0777,
+        struct stat st1, st3;
+        CHECK(stat(PLUGIN_DST, &st1) == 0 && (st1.st_mode & 0777) == 0777
+              && stat(PLUGINS_INI, &st3) == 0 && (st3.st_mode & 0777) == 0777,
               "permisos: el plugin, la sonda y plugins.ini tienen que quedar 0777");
     }
-    char* pr = get(PROBE_DST);
-    CHECK(!strcmp(pr, "sonda de prueba"), "la sonda no se instalo");
-    free(pr);
+    CHECK(!exists(PROBE_DST), "la sonda ya no se instala");
     ini = get(PLUGINS_INI);
-    CHECK(strstr(ini, "[CUSA00001]\n" PROBE_LINE "\n" PLUGIN_LINE "\n") != NULL, "sonda y plugin en la seccion: %s", ini);
+    CHECK(strstr(ini, "[CUSA00001]\n" PLUGIN_LINE "\n") != NULL && !strstr(ini, PROBE_LINE), "plugin (sin sonda) en la seccion: %s", ini);
     free(ini);
     CHECK(diag.save_error[0] == 0, "error al guardar: %s", diag.save_error);
     {   // lo que guardo la app lo lee igual el plugin

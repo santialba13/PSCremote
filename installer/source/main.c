@@ -59,7 +59,7 @@
 #define CFG_DIR ROOT "/data/vcfg_nx"
 #define TITLE_ID "VCNX00001"
 #define CONTENT_ID "IV0000-VCNX00001_00-VCFGNXINSTALL000"
-#define VERSION "2.4.8"
+#define VERSION "2.4.9"
 
 #define W 1920
 #define H 1080
@@ -439,13 +439,7 @@ static int save_all(int uninstall)
         remove(PROBE_DST);
         return 0;
     }
-    if (probe) {
-        size_t pl = 0;
-        uint8_t* ph = read_bytes(PROBE_DST, &pl);
-        int psame = ph && pl == probe_len && !memcmp(ph, probe, probe_len);
-        free(ph);
-        if (!psame && write_verified(PROBE_DST, probe, probe_len) != 0) return -32;
-    }
+    remove(PROBE_DST);   // la sonda de la 2.43-2.48 ya cumplio: el plugin carga
     size_t have_len = 0;
     uint8_t* have = read_bytes(PLUGIN_DST, &have_len);
     int same = have && have_len == prx_len && memcmp(have, prx, prx_len) == 0;
@@ -1332,6 +1326,22 @@ static void diag_collect(void)
     else if (starts) snprintf(L[5], 300, "GoldHEN abri\xf3 el plugin %d vez/veces pero plugin_load no termin\xf3", starts);
     else snprintf(L[5], 300, "GoldHEN nunca carg\xf3 VCFG-NX en ning\xfan juego (no hay registro de carga)");
     diag.line_color[5] = nload ? C_OK : C_DANGER;
+    if (g) {   // hasta donde llego el ultimo arranque de este juego (el plugin lo anota al momento)
+        char key[40];
+        snprintf(key, sizeof key, "[etapa] %s nivel ", g->id);
+        const char* st = NULL;
+        for (const char* q = loads; (q = strstr(q, key)); ++q) st = q;
+        if (st) {
+            int lv = atoi(st + strlen(key));
+            const char* what = strstr(st, ": ");
+            const char* e = what ? strchr(what, '\n') : NULL;
+            int ok = what && strstr(what, "jugando") && (!e || strstr(what, "jugando") < e);
+            snprintf(L[5], 300, "\xdaltimo arranque de %.30s: nivel %d, %s %.*s", g->title, lv,
+                     ok ? "lleg\xf3 a jugar:" : "se cort\xf3 despu\xe9s de:", what ? (int)(e ? e - what - 2 : 60) : 0,
+                     what ? what + 2 : "");
+            diag.line_color[5] = ok ? C_OK : C_WARN;
+        }
+    }
     char sum[160] = "";
     char* log = NULL;
     if (g) {
@@ -1346,13 +1356,14 @@ static void diag_collect(void)
     // (sceKernelLoadStartModule) y busca plugin_load. Asi se sabe en esta
     // consola si el archivo en si se puede cargar.
     char t1[80], t2[80];
-    int ok1 = load_test(PROBE_DST, t1, sizeof t1), ok2 = load_test(PLUGIN_DST, t2, sizeof t2);
+    int ok1 = 1, ok2 = load_test(PLUGIN_DST, t2, sizeof t2);
+    snprintf(t1, sizeof t1, "-");
     char t3[80], pm1[48], pm2[48];
     const char* gnms = PLUGIN_DIR "/gnmscale_plugin.prx";
     int ctl = load_test(gnms, t3, sizeof t3);
     perm_text(PLUGIN_DST, pm1, sizeof pm1);
     perm_text(gnms, pm2, sizeof pm2);
-    snprintf(L[7], 300, "Prueba de carga: sonda %s \xb7 plugin %s \xb7 control GNMScale %s", t1, t2, t3);
+    snprintf(L[7], 300, "Prueba de carga: plugin %s \xb7 control GNMScale %s", t2, t3);
     diag.line_color[7] = ok1 && ok2 ? C_OK : C_DANGER;
     (void)ctl;
     snprintf(L[8], 300, "Permisos: vcfg_nx.prx %s \xb7 gnmscale_plugin.prx %s", pm1, pm2);

@@ -23,7 +23,7 @@
 attr_public const char* g_pluginName = "vcfg_nx";
 attr_public const char* g_pluginDesc = "Frame generation + reescalado IA (NXSR) + SMAA/FSR1, menu L3+R3";
 attr_public const char* g_pluginAuth = "VCFG-NX";
-attr_public u32 g_pluginVersion = 0x00000248; // 2.48
+attr_public u32 g_pluginVersion = 0x00000249; // 2.49
 
 // prototipos de las variantes ForWorkload (OpenOrbis las declara sin argumentos)
 typedef s32 (*submit_wl_t)(u64, u32, void**, u32*, void**, u32*);
@@ -43,7 +43,11 @@ HOOK_INIT(scePadReadStateExt);
 HOOK_INIT(scePadReadExt);
 
 static int g_hooked, g_hooked_dm;
-static char g_boot_path[64];   // /data/vcfg_nx/boot-<TITLE>.txt: el arranque con reserva llego a jugarse
+static char g_boot_path[64];
+static char g_title_s[16];
+static int g_level;   // nivel de arranque (ver boot_level_pick)
+static void boot_stage(const char* title, const char* what);
+static void boot_level_ok(void);   // /data/vcfg_nx/boot-<TITLE>.txt: el arranque con reserva llego a jugarse
 
 // ------------------------------------------------------------- plataforma
 // Memoria. Como VCFG v2.23: se reserva apenas carga el plugin (antes de que el
@@ -137,17 +141,6 @@ static int give_back_work(void)
     sceKernelReleaseDirectMemory(g_work.phys, g_work.len);
     g_valve_count++;
     return 1;
-}
-
-// variante de los SDK nuevos (solo si el sistema la tiene: se busca por nombre)
-HOOK_INIT(sceKernelAllocateMainDirectMemory);
-typedef int32_t (*alloc_main_fn)(size_t, size_t, int, off_t*);
-static int g_hooked_main_dm;
-s32 sceKernelAllocateMainDirectMemory_hook(size_t len, size_t align, int type, off_t* out)
-{
-    s32 r = HOOK_CONTINUE(sceKernelAllocateMainDirectMemory, alloc_main_fn, len, align, type, out);
-    if (r == 0 || !give_back_work()) return r;
-    return HOOK_CONTINUE(sceKernelAllocateMainDirectMemory, alloc_main_fn, len, align, type, out);
 }
 
 // el juego pide memoria directa: si no hay y nuestra reserva de trabajo sigue
@@ -374,14 +367,23 @@ static void* pad_thread(void* arg)
 {
     (void)arg;
     s32 handle = -1;
-    int fails = 0, ok_logged = 0, boot_ok = 0, valve_seen = 0;
+    int fails = 0, ok_logged = 0, boot_ok = 0, valve_seen = 0, seen = 0;
     uint64_t next_tick = 0, next_try = 0;
     while (g_pad_run) {
         uint64_t t = sceKernelGetProcessTime();
         if (t >= next_tick) {
             nx_engine_tick();
             next_tick = t + 1000000;
-            if (!boot_ok && nx_engine_info()->flips > 900) { boot_ok = 1; pf_write_file(g_boot_path, "ok\n", 3); }
+            const nx_engine_info_t* inf = nx_engine_info();
+            if (inf->flips && !(seen & 1)) { seen |= 1; boot_stage(g_title_s, "primer fotograma del juego"); }
+            if (inf->state >= NX_ST_WARMUP && !(seen & 2)) { seen |= 2; boot_stage(g_title_s, "pantalla del juego registrada"); }
+            if (inf->state == NX_ST_RUN && !(seen & 4)) { seen |= 4; boot_stage(g_title_s, "menu listo"); }
+            if (inf->full_ready && !(seen & 8)) { seen |= 8; boot_stage(g_title_s, "efectos activos"); }
+            if (!boot_ok && (nx_engine_info()->flips > 900 || (g_level >= 2 && t > 60000000))) {
+                boot_ok = 1;
+                boot_level_ok();
+                boot_stage(g_title_s, "jugando: arranque correcto");
+            }
             if (g_valve_count != valve_seen) {
                 valve_seen = g_valve_count;
                 nx_engine_note("[mem] el juego necesito memoria: se le devolvio la reserva de trabajo");
@@ -413,30 +415,65 @@ static void* pad_thread(void* arg)
     return NULL;
 }
 
-// reserva temprana. Si el arranque anterior con reserva no llego a jugarse
-// (el juego se cerro antes de ~30 s), esta vez se arranca sin la de trabajo.
-static void early_reserve(const char* title)
+// Arranque por niveles (como el "crash guard" de VCFG v2.23). Si un arranque
+// no llega a jugarse (~30 s de fotogramas), el siguiente usa un nivel mas
+// prudente; el nivel que funciono queda guardado para ese juego:
+//   0  4 MiB tempranos para el menu; los efectos piden memoria tarde (si hay)
+//   1  sin reserva temprana: todo se pide tarde
+//   2  pasivo: sin hooks; el juego corre como si el plugin no estuviera
+// (la reserva de efectos de 112 MiB al arrancar hacia cerrar GTA V: quedo
+// apagada; WORK_POOL_MB y la valvula siguen para probar en otros juegos)
+#define BOOT_LEVELS 3
+#define EARLY_WORK 0
+static int g_level;
+static const char* const LEVEL_NAME[BOOT_LEVELS] = { "normal", "sin reserva temprana", "pasivo (sin efectos)" };
+
+static void boot_stage(const char* title, const char* what)
+{
+    char m[160];
+    int n = snprintf(m, sizeof m, "[etapa] %s nivel %d: %s\n", title, g_level, what);
+    if (n > 0) pf_append_file("/data/vcfg_nx/logs/cargas.txt", m, n);
+}
+
+static void boot_level_pick(const char* title)
 {
     snprintf(g_boot_path, sizeof g_boot_path, "/data/vcfg_nx/boot-%.12s.txt", title);
-    char prev[32] = { 0 };
+    char prev[64] = { 0 };
     int n = pf_read_file(g_boot_path, prev, sizeof prev - 1);
-    int skip_work = n > 0 && !strncmp(prev, "pending", 7);
+    int lv = 0, pending = 0;
+    if (n > 0) {
+        const char* l = strstr(prev, "level=");
+        lv = l ? atoi(l + 6) : 0;
+        pending = l && strstr(prev, "state=pending") != NULL;   // los archivos de la 2.48 o antes no cuentan
+    }
+    if (lv < 0 || lv >= BOOT_LEVELS) lv = 0;
+    if (pending && lv < BOOT_LEVELS - 1) lv++;   // el anterior se cerro antes de jugar: mas prudente
+
+    g_level = lv;
+    char t[48];
+    int k = snprintf(t, sizeof t, "level=%d state=pending\n", lv);
+    pf_write_file(g_boot_path, t, k);
+}
+
+static void boot_level_ok(void)
+{
+    char t[48];
+    int k = snprintf(t, sizeof t, "level=%d state=ok\n", g_level);
+    pf_write_file(g_boot_path, t, k);
+}
+
+static void early_reserve(const char* title)
+{
+    if (g_level >= 1) return;
     pool_init(&g_base, BASE_POOL);
-    if (!skip_work && !nx_engine_info()->safe_mode) pool_init(&g_work, (size_t)WORK_POOL_MB << 20);
-    pf_write_file(g_boot_path, g_work.va ? "pending" : "skipped", 7);
-    HOOK32(sceKernelAllocateDirectMemory);
-    g_hooked_dm = 1;
-    void* mdm = find_sym("sceKernelAllocateMainDirectMemory");
-    if (mdm) {
-        Detour_Construct(&Detour_sceKernelAllocateMainDirectMemory, DetourMode_x32);
-        Detour_DetourFunction(&Detour_sceKernelAllocateMainDirectMemory, (uint64_t)mdm,
-                              (void*)&sceKernelAllocateMainDirectMemory_hook);
-        g_hooked_main_dm = 1;
+    if (EARLY_WORK) {
+        pool_init(&g_work, (size_t)WORK_POOL_MB << 20);
+        HOOK32(sceKernelAllocateDirectMemory);   // la valvula (v2.23 engancha la misma funcion)
+        g_hooked_dm = 1;
     }
     char m[160];
-    int k = snprintf(m, sizeof m, "[mem] reserva temprana: base %s, trabajo %s (%d MiB)%s; libre del sistema %zu MiB\n",
-                     g_base.va ? "ok" : "FALLO", g_work.va ? "ok" : "no", WORK_POOL_MB,
-                     skip_work ? " [el arranque anterior no termino: sin reserva de trabajo]" : "", raw_avail() >> 20);
+    int k = snprintf(m, sizeof m, "[mem] reserva temprana: base %s, trabajo %s; libre del sistema %zu MiB\n",
+                     g_base.va ? "ok" : "FALLO", g_work.va ? "ok" : "no", raw_avail() >> 20);
     if (k > 0) pf_append_file("/data/vcfg_nx/logs/cargas.txt", m, k);
 }
 
@@ -458,6 +495,7 @@ s32 attr_public plugin_load(s32 argc, const char* argv[])
     if (sys_sdk_proc_info(&info) == 0)
         memcpy(title, info.titleid, sizeof title - 1);
     make_dirs();
+    memcpy(g_title_s, title, sizeof g_title_s);
     boot_mark("plugin_load", title);
     // aviso visible lo antes posible: si no aparece al abrir el juego, GoldHEN no cargo el plugin
     {
@@ -471,13 +509,28 @@ s32 attr_public plugin_load(s32 argc, const char* argv[])
         final_printf("proceso '%s': sin hooks (%s)\n", title, nx_engine_info()->status);
         return 0;
     }
-    g_temp = (temp_fn)find_sym("sceKernelGetCpuTemperature");
+    boot_level_pick(title);
+    {
+        char n[128];
+        snprintf(n, sizeof n, "VCFG-NX: arranque en nivel %d (%s)", g_level, LEVEL_NAME[g_level]);
+        if (g_level) pf_notify(n);
+    }
+    boot_stage(title, "inicio");
+    if (g_level >= 2) {   // pasivo: solo se deja constancia; si el juego igual se cierra, no es el plugin
+        boot_stage(title, "pasivo: sin hooks");
+        g_pad_run = 1;
+        if (scePthreadCreate(&g_pad_thread, NULL, pad_thread, NULL, "vcfg_nx_pad") != 0) g_pad_run = 0;
+        return 0;
+    }
+    if (g_level == 0) g_temp = (temp_fn)find_sym("sceKernelGetCpuTemperature");
     early_reserve(title);
+    boot_stage(title, "memoria lista");
     HOOK32(sceVideoOutRegisterBuffers);
     HOOK32(sceVideoOutSetFlipRate);
     HOOK32(sceGnmSubmitAndFlipCommandBuffers);
     HOOK32(sceGnmSubmitAndFlipCommandBuffersForWorkload);
     HOOK32(sceVideoOutSubmitFlip);
+    boot_stage(title, "hooks de video listos");
     // el mando NO se engancha (como VCFG v2.23: "pad entry hooks disabled"):
     // solo lo lee el hilo propio. El juego sigue recibiendo los botones con el
     // menu abierto, pero no se toca nada de su lectura del mando.
@@ -492,6 +545,7 @@ s32 attr_public plugin_load(s32 argc, const char* argv[])
     pf_log(m);
     pf_append_file("/data/vcfg_nx/logs/cargas.txt", m, (int)strlen(m));
     nx_engine_flush_log();
+    boot_stage(title, "plugin_load terminado");
     return 0;
 }
 
@@ -506,7 +560,7 @@ s32 attr_public plugin_unload(s32 argc, const char* argv[])
     UNHOOK(sceGnmSubmitAndFlipCommandBuffersForWorkload);
     UNHOOK(sceVideoOutSubmitFlip);
     if (g_hooked_dm) { g_hooked_dm = 0; UNHOOK(sceKernelAllocateDirectMemory); }
-    if (g_hooked_main_dm) { g_hooked_main_dm = 0; UNHOOK(sceKernelAllocateMainDirectMemory); }
+
     return 0;
 }
 

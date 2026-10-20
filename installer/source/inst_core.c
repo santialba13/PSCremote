@@ -184,8 +184,8 @@ static char* remove_lines(const char* ini, const char* from, const char* to)
     return out;
 }
 
-// deja en [section] la sonda y el plugin (en ese orden) justo debajo del
-// encabezado. NULL si ya estaba exactamente asi
+// deja en [section] el plugin justo debajo del encabezado (y quita la sonda de
+// versiones anteriores). NULL si ya estaba exactamente asi
 char* inst_ini_add(const char* ini, const char* section)
 {
     const char* s = find_section(ini, section);
@@ -203,7 +203,7 @@ char* inst_ini_add(const char* ini, const char* section)
     const char* eol = strchr(s, '\n');
     size_t at = eol ? (size_t)(eol - base) + 1 : len;
     memcpy(out, base, at);
-    int k = sprintf(out + at, "%s%s\n%s\n", eol ? "" : "\n", PROBE_LINE, PLUGIN_LINE);
+    int k = sprintf(out + at, "%s%s\n", eol ? "" : "\n", PLUGIN_LINE);   // la sonda ya no se instala (se quita si estaba)
     strcpy(out + at + k, base + at);
     free(base);
     if (!strcmp(out, ini)) { free(out); return NULL; }
