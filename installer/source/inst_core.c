@@ -261,3 +261,39 @@ int inst_log_summary(const char* log, char* out, size_t n)
     snprintf(out, n, "carg\xf3, esperando que el juego registre su pantalla");
     return 1;
 }
+
+// plugins listados en la seccion [section]: 1 si esta el nuestro; en `others`
+// los nombres de los demas .prx (separados por ", ")
+int inst_ini_section_plugins(const char* ini, const char* section, char* others, size_t n)
+{
+    if (n) others[0] = 0;
+    const char* s = find_section(ini, section);
+    if (!s) return 0;
+    const char* end = section_end(s);
+    int ours = 0;
+    size_t o = 0;
+    const char* p = strchr(s, '\n');
+    while (p && p < end) {
+        ++p;
+        const char* eol = strchr(p, '\n');
+        size_t len = eol ? (size_t)(eol - p) : strlen(p);
+        if (p + len > end) len = (size_t)(end - p);
+        while (len && (p[len - 1] == '\r' || p[len - 1] == ' ')) --len;
+        const char* q = p;
+        while (q < p + len && (*q == ' ' || *q == '\t')) ++q;
+        if (q < p + len && *q == '/') {
+            if ((size_t)(p + len - q) == strlen(PLUGIN_LINE) && !strncmp(q, PLUGIN_LINE, strlen(PLUGIN_LINE))) {
+                ours = 1;
+            } else {
+                const char* base = q;
+                for (const char* t = q; t < p + len; ++t) if (*t == '/') base = t + 1;
+                int bl = (int)(p + len - base);
+                int k = snprintf(others + o, n > o ? n - o : 0, "%s%.*s", o ? ", " : "", bl, base);
+                if (k > 0) o += (size_t)k;
+                if (o >= n) o = n ? n - 1 : 0;
+            }
+        }
+        p = eol;
+    }
+    return ours;
+}

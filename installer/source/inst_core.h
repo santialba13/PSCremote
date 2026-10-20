@@ -46,3 +46,7 @@ char* inst_ini_remove_all(const char* ini);
 // resume /data/vcfg_nx/logs/<ID>.log (lo escribe el plugin dentro del juego) en
 // una frase. Devuelve 0 = no cargo, 1 = cargo sin poder actuar, 2 = cargo, 3 = activo
 int inst_log_summary(const char* log, char* out, size_t n);
+
+// plugins de la seccion [section] de plugins.ini: 1 si esta VCFG-NX; los demas
+// .prx (solo el nombre) quedan en `others`, separados por ", "
+int inst_ini_section_plugins(const char* ini, const char* section, char* others, size_t n);

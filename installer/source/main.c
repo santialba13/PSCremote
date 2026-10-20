@@ -57,7 +57,7 @@
 #define CFG_DIR ROOT "/data/vcfg_nx"
 #define TITLE_ID "VCNX00001"
 #define CONTENT_ID "IV0000-VCNX00001_00-VCFGNXINSTALL000"
-#define VERSION "2.4.0"
+#define VERSION "2.4.1"
 
 #define W 1920
 #define H 1080
@@ -258,6 +258,7 @@ static struct {
     int icons_ok, icons_fail, icons_from_pkg;
     char icon_fail_path[200];
     char save_error[200];
+    uint32_t line_color[9];
 } diag;
 
 enum { V_GRID, V_GAME, V_MODAL };
@@ -656,18 +657,6 @@ static int status_dot(int x, int y, int font, uint32_t dot, uint32_t fg, const c
     return ui_text(font, x + 18, y, fg, label);
 }
 
-// pastilla de vidrio con punto de color
-static int status_pill(int x, int y, uint32_t dot, const char* label)
-{
-    int w = ui_text_w(FONT_SMALL, label) + 46, h = ui_line_h(FONT_SMALL) + 14;
-    ui_rrect(x, y, w, h, h / 2, 0x12FFFFFFu);
-    ui_rrect_stroke_grad(x, y, w, h, h / 2, 1, 0x2EFFFFFFu, 0x08FFFFFFu);
-    ui_circle(x + 20, y + h / 2, 8, (dot & 0xFFFFFFu) | 0x38000000u);
-    ui_circle(x + 20, y + h / 2, 4, dot);
-    ui_text(FONT_SMALL, x + 34, y + 7, C_TEXT, label);
-    return x + w;
-}
-
 typedef struct { int btn; const char* chip; const char* label; } hint_t;   // btn < 0: chip de texto
 
 static void draw_hints(const hint_t* h, int n)
@@ -992,15 +981,17 @@ static void draw_settings_view(void)
 }
 
 // ---------------------------------------------------------------- dialogos
-#define MODAL_W 860
-#define MODAL_H 580
+static int modal_w = 860, modal_h = 580;   // el diagnostico usa uno mas grande
+#define MODAL_W modal_w
+#define MODAL_H modal_h
 #define MODAL_X ((W - MODAL_W) / 2)
 #define MODAL_Y ((H - MODAL_H) / 2)
 
 typedef struct {
     const char* title;
     uint32_t title_color;
-    const char* body[5];
+    const char* body[9];
+    uint32_t body_color[9];   // 0 = el color normal
     const char* opts[6];
     int nopts, row;
 } modal_t;
@@ -1038,12 +1029,13 @@ static void draw_modal(void)
     ui_rrect_grad(MODAL_X + 48, MODAL_Y + 36, 40, 4, 2, C_ACCENT, C_ACCENT2);
     ui_text(FONT_H1, MODAL_X + 48, MODAL_Y + 52, modal.title_color, modal.title);
     int y = MODAL_Y + 120;
-    for (int i = 0; i < 5 && modal.body[i]; ++i) {
-        char l1[200], l2[200];
+    for (int i = 0; i < 9 && modal.body[i]; ++i) {
+        char l1[300], l2[300];
+        uint32_t bc = modal.body_color[i] ? modal.body_color[i] : C_DIM;
         ui_text_wrap2(FONT_SMALL, modal.body[i], MODAL_W - 96, l1, l2, sizeof l1);
-        ui_text(FONT_SMALL, MODAL_X + 48, y, C_DIM, l1);
+        ui_text(FONT_SMALL, MODAL_X + 48, y, bc, l1);
         y += 29;
-        if (l2[0]) { ui_text(FONT_SMALL, MODAL_X + 48, y, C_DIM, l2); y += 29; }
+        if (l2[0]) { ui_text(FONT_SMALL, MODAL_X + 48, y, bc, l2); y += 29; }
         y += 6;
     }
     int oy = MODAL_Y + MODAL_H - 40 - modal.nopts * 58;
@@ -1105,12 +1097,93 @@ static void repaint_modal_options(void)
 // -------------------------------------------------------------- dialogos (logica)
 enum { M_NONE, M_EXIT, M_OPTIONS, M_CONFIRM_UNINSTALL, M_CONFIRM_RESET, M_SAVE_ERROR, M_DIAG, M_SAVED };
 static int modal_kind;
-static char modal_lines[5][200];
+static char modal_lines[9][300];
+
+// que tan lejos llego VCFG-NX: archivos instalados, plugins.ini, registros que
+// deja el plugin dentro de los juegos. Tambien escribe /data/vcfg_nx/reporte.txt
+static void diag_collect(void)
+{
+    const inst_game_t* g = nvis ? &games[vis[sel]] : NULL;
+    char (*L)[300] = modal_lines;
+    for (int i = 0; i < 9; ++i) { L[i][0] = 0; diag.line_color[i] = 0; }
+    snprintf(L[0], 300, "GoldHEN SDK %x.%02x \xb7 acceso fuera del sandbox: %s \xb7 app %s", diag.sdk >> 8,
+             diag.sdk & 0xFF, jailed ? "NO" : "s\xed", VERSION);
+    if (jailed) diag.line_color[0] = C_WARN;
+    snprintf(L[1], 300, "Plugin dentro de la app: %s (%zu KB)", prx ? prx_from : "NO ENCONTRADO", prx_len >> 10);
+    if (!prx) diag.line_color[1] = C_DANGER;
+    size_t inst_len = 0;
+    uint8_t* inst = read_bytes(PLUGIN_DST, &inst_len);
+    int same = inst && prx && inst_len == prx_len && !memcmp(inst, prx, prx_len);
+    free(inst);
+    snprintf(L[2], 300, "Plugin instalado (/data/GoldHEN/plugins/vcfg_nx.prx): %s",
+             !inst ? "NO - guard\xe1 y sal\xed para instalarlo" : same ? "s\xed, igual al de la app"
+                   : "s\xed, pero es otra versi\xf3n - guard\xe1 de nuevo");
+    diag.line_color[2] = !inst ? C_DANGER : same ? C_OK : C_WARN;
+    char* ini = read_text(PLUGINS_INI);
+    char others[200] = "";
+    int ours = g ? inst_ini_section_plugins(ini, g->id, others, sizeof others) : 0;
+    if (!ini[0]) snprintf(L[3], 300, "plugins.ini: NO EXISTE (\xbfGoldHEN con plugins instalado?)");
+    else if (g) snprintf(L[3], 300, "plugins.ini [%s]: %s", g->id,
+                         ours ? "incluye VCFG-NX" : "NO incluye VCFG-NX - activalo con X y guard\xe1");
+    diag.line_color[3] = ours ? C_OK : C_DANGER;
+    snprintf(L[4], 300, "Otros plugins en este juego: %s", others[0] ? others : "ninguno");
+    if (others[0]) {
+        strncat(L[4], " - pueden chocar con VCFG-NX (quitalos para probar)", 299 - strlen(L[4]));
+        diag.line_color[4] = C_WARN;
+    }
+    char* loads = read_text(CFG_DIR "/logs/cargas.txt");
+    int nload = 0;
+    for (const char* q = loads; (q = strstr(q, "cargado en")); ++q) ++nload;
+    const char* last = NULL;
+    for (const char* q = loads; (q = strstr(q, "[main]")); ++q) last = q;
+    char lastl[160] = "";
+    if (last) { const char* e = strchr(last, '\n'); snprintf(lastl, sizeof lastl, "%.*s", e ? (int)(e - last) : 150, last); }
+    int starts = 0;
+    for (const char* q = loads; (q = strstr(q, "module_start")); ++q) ++starts;
+    if (nload) snprintf(L[5], 300, "Cargas del plugin en juegos: %d \xb7 \xfaltima: %s", nload, lastl);
+    else if (starts) snprintf(L[5], 300, "GoldHEN abri\xf3 el plugin %d vez/veces pero plugin_load no termin\xf3", starts);
+    else snprintf(L[5], 300, "GoldHEN nunca carg\xf3 VCFG-NX en ning\xfan juego (no hay registro de carga)");
+    diag.line_color[5] = nload ? C_OK : C_DANGER;
+    char sum[160] = "";
+    char* log = NULL;
+    if (g) {
+        char path[160];
+        snprintf(path, sizeof path, CFG_DIR "/logs/%s.log", g->id);
+        log = read_text(path);
+        int k = inst_log_summary(log, sum, sizeof sum);
+        diag.line_color[6] = k == 3 ? C_OK : k == 0 ? C_DANGER : C_WARN;
+    }
+    snprintf(L[6], 300, "%.40s: %s", g ? g->title : "Juego", g ? sum : "no hay juegos");
+    snprintf(L[7], 300, "\xdaltimo error al guardar: %s", diag.save_error[0] ? diag.save_error : "ninguno");
+    // reporte completo para compartir
+    size_t cap = strlen(ini) + strlen(loads) + (log ? strlen(log) : 0) + 8192;
+    char* rep = malloc(cap);
+    if (rep) {
+        size_t o = 0;
+        o += (size_t)snprintf(rep + o, cap - o, "VCFG-NX %s - diagnostico\n\n", VERSION);
+        for (int i = 0; i < 8; ++i) o += (size_t)snprintf(rep + o, cap - o, "%s\n", L[i]);
+        o += (size_t)snprintf(rep + o, cap - o, "\n==== plugins.ini ====\n%s\n", ini);
+        size_t ll = strlen(loads);
+        o += (size_t)snprintf(rep + o, cap - o, "\n==== logs/cargas.txt (final) ====\n%s\n", loads + (ll > 4096 ? ll - 4096 : 0));
+        if (log) {
+            size_t gl = strlen(log);
+            o += (size_t)snprintf(rep + o, cap - o, "\n==== logs/%s.log (final) ====\n%s\n", g->id, log + (gl > 12288 ? gl - 12288 : 0));
+        }
+        mkdir(CFG_DIR, 0777);
+        int ok = write_text_verified(CFG_DIR "/reporte.txt", rep) == 0;
+        snprintf(L[8], 300, ok ? "Reporte completo guardado en /data/vcfg_nx/reporte.txt" : "No se pudo guardar el reporte");
+        free(rep);
+    }
+    free(log);
+    free(loads);
+    free(ini);
+}
 
 static void open_modal(int kind)
 {
     memset(&modal, 0, sizeof modal);
     modal_kind = kind;
+    modal_w = 860; modal_h = 580;
     modal.title_color = C_TEXT;
     if (view != V_MODAL) {
         modal_of = view;
@@ -1157,26 +1230,9 @@ static void open_modal(int kind)
         break;
     case M_DIAG:
         modal.title = "Diagn\xf3stico";
-        snprintf(modal_lines[0], 200, "GoldHEN SDK %x.%02x \xb7 acceso fuera del sandbox: %s", diag.sdk >> 8, diag.sdk & 0xFF,
-                 jailed ? "NO" : "s\xed");
-        snprintf(modal_lines[1], 200, "Plugin en la app: %s", prx ? prx_from : "NO ENCONTRADO");
-        snprintf(modal_lines[2], 200, "Juegos: %d \xb7 iconos: %d (del app.pkg: %d) \xb7 sin icono: %d%s%s", ngames,
-                 diag.icons_ok, diag.icons_from_pkg, diag.icons_fail, diag.icons_fail ? " \xb7 primero: " : "",
-                 diag.icons_fail ? diag.icon_fail_path : "");
-        snprintf(modal_lines[3], 200, "\xdaltimo error al guardar: %s", diag.save_error[0] ? diag.save_error : "ninguno");
-        {   // lo que dejo el plugin la ultima vez que se abrio el juego elegido
-            const inst_game_t* g = nvis ? &games[vis[sel]] : NULL;
-            char path[160], sum[160];
-            char* log = NULL;
-            if (g) {
-                snprintf(path, sizeof path, CFG_DIR "/logs/%s.log", g->id);
-                log = read_text(path);
-            }
-            inst_log_summary(log, sum, sizeof sum);
-            snprintf(modal_lines[4], 200, "%.40s: %s", g ? g->title : "Juego", g ? sum : "no hay juegos");
-            free(log);
-        }
-        for (int i = 0; i < 5; ++i) modal.body[i] = modal_lines[i];
+        modal_w = 1400; modal_h = 900;
+        diag_collect();
+        for (int i = 0; i < 9; ++i) { modal.body[i] = modal_lines[i]; modal.body_color[i] = diag.line_color[i]; }
         modal.opts[0] = "Volver"; modal.nopts = 1;
         break;
     case M_SAVED:

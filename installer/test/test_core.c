@@ -75,9 +75,9 @@ int main(void)
           "con .ini: por defecto + lo propio");
     // entradas de un PKG real (el de VCFG-NX): icon0.png y param.sfo sin cifrar
     size_t ilen = 0, slen = 0;
-    unsigned char* icon = inst_pkg_entry("../../dist/VCFG-NX_v2.40.pkg", PKG_ENTRY_ICON0, &ilen);
+    unsigned char* icon = inst_pkg_entry("../../dist/VCFG-NX_v2.41.pkg", PKG_ENTRY_ICON0, &ilen);
     CHECK(icon && ilen > 1000 && !memcmp(icon, "\x89PNG", 4), "icon0.png del PKG");
-    unsigned char* sfo = inst_pkg_entry("../../dist/VCFG-NX_v2.40.pkg", PKG_ENTRY_PARAM_SFO, &slen);
+    unsigned char* sfo = inst_pkg_entry("../../dist/VCFG-NX_v2.41.pkg", PKG_ENTRY_PARAM_SFO, &slen);
     char ptitle[64] = "";
     CHECK(sfo && inst_sfo_title(sfo, slen, ptitle, sizeof ptitle) == 0 && !strcmp(ptitle, "VCFG-NX"), "param.sfo del PKG");
     free(icon); free(sfo);
@@ -90,6 +90,12 @@ int main(void)
     nx_config_parse(&back, txt);
     CHECK(!memcmp(&back.framegen, &g[2].cfg.framegen, sizeof(int)) && back.sr == 3 && back.eco == 1 && back.aa == 0
           && back.temp_limit == 75 && back.dynamic == g[2].cfg.dynamic, "formato del .ini ida y vuelta");
+    char oth[200];
+    const char* ini2 = "[default]\r\n/data/GoldHEN/plugins/afr.prx\r\n[CUSA00411]\r\n/data/GoldHEN/plugins/gnmscale_plugin.prx\r\n"
+                       "  /data/GoldHEN/plugins/vcfg_nx.prx\r\n;/data/GoldHEN/plugins/x.prx\r\n[CUSA1]\n";
+    CHECK(inst_ini_section_plugins(ini2, "CUSA00411", oth, sizeof oth) == 1 && !strcmp(oth, "gnmscale_plugin.prx"),
+          "plugins de una seccion (CRLF, comentarios, otros plugins)");
+    CHECK(inst_ini_section_plugins(ini2, "CUSA1", oth, sizeof oth) == 0 && !oth[0], "seccion sin plugins");
     char sum[200];
     CHECK(inst_log_summary(NULL, sum, sizeof sum) == 0, "registro: sin archivo");
     CHECK(inst_log_summary("[      0] [engine] plugin_load\n[      0] [vo] formato 0xc1060000 1920x1080 no soportado: x\n",

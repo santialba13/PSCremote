@@ -23,7 +23,7 @@
 attr_public const char* g_pluginName = "vcfg_nx";
 attr_public const char* g_pluginDesc = "Frame generation + reescalado IA (NXSR) + SMAA/FSR1, menu L3+R3";
 attr_public const char* g_pluginAuth = "VCFG-NX";
-attr_public u32 g_pluginVersion = 0x00000240; // 2.40
+attr_public u32 g_pluginVersion = 0x00000241; // 2.41
 
 // prototipos de las variantes ForWorkload (OpenOrbis las declara sin argumentos)
 typedef s32 (*submit_wl_t)(u64, u32, void**, u32*, void**, u32*);
@@ -319,6 +319,16 @@ static void* pad_thread(void* arg)
     return NULL;
 }
 
+// marca en logs/cargas.txt apenas GoldHEN abre el plugin: si el juego no deja
+// ninguna, GoldHEN no lo cargo; si queda module_start sin "cargado en", algo
+// fallo en el medio
+static void boot_mark(const char* what, const char* title)
+{
+    char m[96];
+    int n = snprintf(m, sizeof m, "[boot] %s %x.%02x %s\n", what, g_pluginVersion >> 8, g_pluginVersion & 0xFF, title);
+    if (n > 0) pf_append_file("/data/vcfg_nx/logs/cargas.txt", m, n);
+}
+
 s32 attr_public plugin_load(s32 argc, const char* argv[])
 {
     final_printf("<%s ver 0x%08x> %s\n", g_pluginName, g_pluginVersion, __func__);
@@ -327,6 +337,7 @@ s32 attr_public plugin_load(s32 argc, const char* argv[])
     if (sys_sdk_proc_info(&info) == 0)
         memcpy(title, info.titleid, sizeof title - 1);
     make_dirs();
+    boot_mark("plugin_load", title);
     nx_engine_init(&g_pf, title);
     if (nx_engine_info()->state == NX_ST_OFF) {
         final_printf("proceso '%s': sin hooks (%s)\n", title, nx_engine_info()->status);
@@ -385,5 +396,10 @@ s32 attr_public plugin_unload(s32 argc, const char* argv[])
     return 0;
 }
 
-s32 attr_module_hidden module_start(s64 argc, const void* args) { return 0; }
+s32 attr_module_hidden module_start(s64 argc, const void* args)
+{
+    make_dirs();
+    boot_mark("module_start", "");
+    return 0;
+}
 s32 attr_module_hidden module_stop(s64 argc, const void* args) { return 0; }
