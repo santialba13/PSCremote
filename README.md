@@ -1,4 +1,4 @@
-# VCFG-NX 2.0: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
+# VCFG-NX 2.1: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
 
 Rediseño del **VCFG v2.14** (generador de fotogramas en beta de la comunidad
 de GoldHEN) que además incorpora un **modelo de reescalado/realce propio,
@@ -6,7 +6,7 @@ NXSR**, como alternativa a GNMScale pero sin el granulado que este agrega.
 Todo con la interfaz de VCFG: app instaladora con lista de juegos y menú en
 pantalla con **L3+R3**.
 
-**Descarga:** [`dist/VCFG-NX_v2.00.pkg`](dist/VCFG-NX_v2.00.pkg) (fPKG, app) ·
+**Descarga:** [`dist/VCFG-NX_v2.10.pkg`](dist/VCFG-NX_v2.10.pkg) (fPKG, app) ·
 [`dist/vcfg_nx.prx`](dist/vcfg_nx.prx) (plugin suelto) · [`dist/SHA256SUMS.txt`](dist/SHA256SUMS.txt)
 
 | servicio | qué hace |
@@ -38,7 +38,8 @@ juego):
 | GNMScale fidelity | 25.16 | 0.828 | 35.56 | 25.6 % |
 | GNMScale sharp-fast | 24.92 | 0.829 | 35.71 | 26.2 % |
 | GNMScale sharp | 25.11 | 0.825 | 35.52 | 26.5 % |
-| **NXSR (VCFG-NX)** | **27.68** | **0.895** | **42.73** | **2.2 %** |
+| **NXSR Rápido (VCFG-NX)** | **27.74** | **0.896** | **42.71** | **2.2 %** |
+| **NXSR Calidad (VCFG-NX, PS4 Pro)** | **27.90** | **0.900** | **44.25** | **1.5 %** |
 
 * GNMScale empeora la imagen: amplifica ruido en zonas planas (el granulado)
   y deja halos en uno de cada cuatro píxeles.
@@ -46,6 +47,24 @@ juego):
   PSNR es moderada: con ~1000 operaciones por píxel (lo que la GPU de la PS4
   puede pagar a 1080p junto con la generación de fotogramas) no se puede
   "inventar" mucho detalle; lo que gana es nitidez real sin artefactos.
+
+## Novedades de la 2.1
+
+* **Dos modelos NXSR**: Rápido (16 canales, ~1 000 operaciones por píxel) y
+  Calidad (24 canales y dos capas, ~3 300), que en "Auto" se usa solo si el
+  juego corre en modo PS4 Pro. Calidad además limpia ruido en zonas planas y
+  deja menos halos que la imagen original.
+* **Calidad dinámica**: si la GPU no da abasto baja un escalón (Calidad →
+  Rápido → sin SMAA → sin NXSR → sin FG) en vez de apagarse, y vuelve a subir
+  sola cuando hay margen.
+* **Protección térmica**: lee la temperatura cada 2 s; sobre 80 °C baja la
+  calidad, sobre 86 °C pausa los efectos hasta que enfríe. **Modo ahorro**:
+  modelo Rápido, sin SMAA y límite de 75 °C.
+* **Más estable**: si el juego vuelve a registrar sus buffers (al volver del
+  reposo, por ejemplo) se adapta en lugar de apagarse.
+* **Más eficiente**: NXSR lee cada píxel una vez en vez de tres; el modelo
+  Rápido se reentrenó con el doble de datos y una pérdida que reduce el
+  parpadeo en movimiento (−14 %).
 
 ## Protecciones (para que no se cierre el juego ni pase nada a la consola)
 
@@ -79,7 +98,7 @@ no son juegos (`CUSA`/`PLAS`).
 ## Instalar y usar
 
 1. Requiere **GoldHEN** con soporte de plugins.
-2. Instalar `VCFG-NX_v2.00.pkg` y abrir **VCFG-NX**.
+2. Instalar `VCFG-NX_v2.10.pkg` y abrir **VCFG-NX**.
 3. En la lista de juegos: **X** activa/desactiva el juego, **TRIÁNGULO** todos,
    **CUADRADO** ajustes por defecto (FG, NXSR Suave/Normal/Fuerte, SMAA, RCAS),
    **OPTIONS** desinstalar, **CÍRCULO** guardar y salir.
@@ -93,6 +112,10 @@ Configuración (`/data/vcfg_nx/config.ini`, o `/data/vcfg_nx/<TITLE_ID>.ini` por
 ```ini
 framegen = 1        ; 30 -> 60
 sr = 2              ; NXSR: 0 off, 1 suave, 2 normal, 3 fuerte
+sr_model = 0        ; 0 auto (Calidad en PS4 Pro), 1 rapido, 2 calidad
+dynamic = 1         ; calidad dinamica
+eco = 0             ; modo ahorro (menos calor)
+temp_limit = 80     ; grados C; 0 = sin control termico
 aa = 1              ; SMAA 1x
 rcas = 0            ; nitidez FSR1 cuando NXSR esta apagado: 0..3
 fps_counter = 0
@@ -118,7 +141,7 @@ shaders/                       kernels de GPU (.cl) -> ISA GCN gfx701
 plugin/source/                 plugin: motor (nx_engine), tubería GPU, menú en pantalla, hooks
 plugin/test/                   host_test, emulador del DCB, simulador de consola con ASan
 installer/                     app (interfaz VCFG), edición segura de plugins.ini, PKG
-weights/                       pesos entrenados (nxflow.pkl, nxsr.pkl)
+weights/                       pesos entrenados (nxflow.pkl, nxsr.pkl, nxsr_hq.pkl)
 ```
 
 ## Compilar y probar
@@ -128,7 +151,7 @@ pip install "jax[cpu]" optax pillow pyelftools pyyaml
 shaders/build_gcn.sh                                   # .cl -> ISA gfx701 -> plugin/include/nx_shaders.h
 make -C plugin/test all
 plugin/test/host_test                                  # ABI de kernargs + PM4 de cada caso
-plugin/test/console_sim                                # 11 escenarios de consola (memoria, cierres, GPU, menú)
+plugin/test/console_sim                                # 18 escenarios: memoria, cierres, GPU, calor, menú
 python3 plugin/test/test_gpu_path.py video.mp4 weights/nxflow.pkl
 python3 plugin/test/test_smaa_path.py
 python3 plugin/test/test_sr_path.py                    # NXSR: DCB emulado vs modelo

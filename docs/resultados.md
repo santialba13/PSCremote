@@ -126,7 +126,9 @@ que se salen más de 4/255 del rango 3x3 del original limpio.
 | GNMScale fidelity | 25.16 | 0.828 | 35.56 | 25.6 % |
 | GNMScale sharp-fast | 24.92 | 0.829 | 35.71 | 26.2 % |
 | GNMScale sharp | 25.11 | 0.825 | 35.52 | 26.5 % |
-| **NXSR (VCFG-NX)** | **27.68** | **0.895** | **42.73** | **2.2 %** |
+| NXSR 2.0 | 27.68 | 0.895 | 42.73 | 2.2 % |
+| **NXSR 2.1 Rápido** | **27.74** | **0.896** | **42.71** | **2.2 %** |
+| **NXSR 2.1 Calidad** | **27.90** | **0.900** | **44.25** | **1.5 %** |
 
 * NXSR: +0,40 dB y +0,009 SSIM sobre no hacer nada, sin grano (zonas planas
   incluso un poco mejor, porque limpia ruido) y con halos al nivel del
@@ -138,6 +140,29 @@ que se salen más de 4/255 del rango 3x3 del original limpio.
 * Experimentos: margen del limitador 0 (27,55) vs 0,25 (27,49) vs sin
   limitador (27,47); C = 24 con 2 capas igualó a C = 16 con 1 al doble de
   coste, por eso quedó C = 16.
+
+### 2.1: modelos nuevos
+
+Parpadeo = cambio medio de la salida (en /255) cuando la imagen se mueve un
+píxel en diagonal; los filtros sin reescalado interno (RCAS, GNMScale) dan 0
+por construcción.
+
+| modelo | operaciones/píxel | PSNR | parpadeo |
+|---|---|---|---|
+| NXSR 2.0 | 1 056 | 27.68 | 0.61 |
+| NXSR 2.1 Rápido | 1 056 | 27.74 | 0.52 |
+| NXSR 2.1 Calidad | 3 312 | 27.90 | 0.70 |
+
+* Datos: 32 000 recortes (antes 16 000). Entrenamiento: 20 000 pasos, ramas
+  1x1/identidad plegables (re-parametrización: +0,01 dB, mismo coste) y
+  pérdida de consistencia ante desplazamientos con peso 0,15 (con peso 1 el
+  parpadeo baja a 0,06 pero se pierden 0,27 dB).
+* Calidad con lr 8e-3 divergió; con 3e-3 entrenó estable. El entrenador ahora
+  vuelve al mejor punto y reduce el paso si la validación cae más de 1 dB
+  (actuó una vez en el Rápido).
+* La mejora sigue siendo moderada: son redes chicas para que quepan en la
+  GPU de la PS4. Calidad cuesta ~3 veces más que Rápido; la PS4 Pro tiene
+  ~2,3 veces la GPU de la normal.
 
 ## 6. Simulador de consola (evaluación segura)
 
@@ -160,3 +185,10 @@ los casos que en una PS4 terminarían en un juego cerrado.
 | 9. ForWorkload + 2000 llamadas aleatorias | índices/handles inválidos, argumentos basura | sin fallos de memoria |
 | 10. proceso que no es un juego | ni hooks | inactivo |
 | 11. juego con flips de CPU | `sceVideoOutSubmitFlip` | activo |
+| 3b. GPU trabada con trabajo propio | pausa y reintento a los ~3 min | vuelve a calidad completa |
+| 12. GPU justa (modelo de tiempos: juego 24 ms + efectos ~12 ms) | calidad dinámica | baja 1 escalón sin atrasos; con escena liviana vuelve a 0 |
+| 13. re-registro con la misma geometría | adopta los buffers nuevos | sigue activo |
+| 14. re-registro antes de activar efectos | empieza de nuevo | activo con la nueva resolución |
+| 15. modelo Auto en PS4 Pro / normal / `sr_model = 2` | elección del modelo | correcto |
+| 16. temperatura 65 → 82 → 90 → 77 → 68 °C | baja, pausa, no sube sin margen, recupera | correcto; lectura imposible ignorada |
+| 17. modo ahorro en Pro | sin Calidad ni SMAA | −48 % de grupos de GPU por fotograma |
