@@ -1,4 +1,4 @@
-# VCFG-NX 2.0: diseño
+# VCFG-NX 2.1: diseño
 
 Rediseño del frame generator VCFG para PS4 (GoldHEN). Objetivo: 30 → 60 fps
 con menos artefactos que el block-matching puro, más un escalado/nitidez tipo
@@ -117,7 +117,7 @@ aplica sobre la imagen a resolución del juego, antes de EASU/RCAS, tanto al
 fotograma generado como al real.
 
 
-## Arquitectura del plugin (2.0)
+## Arquitectura del plugin (2.x)
 
 ```
 main.c        hooks de GoldHEN -> llama al motor; implementa la "plataforma" con
@@ -138,7 +138,7 @@ lo ejecuta con una consola simulada (ver "Evaluación segura").
 | `WAIT_BUFFERS` | el juego todavía no registró sus framebuffers: todo pasa intacto |
 | `WARMUP` | el juego está cargando: **no se reserva nada** durante `warmup_flips` (600 ≈ 20 s) |
 | `RUN` | listo; los efectos solo si hubo memoria |
-| `DEGRADED` | la GPU no dio abasto o el juego cambió sus buffers: solo pasa los fotogramas |
+| `DEGRADED` | ni sin efectos da abasto la GPU (se reintenta a los ~3 min, 2 veces) o el juego cambió la geometría de sus buffers: solo pasa los fotogramas |
 | `OFF` | formato no soportado (HDR), proceso que no es un juego: sin intervenir |
 
 ### Protecciones para que el juego no se cierre
@@ -155,13 +155,33 @@ lo ejecuta con una consola simulada (ver "Evaluación segura").
    Si el juego se cerró con `pending`, la sesión siguiente arranca sin
    efectos (modo seguro) y lo avisa; el usuario puede reactivarlos desde el
    menú. Con 3 cierres seguidos queda en modo seguro hasta reactivarlo.
-4. **GPU acotada.** Se espera como mucho 4 ms a que termine el trabajo del
-   fotograma anterior; si no terminó, ese fotograma va intacto. 30 seguidos →
+4. **GPU acotada + calidad dinámica.** Se espera como mucho 4 ms a que termine
+   el trabajo del fotograma anterior; si no terminó, ese fotograma va intacto.
+   Cada atraso (o 15 fotogramas seguidos esperando más de 1,5 ms, que ya
+   frenan al juego) baja **un escalón**, del más caro al más barato:
+
+   | nivel | qué se apaga |
+   |---|---|
+   | -1 | NXSR Calidad → Rápido (si estaba en Calidad) |
+   | -2 | SMAA |
+   | -3 | NXSR / RCAS |
+   | -4 | generación de fotogramas |
+
+   Solo cuentan los escalones en uso. Entre dos bajadas hay 30 fotogramas de
+   espera. Tras ~1 minuto sin atrasos prueba subir uno; si en los 20 s
+   siguientes vuelve a atrasarse, la subida falló y la próxima espera el doble
+   (hasta ~4 minutos). Cambiar algo en el menú vuelve a empezar desde arriba.
+   Solo si con todo apagado sigue habiendo 30 atrasos seguidos (por ejemplo
+   el contador de FPS con la GPU colgada) se pasa a `DEGRADED`.
+5. **Re-registro de buffers.** Si el juego vuelve a registrar sus buffers con
+   la misma geometría (pasa al volver del reposo o al cambiar opciones), se
+   adoptan las nuevas direcciones y se sigue. Si todavía no había efectos
+   activos, cualquier geometría vale: se empieza de nuevo. Con otra geometría
+   y efectos ya activos (nuestros buffers de salida tienen el tamaño viejo) →
    `DEGRADED`.
-5. **Datos raros → intacto.** Otro handle de VideoOut, índice fuera de rango,
-   `count` 0 o enorme, re-registro de buffers, HDR: el fotograma del juego se
-   envía tal cual, sin tocarlo.
-6. **Solo hooks, sin parches.** No se modifica memoria del juego; todo lo que
+6. **Datos raros → intacto.** Otro handle de VideoOut, índice fuera de rango,
+   `count` 0 o enorme, HDR: el fotograma del juego se envía tal cual.
+7. **Solo hooks, sin parches.** No se modifica memoria del juego; todo lo que
    se escribe en disco está en `/data/vcfg_nx` (y `plugins.ini` desde la app,
    con copia de seguridad y verificación de lo escrito).
 
@@ -189,12 +209,29 @@ vez** al fotograma real y la generación de fotogramas interpola entre reales
 ya procesados: el intermedio hereda la calidad sin duplicar el coste. El
 modelo de FG no cambió.
 
+### Dos modelos: Rápido y Calidad
+
+El mismo `shaders/nxsr.cl` se compila dos veces (`SR_C`, `SR_B`, `SR_NAME`):
+`wg_nxsr` (Rápido) y `wg_nxsr_hq` (Calidad, dos capas de cuerpo: la primera
+se calcula con halo en una segunda zona de LDS). `sr_model = 0` (Auto) usa
+Calidad cuando el juego corre en modo PS4 Pro (`sceKernelIsNeoMode`), que
+tiene 2,3 veces la GPU de una PS4; en una PS4 normal, Rápido. Si Calidad no
+entra en el presupuesto, el primer escalón de la calidad dinámica vuelve a
+Rápido.
+
+Entrenamiento: cada conv lleva en paralelo una rama 1x1 (y la identidad en
+las C→C) que se pliegan exactamente en el 3x3 al exportar
+(`net_sr.fold`, re-parametrización estilo RepVGG/ECBSR): más capacidad al
+entrenar, el mismo coste en la consola. Una pérdida de consistencia ante
+desplazamientos de 1 píxel castiga que la salida cambie según la fase de la
+celda 2x2 (lo que en movimiento se vería como parpadeo).
+
 ## Evaluación segura (sin consola)
 
 | prueba | qué valida |
 |---|---|
-| `plugin/test/console_sim` (ASan + UBSan) | 10 escenarios: arranque, poca memoria, GPU trabada, cierre → modo seguro → reactivar, menú, HDR, juego a 60 fps, re-registro, ForWorkload + 2000 llamadas aleatorias, proceso que no es juego |
-| `plugin/test/host_test` | offsets de argumentos de los 25 kernels vs compilador; DCB bien formado en 6 configuraciones |
+| `plugin/test/console_sim` (ASan + UBSan) | 16 escenarios: arranque, poca memoria, GPU trabada (con y sin trabajo propio: pausa y reintento), cierre → modo seguro → reactivar, menú, HDR, juego a 60 fps, re-registro (otra geometría, misma geometría, antes de activar), ForWorkload + 2000 llamadas aleatorias, flips de CPU, GPU justa con modelo de tiempos (calidad dinámica baja y vuelve a subir), modelo Auto/Calidad en Pro, proceso que no es juego |
+| `plugin/test/host_test` | offsets de argumentos de los 26 kernels vs compilador; DCB bien formado en 6 configuraciones |
 | `test_gpu_path.py`, `test_smaa_path.py`, `test_sr_path.py` | el DCB ejecutado (kernels compilados para x86) coincide con las referencias: FG, SMAA y NXSR con LDS y barreras |
 | `installer/test/test_core.c` (ASan) | edición de `plugins.ini` (conserva lo existente, idempotente, desinstalar) y lectura de `param.sfo` |
 

@@ -82,7 +82,7 @@ empeora porque realza el escalonado. En juegos que ya traen su propio AA
 | prueba | resultado |
 |---|---|
 | runtime NumPy vs JAX (mismos pesos) | dif. máx. ~2e-6 |
-| `host_test`: offsets de kernargs de los 25 kernels vs metadatos del compilador | todos coinciden |
+| `host_test`: offsets de kernargs de los 26 kernels vs metadatos del compilador | todos coinciden |
 | `host_test`: DCB 1080p / 900p→1080p / 720p→1080p | PM4 bien formado, 39-43 dispatches, 36-70 MiB |
 | `gpu_emu` (DCB ejecutado con los kernels compilados para x86) vs runtime NumPy, 1280x720 | dif. máx. 1/255 (≈88 dB) |
 | RCAS del camino GPU vs `upscale/fsr1.py` | ≈59 dB |
