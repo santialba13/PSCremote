@@ -14,6 +14,9 @@
 //    NXSR -> sin FG). Tras ~1 minuto sin atrasos prueba subir uno; cada subida
 //    que falla duplica la espera para la siguiente (hasta ~4 minutos). Solo si ni sin efectos da
 //    abasto pasa a "solo pasar fotogramas", y lo reintenta pasados unos minutos.
+//  * Temperatura: cada ~2 s se lee la del procesador. Por encima de
+//    `temp_limit` (80 C) baja un escalon cada ~15 s; 6 C por encima apaga
+//    todos los efectos al instante. Solo vuelve a subir con 6 C de margen.
 //  * Re-registro de buffers con la misma geometria (pasa al volver del modo
 //    reposo o al cambiar opciones en algunos juegos): se adoptan las nuevas
 //    direcciones y se sigue. Con otra geometria, o cualquier cosa inesperada
@@ -46,7 +49,13 @@
 #define DEGRADED_RETRY_FLIPS 5400   // ~3 min en "solo pasar" -> reintentar con lo minimo
 #define MAX_DEGRADED_RETRIES 2
 #define OSD_COLS 40
-#define OSD_ROWS 12
+#define OSD_ROWS 13
+#define TEMP_FLIPS 60           // lectura de temperatura cada ~2 s
+#define TEMP_STEP_FLIPS 450     // con calor, un escalon cada ~15 s
+#define TEMP_HOT_READS 3        // lecturas seguidas por encima del limite antes de bajar
+#define TEMP_CRIT_DELTA 6       // limite + esto: todo apagado ya
+#define TEMP_COOL_DELTA 6       // para volver a subir hay que estar este margen por debajo
+#define WAIT_STEP_US 250        // sondeo del label mientras se espera a la GPU
 
 #define BTN_L3 0x0002
 #define BTN_R3 0x0004
@@ -57,7 +66,7 @@
 #define BTN_CIRCLE 0x2000
 #define BTN_CROSS 0x4000
 
-enum { ROW_FG, ROW_SR, ROW_MODEL, ROW_AA, ROW_RCAS, ROW_FPS, ROW_CMP, ROW_SAVE, ROW_CLOSE, ROW_COUNT };
+enum { ROW_FG, ROW_SR, ROW_MODEL, ROW_ECO, ROW_AA, ROW_RCAS, ROW_FPS, ROW_CMP, ROW_SAVE, ROW_CLOSE, ROW_COUNT };
 
 static struct {
     const nx_platform_t* pf;
@@ -99,6 +108,9 @@ static struct {
     int pro, announced;
     uint64_t level_since, last_stall, probe_until, degraded_at;
     int up_fails, degraded_gpu, degraded_retries, slow_run;
+    // temperatura
+    uint64_t next_temp, last_temp_step;
+    int hot_reads;
 } E;
 
 static void logf_(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
@@ -186,6 +198,7 @@ void nx_engine_init(const nx_platform_t* pf, const char* title_id)
     }
     guard_check();
     E.pro = pf->is_pro ? pf->is_pro() != 0 : 0;
+    E.info.temp_c = -1;
     E.info.state = NX_ST_WAIT_BUFFERS;
     set_status(E.info.safe_mode ? "modo seguro" : "esperando el juego");
 }
@@ -384,10 +397,12 @@ static void build_menu_text(void)
     uint8_t* t = E.osd_text[0];
     snprintf(l, sizeof l, " VCFG-NX  %s  juego %.0f fps", E.title, E.info.game_fps);
     osd_line(t, 0, l);
+    char tc[16] = "";
+    if (E.info.temp_c > 0) snprintf(tc, sizeof tc, " %d\xb0" "C", E.info.temp_c);
     if (E.info.level > 0)
-        snprintf(l, sizeof l, " estado: %.24s (carga: -%d)", E.info.status, E.info.level);
+        snprintf(l, sizeof l, " estado: %.18s%s -%d%s", E.info.status, E.info.hot ? " calor" : "", E.info.level, tc);
     else
-        snprintf(l, sizeof l, " estado: %.40s", E.info.status);
+        snprintf(l, sizeof l, " estado: %.24s%s", E.info.status, tc);
     osd_line(t, 1, l);
     // \xf3 = o con tilde (Latin-1)
     snprintf(l, sizeof l, "  Generaci\xf3n de fotogramas   [%s]", onoff(E.cfg.framegen)); osd_line(t, 2 + ROW_FG, l);
@@ -395,6 +410,7 @@ static void build_menu_text(void)
     static const char* model_names[] = { "Auto", "R\xe1pido", "Calidad" };
     snprintf(l, sizeof l, "  Modelo IA                 [%s]", model_names[E.cfg.sr_model]);
     osd_line(t, 2 + ROW_MODEL, l);
+    snprintf(l, sizeof l, "  Modo ahorro (menos calor) [%s]", onoff(E.cfg.eco)); osd_line(t, 2 + ROW_ECO, l);
     snprintf(l, sizeof l, "  Antialiasing SMAA         [%s]", onoff(E.cfg.aa)); osd_line(t, 2 + ROW_AA, l);
     snprintf(l, sizeof l, "  Nitidez FSR1 (RCAS)       [%s]", rc_names[E.cfg.rcas]); osd_line(t, 2 + ROW_RCAS, l);
     snprintf(l, sizeof l, "  Contador de FPS           [%s]", onoff(E.cfg.fps_counter)); osd_line(t, 2 + ROW_FPS, l);
@@ -408,7 +424,11 @@ static void build_menu_text(void)
 static void build_fps_text(int fg_on)
 {
     char l[64];
-    snprintf(l, sizeof l, " %2.0f fps%s", E.info.game_fps * (fg_on ? 2.0f : 1.0f), fg_on ? " (FG)" : "");
+    if (E.info.temp_c > 0)
+        snprintf(l, sizeof l, " %2.0f fps%s %d\xb0" "C", E.info.game_fps * (fg_on ? 2.0f : 1.0f), fg_on ? " (FG)" : "",
+                 E.info.temp_c);
+    else
+        snprintf(l, sizeof l, " %2.0f fps%s", E.info.game_fps * (fg_on ? 2.0f : 1.0f), fg_on ? " (FG)" : "");
     memset(E.osd_text[1], ' ', OSD_COLS);
     memcpy(E.osd_text[1], l, strlen(l));
 }
@@ -420,14 +440,16 @@ static void menu_change(int row, int dir)
     case ROW_FG: c->framegen = !c->framegen; break;
     case ROW_SR: c->sr = (c->sr + (dir > 0 ? 1 : 3)) % 4; break;
     case ROW_MODEL: c->sr_model = (c->sr_model + (dir > 0 ? 1 : 2)) % 3; break;
+    case ROW_ECO: c->eco = !c->eco; break;
     case ROW_AA: c->aa = !c->aa; break;
     case ROW_RCAS: c->rcas = (c->rcas + (dir > 0 ? 1 : 3)) % 4; break;
     case ROW_FPS: c->fps_counter = !c->fps_counter; break;
     case ROW_CMP: c->compare = !c->compare; break;
     default: break;
     }
-    // el usuario eligio otra cosa: la calidad dinamica vuelve a empezar desde arriba
-    E.info.level = 0;
+    // el usuario eligio otra cosa: la calidad dinamica vuelve a empezar desde
+    // arriba (salvo que la baja sea por temperatura)
+    if (!E.info.hot) E.info.level = 0;
     E.info.level_locked = 0;
     E.up_fails = 0;
     E.level_since = E.info.flips;
@@ -508,7 +530,7 @@ const nx_engine_info_t* nx_engine_info(void) { return &E.info; }
 // escalones, del mas caro al mas barato; solo cuentan los que estan en uso
 static void quality_ladder(int* fg, int* sr, int* hq, int* aa, int* rcas)
 {
-    int steps = 0, lv = E.cfg.dynamic ? E.info.level : 0;
+    int steps = 0, lv = E.info.level;   // los escalones por atraso solo se suman con `dynamic`; los de calor siempre
     if (*sr && *hq) { if (lv > steps) *hq = 0; steps++; }
     if (*aa) { if (lv > steps) *aa = 0; steps++; }
     if (*sr || *rcas) { if (lv > steps) *sr = *rcas = *hq = 0; steps++; }
@@ -535,11 +557,55 @@ static void on_stall(void)
     logf_("[engine] calidad dinamica: baja a -%d\n", E.info.level);
 }
 
+static int temp_limit(void)
+{
+    int l = E.cfg.temp_limit;
+    if (E.cfg.eco) l = l && l < 75 ? l : 75;
+    return l;
+}
+
+// lee la temperatura cada ~2 s y baja la calidad si hace falta
+static void thermal_check(void)
+{
+    uint64_t f = E.info.flips;
+    if (!E.pf->temp_c || f < E.next_temp) return;
+    E.next_temp = f + TEMP_FLIPS;
+    int t = E.pf->temp_c();
+    if (t < 15 || t > 120) { E.info.temp_c = -1; return; }   // lectura imposible: sin control termico
+    E.info.temp_c = t;
+    int lim = temp_limit();
+    if (!lim) { E.info.hot = 0; return; }
+    if (t >= lim + TEMP_CRIT_DELTA) {
+        if (E.info.hot != 2) {
+            notify("VCFG-NX: consola muy caliente, efectos en pausa hasta que enfrie");
+            logf_("[engine] temperatura critica %d C: todo apagado\n", t);
+        }
+        E.info.hot = 2;
+        E.info.level = 99;   // quality_ladder lo acota a lo que este en uso
+        E.level_since = E.last_temp_step = f;
+        return;
+    }
+    if (t >= lim) {
+        if (++E.hot_reads >= TEMP_HOT_READS && f >= E.last_temp_step + TEMP_STEP_FLIPS
+            && E.info.level < E.info.level_max) {
+            if (!E.info.hot) notify("VCFG-NX: consola caliente, bajando calidad");
+            E.info.hot = 1;
+            E.info.level++;
+            E.level_since = E.last_temp_step = f;
+            logf_("[engine] temperatura %d C: baja a -%d\n", t, E.info.level);
+        }
+        return;
+    }
+    E.hot_reads = 0;
+    if (t <= lim - TEMP_COOL_DELTA) E.info.hot = 0;   // con margen: se puede volver a subir
+}
+
 static void maybe_level_up(void)
 {
     uint64_t f = E.info.flips;
     if (E.probe_until && f >= E.probe_until) E.probe_until = 0;   // la subida se sostuvo
-    if (!E.cfg.dynamic || E.info.level == 0) return;
+    if (E.info.level == 0 || E.info.hot) return;
+    if (E.info.temp_c > 0 && temp_limit() && E.info.temp_c > temp_limit() - TEMP_COOL_DELTA) return;
     uint64_t since = E.level_since > E.last_stall ? E.level_since : E.last_stall;
     int sh = E.up_fails < MAX_UP_FAILS ? E.up_fails : MAX_UP_FAILS;
     if (f < since + ((uint64_t)UP_FLIPS << sh)) return;
@@ -573,6 +639,7 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
         logf_("[engine] reintento tras degradado (%d)\n", E.degraded_retries);
     }
     if (st == NX_ST_OFF || st == NX_ST_WAIT_BUFFERS) return passthrough(s);
+    if (st == NX_ST_RUN && E.info.full_ready) thermal_check();
     if ((st == NX_ST_WARMUP || st == NX_ST_RUN) && E.info.flips >= E.next_try_flip) try_allocations();
     st = E.info.state;
     int gi = (int)s->index - E.game_first;
@@ -587,8 +654,8 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
     int want_fg = effects && E.cfg.framegen && !E.cfg.compare && E.info.game_fps > 1.0f
                   && E.info.game_fps < (float)E.cfg.max_game_fps;
     int sr = effects && E.cfg.sr > 0;
-    int hq = sr && (E.cfg.sr_model == 2 || (E.cfg.sr_model == 0 && E.pro));
-    int aa = effects && E.cfg.aa;
+    int hq = sr && !E.cfg.eco && (E.cfg.sr_model == 2 || (E.cfg.sr_model == 0 && E.pro));
+    int aa = effects && E.cfg.aa && !E.cfg.eco;
     int rcas = effects && E.cfg.rcas && !sr;
     quality_ladder(&want_fg, &sr, &hq, &aa, &rcas);
     E.info.hq = hq;
@@ -610,8 +677,8 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
     int sl = E.slot;
     uint64_t waited = 0;
     while (*E.label_cpu < E.slot_seq[sl] && waited < WAIT_BUDGET_US) {
-        E.pf->sleep_us(100);
-        waited += 100;
+        E.pf->sleep_us(WAIT_STEP_US);
+        waited += WAIT_STEP_US;
     }
     if (*E.label_cpu < E.slot_seq[sl]) {
         E.info.stalls++;
@@ -650,7 +717,7 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
     int no = 0;
     if (osd_fps) {
         build_fps_text(want_fg);
-        fps = (nx_osd_t){ (uint64_t)(uintptr_t)E.osd_text[1], (uint64_t)(uintptr_t)E.osd_font, 14, 1, 24, 24, 2, -1 };
+        fps = (nx_osd_t){ (uint64_t)(uintptr_t)E.osd_text[1], (uint64_t)(uintptr_t)E.osd_font, 19, 1, 24, 24, 2, -1 };
         osds[no++] = &fps;
     }
     if (osd_menu) {

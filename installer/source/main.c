@@ -156,7 +156,7 @@ static int copy_file(const char* src, const char* dst)
 // --------------------------------------------------------------- estado
 static inst_game_t games[INST_MAX_GAMES];
 static int ngames, sel, top, dirty, backup_done;
-static int set_fg = 1, set_sr = 2, set_model = 0, set_dyn = 1, set_aa = 1, set_rcas = 0;
+static int set_fg = 1, set_sr = 2, set_model = 0, set_dyn = 1, set_eco = 0, set_aa = 1, set_rcas = 0;
 static char msg[128];
 static uint32_t msg_color = C_DIM;
 
@@ -170,6 +170,7 @@ static void load_defaults(void)
     if ((p = strstr(t, "\nrcas ="))) set_rcas = atoi(p + 7);
     if ((p = strstr(t, "\nsr_model ="))) set_model = atoi(p + 11);
     if ((p = strstr(t, "\ndynamic ="))) set_dyn = atoi(p + 10) != 0;
+    if ((p = strstr(t, "\neco ="))) set_eco = atoi(p + 6) != 0;
     free(t);
     // un ini editado a mano no puede dejar indices fuera de rango
     if (set_sr < 0 || set_sr > 3) set_sr = 2;
@@ -210,8 +211,8 @@ static int save_all(int uninstall)
     char cfg[512];
     snprintf(cfg, sizeof cfg,
              "; VCFG-NX: ajustes por defecto (cada juego puede guardar los suyos desde el menu L3+R3)\n"
-             "framegen = %d\nsr = %d\nsr_model = %d\ndynamic = %d\naa = %d\nrcas = %d\n", set_fg, set_sr, set_model,
-             set_dyn, set_aa, set_rcas);
+             "framegen = %d\nsr = %d\nsr_model = %d\ndynamic = %d\neco = %d\naa = %d\nrcas = %d\n", set_fg, set_sr,
+             set_model, set_dyn, set_eco, set_aa, set_rcas);
     return write_text_verified(CFG_DIR "/config.ini", cfg) == 0 ? 0 : -40;
 }
 
@@ -219,7 +220,7 @@ static int save_all(int uninstall)
 static const char* SR_N[] = { "OFF", "Suave", "Normal", "Fuerte" };
 static const char* RC_N[] = { "OFF", "Baja", "Media", "Alta" };
 static const char* MD_N[] = { "Auto", "R\xe1pido", "Calidad" };
-#define SET_ROWS 6
+#define SET_ROWS 7
 
 static void header(void)
 {
@@ -270,19 +271,21 @@ static void draw_settings(int row)
     text(80, 180, 3, C_TEXT, "Ajustes por defecto");
     const char* labels[SET_ROWS] = { "Generaci\xf3n de fotogramas (30 -> 60)", "Reescalado IA (NXSR)",
                                      "Modelo IA (Calidad: mejor en PS4 Pro)", "Antialiasing SMAA",
-                                     "Nitidez FSR1 (RCAS, sin NXSR)", "Calidad din\xe1mica (evita tirones)" };
+                                     "Nitidez FSR1 (RCAS, sin NXSR)", "Calidad din\xe1mica (evita tirones)",
+                                     "Modo ahorro (menos calor)" };
     const char* vals[SET_ROWS] = { set_fg ? "ON" : "OFF", SR_N[set_sr], MD_N[set_model], set_aa ? "ON" : "OFF",
-                                   RC_N[set_rcas], set_dyn ? "ON" : "OFF" };
+                                   RC_N[set_rcas], set_dyn ? "ON" : "OFF", set_eco ? "ON" : "OFF" };
     for (int i = 0; i < SET_ROWS; ++i) {
-        int y = 270 + i * 70;
+        int y = 250 + i * 62;
         if (i == row) rect(60, y - 10, W - 120, 56, C_SEL);
         text(100, y, 3, C_TEXT, "%s", labels[i]);
         text(1300, y, 3, C_ACCENT, "< %s >", vals[i]);
     }
-    text(100, 720, 2, C_DIM, "Dentro del juego: mantener L3+R3 abre el men\xfa de VCFG-NX (cada juego guarda lo suyo).");
-    text(100, 760, 2, C_DIM, "NXSR nunca agrega grano: su salida queda acotada al rango de los p\xedxeles vecinos.");
-    text(100, 800, 2, C_DIM, "Calidad din\xe1mica: si la GPU no da abasto baja un escal\xf3n en vez de trabar el juego.");
-    text(100, 840, 2, C_WARN, "Beta: si un juego se cierra con VCFG-NX activo, la pr\xf3xima vez arranca en modo seguro.");
+    text(100, 754, 2, C_DIM, "Dentro del juego: mantener L3+R3 abre el men\xfa de VCFG-NX (cada juego guarda lo suyo).");
+    text(100, 788, 2, C_DIM, "NXSR nunca agrega grano: su salida queda acotada al rango de los p\xedxeles vecinos.");
+    text(100, 822, 2, C_DIM, "Temperatura: sobre 80\xb0" "C baja la calidad; modo ahorro: Calidad y SMAA apagados, l\xedmite 75\xb0" "C.");
+    text(100, 720, 2, C_DIM, "Calidad din\xe1mica: si la GPU no da abasto baja un escal\xf3n en vez de trabar el juego.");
+    text(100, 856, 2, C_WARN, "Beta: si un juego se cierra con VCFG-NX activo, la pr\xf3xima vez arranca en modo seguro.");
     footer("arriba/abajo elegir   izq/der cambiar   O volver");
 }
 
@@ -384,6 +387,7 @@ int main(void)
                 if (srow == 3) set_aa ^= 1;
                 if (srow == 4) set_rcas = (set_rcas + d) % 4;
                 if (srow == 5) set_dyn ^= 1;
+                if (srow == 6) set_eco ^= 1;
                 dirty = 1;
             }
             if (b & ORBIS_PAD_BUTTON_CIRCLE) view = 0;

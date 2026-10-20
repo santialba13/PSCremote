@@ -34,6 +34,7 @@ static struct {
     struct { volatile uint32_t* addr; uint32_t val; uint64_t at; } pend[16];
     int npend;
     int pro;
+    int temp;                         // grados C (0 = el sistema no la informa)
     uint64_t groups_total;
     int game_dcb_submits, flips, bad_flips, our_dcbs, bad_dcbs;
     int last_flip_index;
@@ -146,6 +147,7 @@ static int sim_submit_flip(const nx_submit_t* s)
 static uint64_t sim_now(void) { gpu_resolve(); return C.clock_us; }
 static void sim_sleep(uint32_t us) { C.clock_us += us; gpu_resolve(); }
 static int sim_is_pro(void) { return C.pro; }
+static int sim_temp(void) { return C.temp ? C.temp : -1; }
 static void sim_notify(const char* m) { snprintf(C.last_notify, sizeof C.last_notify, "%s", m); C.notifies++; }
 static void sim_log(const char* m) { if (C.verbose) printf("      log: %s", m); }
 
@@ -175,7 +177,7 @@ static int sim_write(const char* p, const char* d, int len)
 }
 
 static const nx_platform_t PF = { sim_alloc, sim_avail, sim_register, sim_rate, sim_submit, sim_submit_flip,
-                                  sim_now, sim_sleep, sim_notify, sim_log, sim_read, sim_write, sim_is_pro };
+                                  sim_now, sim_sleep, sim_notify, sim_log, sim_read, sim_write, sim_is_pro, sim_temp };
 
 // ------------------------------------------------------------- juego
 typedef struct {
@@ -351,7 +353,7 @@ int main(int argc, char** argv)
         if (mf && I()->menu_text) { fwrite(I()->menu_text, 1, (size_t)I()->menu_cols * I()->menu_rows, mf); }
         if (mf) fclose(mf);
     }
-    for (int k = 0; k < 7; ++k) { pad_buttons = 0x0040; play(&bb, 1, 0); pad_buttons = 0; play(&bb, 1, 0); }
+    for (int k = 0; k < 8; ++k) { pad_buttons = 0x0040; play(&bb, 1, 0); pad_buttons = 0; play(&bb, 1, 0); }
     pad_buttons = 0x4000; play(&bb, 1, 0); pad_buttons = 0; play(&bb, 1, 0);   // X en "Guardar"
     file_t* ini = find_file("/data/vcfg_nx/CUSA00207.ini");
     CHECK(ini && strstr(ini->data, "framegen = 0") && strstr(ini->data, "sr = 2"), "no se guardo el ini del juego (con FG apagado por la X)");
@@ -485,6 +487,57 @@ int main(int argc, char** argv)
     play(&bb, 1200, 0);
     report("15. modelo IA (Auto / Calidad)");
     CHECK(I()->hq == 1, "sr_model = 2 deberia usar Calidad");
+    common_checks();
+
+    // 16. temperatura: sube por encima del limite, luego critica, luego enfria
+    sim_write("/data/vcfg_nx/CUSA00207.ini", "fps_counter = 1\n", 16);
+    sim_write("/data/vcfg_nx/guard-CUSA00207.txt", "state=ok\ncrashes=0\n", 19);
+    boot(&bb, 1);
+    C.temp = 65;
+    play(&bb, 1200, 0);
+    CHECK(I()->temp_c == 65 && I()->level == 0, "lectura de temperatura (%d) o nivel (-%d)", I()->temp_c, I()->level);
+    C.temp = 82;   // caliente: baja de a un escalon
+    play(&bb, 1000, 0);
+    int lv_hot = I()->level;
+    CHECK(lv_hot >= 1 && I()->hot == 1, "con 82 C no bajo la calidad (nivel -%d)", lv_hot);
+    C.temp = 90;   // critica: todo apagado
+    play(&bb, 100, 0);
+    CHECK(I()->hot == 2 && I()->level == I()->level_max, "con 90 C no apago todo");
+    jobs_before = I()->our_jobs;
+    C.temp = 77;   // bajo el limite pero sin margen: no sube
+    play(&bb, 3000, 0);
+    CHECK(I()->level == I()->level_max, "subio sin margen de temperatura");
+    C.temp = 68;   // enfrio: sube de a un escalon por minuto
+    play(&bb, 9000, 0);
+    report("16. temperatura: caliente -> critica -> enfria");
+    CHECK(I()->level == 0 && I()->hot == 0, "no recupero la calidad al enfriar (nivel -%d)", I()->level);
+    C.temp = 300;  // lectura imposible: se ignora
+    play(&bb, 100, 0);
+    CHECK(I()->temp_c == -1, "acepto una temperatura imposible");
+    common_checks();
+
+    // 17. modo ahorro: sin modelo Calidad ni SMAA aunque sea PS4 Pro
+    sim_write("/data/vcfg_nx/CUSA00207.ini", "eco = 1\n", 8);
+    sim_write("/data/vcfg_nx/guard-CUSA00207.txt", "state=ok\ncrashes=0\n", 19);
+    boot_pro = 1;
+    boot(&bb, 1);
+    play(&bb, 1200, 0);
+    uint64_t g0 = C.groups_total, j0 = I()->our_jobs;
+    play(&bb, 100, 0);
+    uint64_t eco_groups = (C.groups_total - g0) / (I()->our_jobs - j0);
+    CHECK(I()->hq == 0, "modo ahorro uso el modelo Calidad");
+    sim_write("/data/vcfg_nx/CUSA00207.ini", "eco = 0\n", 8);
+    sim_write("/data/vcfg_nx/guard-CUSA00207.txt", "state=ok\ncrashes=0\n", 19);
+    boot(&bb, 1);
+    play(&bb, 1200, 0);
+    g0 = C.groups_total; j0 = I()->our_jobs;
+    play(&bb, 100, 0);
+    uint64_t full_groups = (C.groups_total - g0) / (I()->our_jobs - j0);
+    boot_pro = 0;
+    printf("  17. modo ahorro: %llu grupos de GPU por fotograma (normal en Pro: %llu, -%.0f%%)\n",
+           (unsigned long long)eco_groups, (unsigned long long)full_groups,
+           100.0 * (1.0 - (double)eco_groups / (double)full_groups));
+    CHECK(eco_groups < full_groups, "modo ahorro no redujo el trabajo");
     common_checks();
 
     // 10. juego que arranca en un proceso que no es un juego

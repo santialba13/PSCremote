@@ -138,6 +138,25 @@ static void walk_pm4(const uint32_t* b, size_t n, int* dispatches, int* sh_write
     CHECK(i == n, "el DCB no termina en un limite de paquete (%zu vs %zu)", i, n);
 }
 
+// perfil: hilos lanzados por kernel en un DCB (PROFILE=1 en el entorno)
+static void profile(const nx_pipeline_t* p, const uint32_t* b, size_t n)
+{
+    uint64_t pgm = 0, thr[64] = { 0 };
+    int cnt[64] = { 0 };
+    for (size_t i = 0; i < n;) {
+        uint32_t h = b[i];
+        if (h == 0x80000000u) { ++i; continue; }
+        uint32_t op = (h >> 8) & 0xFF, c = ((h >> 16) & 0x3FFF) + 1;
+        if (op == PM4_SET_SH_REG && SH_REG_BASE + b[i + 1] * 4 == R_COMPUTE_PGM_LO) pgm = (uint64_t)b[i + 2] << 8;
+        if (op == PM4_DISPATCH_DIRECT)
+            for (int k = 0; k < 32; ++k)
+                if (p->shader_gpu[k] == pgm) { thr[k] += (uint64_t)b[i + 1] * b[i + 2] * 64; cnt[k]++; }
+        i += 1 + c;
+    }
+    for (int k = 0; k < 32; ++k)
+        if (cnt[k]) printf("    %-20s x%-3d %10llu hilos\n", nx_shaders[p->shader[k]].name, cnt[k], (unsigned long long)thr[k]);
+}
+
 static void run_case(int W, int H, int Wo, int Ho, nx_post_t post, int aa, int sr, const char* label)
 {
     size_t sz = nx_pipeline_mem_size(W, H, Wo, Ho);
@@ -167,6 +186,7 @@ static void run_case(int W, int H, int Wo, int Ho, nx_post_t post, int aa, int s
         int d, s;
         walk_pm4(dcb, c.n, &d, &s);
         if (frame == 0) total_disp = d;
+        if (frame == 2 && getenv("PROFILE")) profile(p, dcb, c.n);
         if (frame == 2)
             printf("%-28s arena %6.1f MiB, DCB %5zu dwords, dispatches %d (1er frame %d)\n",
                    label, p->arena.used / 1048576.0, c.n, d, total_disp);

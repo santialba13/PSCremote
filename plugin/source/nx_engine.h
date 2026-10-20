@@ -41,6 +41,7 @@ typedef struct {
     int (*read_file)(const char* path, char* buf, int cap); // bytes leidos o < 0
     int (*write_file)(const char* path, const char* data, int len);
     int (*is_pro)(void);                                    // 1 = el juego corre en modo PS4 Pro (puede ser NULL)
+    int (*temp_c)(void);                                    // temperatura del procesador en grados C, < 0 si no se sabe (puede ser NULL)
 } nx_platform_t;
 
 typedef enum {
@@ -60,6 +61,8 @@ typedef struct {
     int level, level_max;   // calidad dinamica: escalones bajados / posibles (0 = como se configuro)
     int level_locked;       // las subidas fallaron varias veces: espera el maximo entre intentos
     int hq;                 // NXSR Calidad en uso
+    int temp_c;             // ultima temperatura leida (-1 = desconocida)
+    int hot;                // 1 = bajando por temperatura, 2 = temperatura critica (todo apagado)
     uint64_t readopts;      // re-registros de buffers del juego adoptados sin apagarse
     uint64_t flips, our_jobs, passthrough, stalls, alloc_fail;
     char status[64];

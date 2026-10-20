@@ -40,12 +40,14 @@
 #define W_TAIL W_BODY(SR_B)
 #define B_TAIL (W_TAIL + SR_C * 12)
 
-// canal ch de la celda (cy, cx) del tensor s2d: pixel (2cy+sy, 2cx+sx), color c
-static float cell(tdesc_t src, int cy, int cx, int ch)
+// los 12 canales de la celda (cy, cx) del tensor s2d: canal 3*s + c es el
+// color c del pixel (2cx + (s & 1), 2cy + (s >> 1))
+static void cell4(tdesc_t src, int cy, int cx, float* v)
 {
-    int s = ch / 3, c = ch - 3 * s;
-    float4 p = nx_load(src, 2 * cx + (s & 1), 2 * cy + (s >> 1));
-    return c == 0 ? p.x : (c == 1 ? p.y : p.z);
+    for (int s = 0; s < 4; ++s) {
+        float4 p = nx_load(src, 2 * cx + (s & 1), 2 * cy + (s >> 1));
+        v[3 * s] = p.x; v[3 * s + 1] = p.y; v[3 * s + 2] = p.z;
+    }
 }
 
 // conv 3x3 C->C sobre un tile en LDS de lado `side`, en la posicion (ly, lx)
@@ -89,10 +91,12 @@ NX_KERNEL void SR_NAME(tdesc_t src, int W, int H, __constant const float* w, tde
                 for (int kx = 0; kx < 3; ++kx) {
                     int ix = cx + kx - 1;
                     if (ix < 0 || ix >= Wc) continue;
+                    // los 4 pixeles de la celda, una lectura cada uno (12 canales)
+                    float v[12];
+                    cell4(src, iy, ix, v);
                     for (int i = 0; i < 12; ++i) {
-                        float v = cell(src, iy, ix, i);
                         __constant const float* wk = w + W_HEAD + ((ky * 3 + kx) * 12 + i) * SR_C;
-                        for (int o = 0; o < SR_C; ++o) acc[o] = __builtin_fmaf(v, wk[o], acc[o]);
+                        for (int o = 0; o < SR_C; ++o) acc[o] = __builtin_fmaf(v[i], wk[o], acc[o]);
                     }
                 }
             }

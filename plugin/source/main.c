@@ -130,9 +130,19 @@ static int pf_write_file(const char* path, const char* data, int len)
 // el juego corre con la GPU completa de PS4 Pro (modo Neo): alcanza para NXSR Calidad
 static int pf_is_pro(void) { return sceKernelIsNeoMode() == 1; }
 
+// temperatura del procesador (APU: CPU y GPU comparten el chip). OpenOrbis no
+// la declara; el motor descarta lecturas fuera de 15..120 C. VALIDAR en consola.
+int sceKernelGetCpuTemperature(int* temp);
+static int pf_temp_c(void)
+{
+    int t = -1;
+    if (sceKernelGetCpuTemperature(&t) != 0) return -1;
+    return t;
+}
+
 static const nx_platform_t g_pf = {
     pf_alloc_gpu, pf_avail_direct, pf_register, pf_set_flip_rate, pf_submit, pf_submit_flip,
-    pf_now_us, pf_sleep_us, pf_notify, pf_log, pf_read_file, pf_write_file, pf_is_pro,
+    pf_now_us, pf_sleep_us, pf_notify, pf_log, pf_read_file, pf_write_file, pf_is_pro, pf_temp_c,
 };
 
 // ----------------------------------------------------------------- hooks

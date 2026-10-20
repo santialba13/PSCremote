@@ -5,6 +5,8 @@ typedef struct {
     int sr;                // reescalado IA NXSR: 0 off, 1 suave, 2 normal, 3 fuerte
     int sr_model;          // modelo NXSR: 0 auto (Calidad en PS4 Pro), 1 Rapido, 2 Calidad
     int dynamic;           // 1 = calidad dinamica: baja escalones si la GPU no da abasto
+    int eco;               // 1 = modo ahorro: modelo Rapido, sin SMAA y limite de temperatura mas bajo
+    int temp_limit;        // grados C: por encima baja la calidad (0 = sin control termico)
     int aa;                // 1 = SMAA 1x (antialiasing de bordes)
     int rcas;              // nitidez FSR1 RCAS: 0 off, 1 baja, 2 media, 3 alta (sin efecto con NXSR activo)
     int fps_counter;       // 1 = contador de FPS en pantalla
