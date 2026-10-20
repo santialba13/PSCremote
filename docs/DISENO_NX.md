@@ -1,4 +1,4 @@
-# VCFG-NX 2.2: diseño
+# VCFG-NX 2.3: diseño
 
 Rediseño del frame generator VCFG para PS4 (GoldHEN). Objetivo: 30 → 60 fps
 con menos artefactos que el block-matching puro, más un escalado/nitidez tipo
@@ -246,12 +246,32 @@ Más los 4 buffers de salida (2 intermedios + 2 reales, 33 MiB a 1080p).
 
 ## App (instalador)
 
-`installer/source/main.c` dibuja en la CPU sobre dos framebuffers de VideoOut
-y solo redibuja cuando cambia algo (sin tocar nada, duerme mirando el mando).
-Los íconos (`/user/appmeta/<ID>/icon0.png`, 512x512) se decodifican con
-stb_image solo cuando se ven, se reducen a 176x176 por promedio de área y se
-guardan los últimos 32. Los ajustes se leen y escriben con
-`plugin/source/config.c`, el mismo código que usa el plugin.
+`installer/source/main.c` dibuja por CPU con `ui_gfx.c` sobre un lienzo en
+memoria y copia al framebuffer solo la zona que cambió:
+
+* **Redibujo parcial**: cada cambio repinta una zona (fondo cacheado + toda la
+  vista con recorte). Moverse entre juegos repinta dos tarjetas y el panel de
+  detalle. El preview comprueba que el resultado sea idéntico píxel a píxel a
+  un redibujo completo.
+* **Sprites calculados una vez**: marcos de tarjeta (degradado + borde
+  suavizado), sombras y brillos con el interior que tapa la tarjeta recortado,
+  y tramos por fila (transparente / opaco) para saltar o copiar con `memcpy`.
+  Redibujo completo: 10,8 → 4,5 ms en el PC.
+* **Texto**: Inter (SIL OFL) pre-renderizada con FreeType en 7 tamaños
+  (`tools/make_ui_font.py` → `ui_font_data.h`, 522 KiB de glifos Latin-1).
+* **Íconos**: `icon0.png` de varias carpetas de `appmeta`, decodificados con
+  stb_image de a uno mientras no se toca el mando, reducidos por promedio de
+  área y con esquinas redondeadas.
+* **Sonido**: `ui_sound.c` sintetiza los sonidos al arrancar y los mezcla en un
+  hilo con `sceAudioOutOutput` (puerto de 256 muestras a 48 kHz); sin sonidos
+  pendientes el hilo duerme.
+* **Guardado**: el plugin se lee de `/app0` **antes** de `sys_sdk_jailbreak`:
+  fuera del sandbox `/app0` ya no es la carpeta de la app (era el "Error al
+  guardar" de la 2.2). Si falta, no se toca ningún archivo; cada error abre un
+  diálogo con el motivo y la pantalla de diagnóstico.
+
+Los ajustes se leen y escriben con `plugin/source/config.c`, el mismo código
+que usa el plugin.
 
 ## Evaluación segura (sin consola)
 
@@ -261,7 +281,9 @@ guardan los últimos 32. Los ajustes se leen y escriben con
 | `plugin/test/host_test` | offsets de argumentos de los 26 kernels vs compilador; DCB bien formado en 6 configuraciones |
 | `test_gpu_path.py`, `test_smaa_path.py`, `test_sr_path.py` | el DCB ejecutado (kernels compilados para x86) coincide con las referencias: FG, SMAA y NXSR con LDS y barreras |
 | `installer/test/test_core.c` (ASan) | edición de `plugins.ini` (conserva lo existente, idempotente, desinstalar), `param.sfo`, discos externos sin repetir, ajustes por juego ida y vuelta |
-| `installer/test/test_app.c` (ASan + UBSan) | la app entera con un mando guionado sobre un sistema de archivos falso: activar, ajustes propios, volver a por defecto, cambiar los generales, guardar, salir sin guardar, desinstalar, consola sin juegos |
+| `installer/test/test_app.c` (ASan + UBSan) | la app entera con un mando guionado sobre un sistema de archivos falso: activar, ajustes propios, volver a por defecto, cambiar los generales, guardar con `/app0` oculto tras el jailbreak (el caso de la consola), error al guardar con diálogo y diagnóstico, salir sin guardar, desinstalar, consola sin juegos ni plugin |
+| `installer/test/preview.c` | todas las pantallas a imagen; redibujo parcial = completo; tiempos de dibujo |
+| `installer/test/test_sound.c` | duración, nivel, sin saturar ni click final; mantener la flecha no apila sonidos |
 | regresión del emulador de GPU | con la memoria compartida, los 6 modos (FG, FG+RCAS, FG+SMAA, NXSR, FG+NXSR, NXSR Calidad) dan la misma salida byte a byte que antes |
 
 ## Qué falta validar en una consola

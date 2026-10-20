@@ -1,4 +1,4 @@
-# VCFG-NX 2.2: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
+# VCFG-NX 2.3: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
 
 Rediseño del **VCFG v2.14** (generador de fotogramas en beta de la comunidad
 de GoldHEN) que además incorpora un **modelo de reescalado/realce propio,
@@ -6,7 +6,7 @@ NXSR**, como alternativa a GNMScale pero sin el granulado que este agrega.
 Todo con la interfaz de VCFG: app instaladora con lista de juegos y menú en
 pantalla con **L3+R3**.
 
-**Descarga:** [`dist/VCFG-NX_v2.20.pkg`](dist/VCFG-NX_v2.20.pkg) (fPKG, app) ·
+**Descarga:** [`dist/VCFG-NX_v2.30.pkg`](dist/VCFG-NX_v2.30.pkg) (fPKG, app) ·
 [`dist/vcfg_nx.prx`](dist/vcfg_nx.prx) (plugin suelto) · [`dist/SHA256SUMS.txt`](dist/SHA256SUMS.txt)
 
 | servicio | qué hace |
@@ -48,9 +48,31 @@ juego):
   puede pagar a 1080p junto con la generación de fotogramas) no se puede
   "inventar" mucho detalle; lo que gana es nitidez real sin artefactos.
 
+## Novedades de la 2.3
+
+![lista de juegos](docs/img/app_juegos.jpg)
+
+* **Interfaz rediseñada**: fuente Inter con suavizado, tarjetas con bordes
+  redondeados, sombras, brillo en la tarjeta elegida, paneles translúcidos,
+  interruptores y selectores, íconos de los botones del mando.
+* **Sonidos** al moverse entre juegos, elegir, volver, cambiar de pestaña,
+  guardar y en los errores (generados por código, en un hilo propio).
+* **Arreglado "Error al guardar"**: la app escapaba del sandbox (para leer la
+  lista de juegos) antes de copiar el plugin desde `/app0`, y afuera esa ruta
+  ya no es la app. Ahora el plugin se lee al arrancar, con rutas de respaldo,
+  y si algo falla se muestra el motivo exacto con opciones (reintentar, ver
+  diagnóstico, salir sin guardar). Sin plugin no se toca ningún archivo.
+* **Íconos**: se buscan en varias carpetas del sistema y se cargan de a uno
+  mientras no se toca el mando. **Opciones → Diagnóstico** muestra cuántos
+  cargaron y, si alguno falla, la ruta.
+* **Salir** abre un diálogo: guardar y salir, salir sin guardar o cancelar.
+* **Fluidez**: solo se redibuja la zona que cambia (moverse entre juegos
+  redibuja dos tarjetas y el panel); sombras y marcos se calculan una vez.
+
+![ajustes de un juego](docs/img/app_ajustes_juego.jpg)
+
 ## Novedades de la 2.2
 
-![lista de juegos](docs/img/app_juegos.png)
 
 * **App nueva**: cuadrícula con los juegos instalados y sus íconos, filtros
   (todos / activos / con ajustes propios) y un panel con lo que va a usar el
@@ -66,8 +88,6 @@ juego):
   redibujaba la pantalla entera 30 veces por segundo).
 * Juegos en discos externos (`ext0`/`ext1`) sin repetir. Los modelos (NXFlow y
   NXSR) no cambiaron.
-
-![ajustes de un juego](docs/img/app_ajustes_juego.png)
 
 ## Novedades de la 2.1
 
@@ -119,12 +139,12 @@ no son juegos (`CUSA`/`PLAS`).
 ## Instalar y usar
 
 1. Requiere **GoldHEN** con soporte de plugins.
-2. Instalar `VCFG-NX_v2.20.pkg` y abrir **VCFG-NX**.
+2. Instalar `VCFG-NX_v2.30.pkg` y abrir **VCFG-NX**.
 3. En la cuadrícula: **X** activa o desactiva VCFG-NX en el juego,
    **CUADRADO** abre los ajustes de ese juego, **TRIÁNGULO** los ajustes por
    defecto, **L1/R1** cambia el filtro, **OPTIONS** abre el menú (activar o
-   desactivar todos, quitar ajustes propios, desinstalar, salir sin guardar) y
-   **CÍRCULO** guarda y sale.
+   desactivar todos, quitar ajustes propios, diagnóstico, desinstalar) y
+   **CÍRCULO** abre el diálogo de salida (guardar y salir / salir sin guardar).
    En los ajustes de un juego, cambiar cualquier valor lo pasa a "ajustes
    propios"; **CUADRADO** lo devuelve a los ajustes por defecto.
 4. En el juego: mantener **L3+R3** 1,5 s abre el menú (el juego no recibe los
@@ -208,6 +228,8 @@ se agregó SMAA 1x (1.0) y ahora NXSR, entrenado desde cero.
 * SMAA: Jimenez et al., MIT (`third_party/smaa/LICENSE.txt`). FSR1: AMD, MIT.
 * Fuente del menú: DejaVu Sans Mono (licencia libre de Bitstream Vera/DejaVu).
 * stb_image (Sean Barrett): dominio público / MIT, para los íconos de la app.
+* Fuente de la app: Inter (The Inter Project Authors), SIL Open Font License 1.1
+  (`third_party/inter/OFL.txt`); los glifos pre-renderizados siguen bajo la misma licencia.
 * Formato PKG/PFS: LibOrbisPkg (maxton). Toolchain: OpenOrbis y GoldHEN Plugins SDK.
 * Datos: Big Buck Bunny (© Blender Foundation, CC-BY 3.0), Urban100, BSD100,
   Set14, Sun-Hays80, clips de muestra de scikit-video/OpenCV y escenas
