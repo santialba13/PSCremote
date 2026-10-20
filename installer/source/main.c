@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <dirent.h>
 #include <sys/stat.h>
 #include <time.h>
 
@@ -58,7 +59,7 @@
 #define CFG_DIR ROOT "/data/vcfg_nx"
 #define TITLE_ID "VCNX00001"
 #define CONTENT_ID "IV0000-VCNX00001_00-VCFGNXINSTALL000"
-#define VERSION "2.4.6"
+#define VERSION "2.4.7"
 
 #define W 1920
 #define H 1080
@@ -236,7 +237,52 @@ static int write_verified(const char* path, const void* data, size_t n)
     free(back);
     if (!ok) { remove(tmp); return -2; }
     remove(path);
-    return rename(tmp, path) == 0 ? 0 : -3;
+    if (rename(tmp, path) != 0) return -3;
+    chmod(path, 0777);
+    return 0;
+}
+
+// Permisos: la PS4 contesta 0x8002000D (EACCES) al cargar un PRX que el
+// proceso del juego no puede abrir/ejecutar, y el cargador de GoldHEN no puede
+// hacerle chmod a un archivo que creo otra app. Todo lo nuestro queda 0777.
+static int fix_perms(const char* path)
+{
+    struct stat st;
+    if (stat(path, &st) != 0) return 0;
+    if ((st.st_mode & 0777) != 0777) chmod(path, 0777);
+    return 1;
+}
+
+static void fix_all_perms(void)
+{
+    fix_perms(GOLDHEN_DIR);
+    fix_perms(PLUGIN_DIR);
+    fix_perms(PLUGINS_INI);
+    fix_perms(PLUGIN_DST);
+    fix_perms(PROBE_DST);
+    mkdir(CFG_DIR, 0777);
+    mkdir(CFG_DIR "/logs", 0777);
+    fix_perms(CFG_DIR);
+    fix_perms(CFG_DIR "/logs");
+    DIR* d = opendir(CFG_DIR);   // los .ini y archivos del plugin dentro de /data/vcfg_nx
+    if (d) {
+        struct dirent* e;
+        char p[300];
+        while ((e = readdir(d))) {
+            if (e->d_name[0] == '.') continue;
+            snprintf(p, sizeof p, CFG_DIR "/%s", e->d_name);
+            fix_perms(p);
+        }
+        closedir(d);
+    }
+}
+
+// "0777 uid 0" de un archivo, o "no existe"
+static void perm_text(const char* path, char* out, size_t n)
+{
+    struct stat st;
+    if (stat(path, &st) != 0) { snprintf(out, n, "no existe"); return; }
+    snprintf(out, n, "%04o uid %d gid %d", (unsigned)(st.st_mode & 07777), (int)st.st_uid, (int)st.st_gid);
 }
 
 static int write_text_verified(const char* path, const char* text) { return write_verified(path, text, strlen(text)); }
@@ -404,6 +450,7 @@ static int save_all(int uninstall)
         }
         g->cfg_dirty = 0;
     }
+    fix_all_perms();
     return 0;
 }
 
@@ -1186,9 +1233,9 @@ static int load_test(const char* path, char* out, size_t n)
 {
     // el modulo queda cargado (sin plugin_load no hace nada) y el resultado se
     // guarda: abrir Diagnostico otra vez no lo vuelve a cargar
-    static char done[2][80];
-    static int done_ok[2], tried[2];
-    int k = strstr(path, "probe") != NULL;
+    static char done[3][80];
+    static int done_ok[3], tried[3];
+    int k = strstr(path, "probe") ? 1 : strstr(path, "gnmscale") ? 2 : 0;
     if (tried[k]) { snprintf(out, n, "%s", done[k]); return done_ok[k]; }
     if (jailed) { snprintf(out, n, "sin probar (sin acceso)"); return 0; }
     FILE* f = fopen(path, "rb");
@@ -1212,8 +1259,12 @@ static void diag_collect(void)
     const inst_game_t* g = nvis ? &games[vis[sel]] : NULL;
     char (*L)[300] = modal_lines;
     for (int i = 0; i < 9; ++i) { L[i][0] = 0; diag.line_color[i] = 0; }
-    snprintf(L[0], 300, "GoldHEN SDK %x.%02x \xb7 acceso fuera del sandbox: %s \xb7 app %s", diag.sdk >> 8,
-             diag.sdk & 0xFF, jailed ? "NO" : "s\xed", VERSION);
+    if (diag.sdk == 0xFFFFFFFFu)
+        snprintf(L[0], 300, "GoldHEN SDK: no responde \xb7 acceso fuera del sandbox: %s \xb7 app %s",
+                 jailed ? "NO" : "s\xed", VERSION);
+    else
+        snprintf(L[0], 300, "GoldHEN SDK %x.%02x \xb7 acceso fuera del sandbox: %s \xb7 app %s", diag.sdk >> 8,
+                 diag.sdk & 0xFF, jailed ? "NO" : "s\xed", VERSION);
     if (jailed) diag.line_color[0] = C_WARN;
     snprintf(L[1], 300, "Plugin dentro de la app: %s (%zu KB)", prx ? prx_from : "NO ENCONTRADO", prx_len >> 10);
     if (!prx) diag.line_color[1] = C_DANGER;
@@ -1270,8 +1321,15 @@ static void diag_collect(void)
     // consola si el archivo en si se puede cargar.
     char t1[80], t2[80];
     int ok1 = load_test(PROBE_DST, t1, sizeof t1), ok2 = load_test(PLUGIN_DST, t2, sizeof t2);
-    snprintf(L[7], 300, "Prueba de carga: sonda %s \xb7 plugin %s", t1, t2);
+    char t3[80], pm1[48], pm2[48];
+    const char* gnms = PLUGIN_DIR "/gnmscale_plugin.prx";
+    int ctl = load_test(gnms, t3, sizeof t3);
+    perm_text(PLUGIN_DST, pm1, sizeof pm1);
+    perm_text(gnms, pm2, sizeof pm2);
+    snprintf(L[7], 300, "Prueba de carga: sonda %s \xb7 plugin %s \xb7 control GNMScale %s", t1, t2, t3);
     diag.line_color[7] = ok1 && ok2 ? C_OK : C_DANGER;
+    (void)ctl;
+    snprintf(L[8], 300, "Permisos: vcfg_nx.prx %s \xb7 gnmscale_plugin.prx %s", pm1, pm2);
     if (diag.save_error[0]) {
         snprintf(L[7] + strlen(L[7]), 300 - strlen(L[7]), " \xb7 error al guardar: %s", diag.save_error);
         diag.line_color[7] = C_DANGER;
@@ -1282,7 +1340,7 @@ static void diag_collect(void)
     if (rep) {
         size_t o = 0;
         o += (size_t)snprintf(rep + o, cap - o, "VCFG-NX %s - diagnostico\n\n", VERSION);
-        for (int i = 0; i < 8; ++i) o += (size_t)snprintf(rep + o, cap - o, "%s\n", L[i]);
+        for (int i = 0; i < 9; ++i) o += (size_t)snprintf(rep + o, cap - o, "%s\n", L[i]);
         o += (size_t)snprintf(rep + o, cap - o, "\n==== plugins.ini ====\n%s\n", ini);
         size_t ll = strlen(loads);
         o += (size_t)snprintf(rep + o, cap - o, "\n==== logs/cargas.txt (final) ====\n%s\n", loads + (ll > 4096 ? ll - 4096 : 0));
@@ -1292,7 +1350,7 @@ static void diag_collect(void)
         }
         mkdir(CFG_DIR, 0777);
         int ok = write_text_verified(CFG_DIR "/reporte.txt", rep) == 0;
-        snprintf(L[8], 300, ok ? "Reporte completo guardado en /data/vcfg_nx/reporte.txt" : "No se pudo guardar el reporte");
+        if (!ok) snprintf(L[8] + strlen(L[8]), 300 - strlen(L[8]), " \xb7 no se pudo guardar el reporte");
         free(rep);
     }
     free(log);

@@ -48,7 +48,7 @@ static void make_fs(void)
     }
     // un juego sin appmeta: nombre e icono salen de su app.pkg (aca, el PKG de VCFG-NX)
     mkdir("tfs/user/app/CUSA00009", 0755);
-    system("cp ../../dist/VCFG-NX_v2.46.pkg tfs/user/app/CUSA00009/app.pkg");
+    system("cp ../../dist/VCFG-NX_v2.47.pkg tfs/user/app/CUSA00009/app.pkg");
     put("tfs/data/GoldHEN/plugins.ini", "[default]\n/data/GoldHEN/plugins/otro.prx\n\n[CUSA00003]\n" PLUGIN_LINE "\n");
     put("tfs/data/vcfg_nx/CUSA00003.ini", "sr = 1\n");
     put("tfs/app0/plugins/vcfg_nx.prx", "PRX de prueba");
@@ -132,6 +132,12 @@ int main(void)
     char* plug = get(PLUGIN_DST);
     CHECK(!strcmp(plug, "PRX de prueba"), "el plugin instalado no es el de la app (/app0 oculto tras el jailbreak)");
     free(plug);
+    {
+        struct stat st1, st2, st3;
+        CHECK(stat(PLUGIN_DST, &st1) == 0 && (st1.st_mode & 0777) == 0777 && stat(PROBE_DST, &st2) == 0
+              && (st2.st_mode & 0777) == 0777 && stat(PLUGINS_INI, &st3) == 0 && (st3.st_mode & 0777) == 0777,
+              "permisos: el plugin, la sonda y plugins.ini tienen que quedar 0777");
+    }
     char* pr = get(PROBE_DST);
     CHECK(!strcmp(pr, "sonda de prueba"), "la sonda no se instalo");
     free(pr);

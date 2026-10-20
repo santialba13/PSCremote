@@ -1,4 +1,4 @@
-# VCFG-NX 2.46: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
+# VCFG-NX 2.47: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
 
 Rediseño del **VCFG v2.14** (generador de fotogramas en beta de la comunidad
 de GoldHEN) que además incorpora un **modelo de reescalado/realce propio,
@@ -6,7 +6,7 @@ NXSR**, como alternativa a GNMScale pero sin el granulado que este agrega.
 Todo con la interfaz de VCFG: app instaladora con lista de juegos y menú en
 pantalla con **L3+R3**.
 
-**Descarga:** [`dist/VCFG-NX_v2.46.pkg`](dist/VCFG-NX_v2.46.pkg) (fPKG, app) ·
+**Descarga:** [`dist/VCFG-NX_v2.47.pkg`](dist/VCFG-NX_v2.47.pkg) (fPKG, app) ·
 [`dist/vcfg_nx.prx`](dist/vcfg_nx.prx) (plugin suelto) · [`dist/SHA256SUMS.txt`](dist/SHA256SUMS.txt)
 
 | servicio | qué hace |
@@ -64,6 +64,18 @@ botones mientras está abierto):
   RCAS, contador de FPS (con temperatura) y comparar.
 * Arriba se ven los FPS, la temperatura y el estado (activo, calidad dinámica,
   calor). **Guardar** deja todo para ese juego; **O** cierra.
+
+## Novedades de la 2.47
+
+**Error 0x8002000D (EACCES, permiso denegado) al cargar el plugin.** El
+Diagnóstico de una consola real mostró que la sonda y el plugin daban
+`0x8002000D` al cargarse. El cargador de GoldHEN hace `chmod 0777` antes de
+cargar cada plugin, pero desde el proceso del juego no puede cambiarle los
+permisos a un archivo que creó otra app. Ahora la app deja 0777 el plugin, la
+sonda, `plugins.ini`, `/data/GoldHEN/plugins` y `/data/vcfg_nx` (y sus
+archivos) cada vez que se abre. El Diagnóstico muestra los permisos de
+`vcfg_nx.prx` junto a los de `gnmscale_plugin.prx` y prueba cargar también el
+de GNMScale como control.
 
 ## Novedades de la 2.46
 
@@ -271,7 +283,7 @@ compartir para arreglar un juego puntual.
 ## Instalar y usar
 
 1. Requiere **GoldHEN** con soporte de plugins.
-2. Instalar `VCFG-NX_v2.46.pkg` y abrir **VCFG-NX**.
+2. Instalar `VCFG-NX_v2.47.pkg` y abrir **VCFG-NX**.
 3. En la cuadrícula: **X** activa o desactiva VCFG-NX en el juego,
    **CUADRADO** abre los ajustes de ese juego, **TRIÁNGULO** los ajustes por
    defecto, **L1/R1** cambia el filtro, **OPTIONS** abre el menú (activar o
