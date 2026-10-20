@@ -110,6 +110,35 @@ ambos métodos: ahí está el margen que queda por ganar con más entrenamiento.
 
 ![comparación](img/comparacion_sintetico.png)
 
+## 5b. Reescalado IA: NXSR frente a GNMScale
+
+Validación: 800 recortes de 192 px de Urban100, BSD100, Set14 y Big Buck
+Bunny (no vistos en el entrenamiento), con degradaciones de juego: render a
+menor resolución (1x a 2x) reescalado, desenfoque tipo TAA, ruido y
+cuantización a 8 bits. "Zonas planas" mide el PSNR solo donde el original es
+liso (desvío local < 2/255: ahí todo cambio es grano); "halo" cuenta píxeles
+que se salen más de 4/255 del rango 3x3 del original limpio.
+
+| método | PSNR | SSIM | PSNR en zonas planas (grano) | píxeles con halo |
+|---|---|---|---|---|
+| imagen sin procesar | 27.28 | 0.886 | 42.57 | 1.9 % |
+| FSR1 RCAS | 26.79 | 0.868 | 35.59 | 18.2 % |
+| GNMScale fidelity | 25.16 | 0.828 | 35.56 | 25.6 % |
+| GNMScale sharp-fast | 24.92 | 0.829 | 35.71 | 26.2 % |
+| GNMScale sharp | 25.11 | 0.825 | 35.52 | 26.5 % |
+| **NXSR (VCFG-NX)** | **27.68** | **0.895** | **42.73** | **2.2 %** |
+
+* NXSR: +0,40 dB y +0,009 SSIM sobre no hacer nada, sin grano (zonas planas
+  incluso un poco mejor, porque limpia ruido) y con halos al nivel del
+  original. 16 canales, 4 268 pesos, 1 056 MAC/píxel; entrenado 12 000 pasos
+  en CPU (lote 32, Charbonnier + gradiente).
+* La mejora es modesta: es una red chica para que quepa en la GPU de PS4 junto
+  con la generación de fotogramas. Más datos (capturas del juego) y
+  entrenamiento en GPU deberían subirla sin cambiar el plugin.
+* Experimentos: margen del limitador 0 (27,55) vs 0,25 (27,49) vs sin
+  limitador (27,47); C = 24 con 2 capas igualó a C = 16 con 1 al doble de
+  coste, por eso quedó C = 16.
+
 ## 6. Simulador de consola (evaluación segura)
 
 `plugin/test/console_sim.c` compila el **mismo motor** del plugin

@@ -1,2 +1,2 @@
-77fddff4715d11b6a3ddbf317faa89a83ce539d9acb99dce9139feb37aa54d33  VCFG-NX_v1.00.pkg
-22685bca603e60db9dad24b03ada541b552011f829b5ebaceb06bda67915dc35  vcfg_nx.prx
+2a4c68c6c8c0893665cb7cf5510c05a0caf1ba910e4bec72a00a7a79f7f2b15a  VCFG-NX_v2.00.pkg
+d5b0bbb9d522ffb380aab04168073bc5c7f439126819ccfd8b09c1497cefe295  vcfg_nx.prx

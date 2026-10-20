@@ -31,7 +31,14 @@ que son filtros de nitidez aprendidos sin límite. Evaluadas sobre el mismo
 conjunto (Urban100, BSD100, Set14 y Big Buck Bunny con degradaciones de
 juego):
 
-{{TABLA_SR}}
+| método | PSNR | SSIM | PSNR en zonas planas (grano) | píxeles con halo |
+|---|---|---|---|---|
+| imagen sin procesar | 27.28 | 0.886 | 42.57 | 1.9 % |
+| FSR1 RCAS | 26.79 | 0.868 | 35.59 | 18.2 % |
+| GNMScale fidelity | 25.16 | 0.828 | 35.56 | 25.6 % |
+| GNMScale sharp-fast | 24.92 | 0.829 | 35.71 | 26.2 % |
+| GNMScale sharp | 25.11 | 0.825 | 35.52 | 26.5 % |
+| **NXSR (VCFG-NX)** | **27.68** | **0.895** | **42.73** | **2.2 %** |
 
 * GNMScale empeora la imagen: amplifica ruido en zonas planas (el granulado)
   y deja halos en uno de cada cuatro píxeles.

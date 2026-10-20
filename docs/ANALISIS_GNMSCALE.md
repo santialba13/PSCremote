@@ -50,6 +50,7 @@ típicas de un juego (render a menor resolución, desenfoque de TAA, grano).
 | GNMScale fidelity | 25.16 | 35.56 | 25.6 % |
 | GNMScale sharp-fast | 24.92 | 35.71 | 26.2 % |
 | GNMScale sharp | 25.11 | 35.52 | 26.5 % |
+| **NXSR (VCFG-NX)** | **27.68** | **42.73** | **2.2 %** |
 
 Las tres **empeoran** la imagen respecto de no hacer nada:
 

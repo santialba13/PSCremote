@@ -207,17 +207,17 @@ Marcado con `VALIDAR` en `plugin/source/main.c` y `gcn_desc.h`:
    real) se presenten en orden y en vblanks consecutivos en todos los juegos.
 3. Bits exactos de `EVENT_WRITE_EOP` / `SURFACE_SYNC` para el flush de caches
    antes de presentar.
-4. Juegos que usan colas de compute asíncronas o `SubmitFlip` desde CPU: el
-   original los detecta y se pone "inerte"; aquí quedan sin hook (nativo).
+4. Juegos que presentan con `sceVideoOutSubmitFlip` desde la CPU: desde la 2.0
+   se enganchan (nuestro DCB se envía y luego se llama al flip original), y el
+   simulador lo cubre, pero el orden respecto del trabajo de GPU del juego hay
+   que confirmarlo en consola. Colas de compute asíncronas: sin soporte.
 
 ## Próximos pasos (fase 2)
 
 * **Escalado temporal tipo DLSS/FSR2** cuando haya vectores de movimiento del
   juego: acumular fotogramas anteriores reproyectados. Requiere encontrar el
   buffer de velocidad de cada juego (lo que intenta "GV" del original).
-* Convoluciones con LDS (tiles 16x16 + halo) para bajar el ancho de banda.
-* Menú en pantalla (el original lo tiene; acá solo L3+R3 activar/desactivar y
-  `/data/vcfg_nx/config.ini`).
+* Convoluciones con LDS también en NXFlow (NXSR ya las usa).
 * Detección de cortes de escena: hoy en un corte se genera un intermedio
   "fantasma" (dura 16 ms). Se puede detectar con el coste del block-matching
   y repetir el fotograma.
