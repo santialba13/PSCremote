@@ -2,7 +2,7 @@
 #   make OO_PS4_TOOLCHAIN=/ruta/OpenOrbis/PS4Toolchain GOLDHEN_SDK=/ruta/GoldHEN_Plugins_SDK
 # Compila tambien el plugin (../plugin) y lo mete en el PKG en /app0/plugins/.
 TITLE       := VCFG-NX
-VERSION     := 2.20
+VERSION     := 2.30
 TITLE_ID    := VCNX00001
 CONTENT_ID  := IV0000-VCNX00001_00-VCFGNXINSTALL000
 
@@ -17,7 +17,7 @@ STAGE     := $(OUT)/stage
 CFLAGS  := --target=x86_64-pc-freebsd12-elf -fPIC -funwind-tables -O2 -Wall \
            -isysroot $(TOOLCHAIN) -isystem $(TOOLCHAIN)/include -I$(GOLDHEN_SDK)/include
 LDFLAGS := -m elf_x86_64 -pie --script $(TOOLCHAIN)/link.x --eh-frame-hdr -L$(TOOLCHAIN)/lib -L$(GOLDHEN_SDK) \
-           -lGoldHEN_Hook -lc -lkernel -lSceSystemService -lSceVideoOut -lScePad -lSceUserService -lSceSysmodule \
+           -lGoldHEN_Hook -lc -lkernel -lSceSystemService -lSceVideoOut -lSceAudioOut -lScePad -lSceUserService -lSceSysmodule \
            $(TOOLCHAIN)/lib/crt1.o
 
 all: $(OUT)/$(CONTENT_ID).pkg
@@ -25,7 +25,7 @@ all: $(OUT)/$(CONTENT_ID).pkg
 ../plugin/build/vcfg_nx.prx: FORCE
 	$(MAKE) -C ../plugin
 
-$(OUT)/%.o: source/%.c source/inst_core.h ../plugin/source/config.h ../plugin/include/nx_font.h
+$(OUT)/%.o: source/%.c source/inst_core.h source/ui_gfx.h source/ui_sound.h source/ui_font_data.h ../plugin/source/config.h
 	@mkdir -p $(OUT)
 	clang $(CFLAGS) -c -o $@ $<
 
@@ -34,7 +34,7 @@ $(OUT)/config.o: ../plugin/source/config.c ../plugin/source/config.h
 	@mkdir -p $(OUT)
 	clang $(CFLAGS) -c -o $@ $<
 
-OBJS := $(OUT)/main.o $(OUT)/inst_core.o $(OUT)/config.o
+OBJS := $(OUT)/main.o $(OUT)/inst_core.o $(OUT)/ui_gfx.o $(OUT)/ui_sound.o $(OUT)/config.o
 
 $(STAGE)/eboot.bin: $(OBJS)
 	@mkdir -p $(STAGE)

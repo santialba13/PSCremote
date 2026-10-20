@@ -65,15 +65,20 @@ static void run_app(void)
 {
     fake_pad = script; fake_pad_n = nscript; fake_pad_i = 0;
     memset(games, 0, sizeof games);
-    ngames = nvis = sel = top_row = filter = dirty = backup_done = 0;
+    ngames = nvis = sel = top_row = filter = dirty_cfg = backup_done = jailed = 0;
+    view = modal_of = V_GRID; modal_kind = M_NONE; settings_game = -1;
+    free(prx); prx = NULL; prx_len = 0;
+    memset(&diag, 0, sizeof diag);
+    memset(icons, 0, sizeof icons); big_icon.game = -1;
     fake_exit_armed = 1;
     if (!setjmp(fake_exit)) app_main();
     fake_exit_armed = 0;
+    fake_hide_app0 = 0;
 }
 
 int main(void)
 {
-    // 1. activar, ajustes propios, volver a por defecto, ajustes generales, guardar
+    // 1. activar, ajustes propios, volver a por defecto, ajustes generales, guardar y salir
     make_fs();
     nscript = 0;
     press(ORBIS_PAD_BUTTON_CROSS, 1);                 // Alpha: ON
@@ -92,7 +97,9 @@ int main(void)
     press(ORBIS_PAD_BUTTON_DOWN, 3);                  // SMAA
     press(ORBIS_PAD_BUTTON_RIGHT, 1);                 // OFF
     press(ORBIS_PAD_BUTTON_CIRCLE, 1);
-    press(ORBIS_PAD_BUTTON_CIRCLE, 1);                // guardar y salir
+    press(ORBIS_PAD_BUTTON_CIRCLE, 1);                // Salir...
+    press(ORBIS_PAD_BUTTON_CROSS, 1);                 // ...Guardar y salir
+    fake_hide_app0 = 1;                               // como en la consola: fuera del sandbox no hay /app0
     run_app();
     CHECK(ngames == 3 && !strcmp(games[0].title, "Alpha") && !strcmp(games[1].title, "beta"), "lista ordenada");
     char* ini = get(PLUGINS_INI);
@@ -109,11 +116,12 @@ int main(void)
           "ajustes propios de beta: %s", g2);
     free(g2);
     CHECK(!exists(CFG_DIR "/CUSA00003.ini"), "Gamma volvio a por defecto pero su .ini sigue");
-    CHECK(exists(PLUGIN_DIR "/vcfg_nx.prx"), "no copio el plugin");
-    // lo que guardo la app lo lee igual el plugin
-    nx_config_t c;
-    nx_config_load(&c, "CUSA00002", NULL);
-    {
+    char* plug = get(PLUGIN_DST);
+    CHECK(!strcmp(plug, "PRX de prueba"), "el plugin instalado no es el de la app (/app0 oculto tras el jailbreak)");
+    free(plug);
+    CHECK(diag.save_error[0] == 0, "error al guardar: %s", diag.save_error);
+    {   // lo que guardo la app lo lee igual el plugin
+        nx_config_t c;
         nx_config_defaults(&c);
         char* t = get(CFG_DIR "/config.ini"); nx_config_parse(&c, t); free(t);
         t = get(CFG_DIR "/CUSA00002.ini"); nx_config_parse(&c, t); free(t);
@@ -125,41 +133,59 @@ int main(void)
     nscript = 0;
     press(ORBIS_PAD_BUTTON_R1, 1);                    // Activos
     press(ORBIS_PAD_BUTTON_CROSS, 1);                 // desactiva el primero
-    press(ORBIS_PAD_BUTTON_OPTIONS, 1);
-    press(ORBIS_PAD_BUTTON_DOWN, 4);                  // Salir sin guardar
-    press(ORBIS_PAD_BUTTON_CROSS, 1);
-    press(ORBIS_PAD_BUTTON_CROSS, 1);                 // confirmar
+    press(ORBIS_PAD_BUTTON_CIRCLE, 1);                // Salir...
+    press(ORBIS_PAD_BUTTON_DOWN, 1);
+    press(ORBIS_PAD_BUTTON_CROSS, 1);                 // ...sin guardar
     run_app();
     CHECK(filter == F_ON, "L1/R1 no cambio el filtro");
     char* after = get(PLUGINS_INI);
     CHECK(!strcmp(before, after), "salir sin guardar modifico plugins.ini");
     free(before); free(after);
 
-    // 3. desinstalar
+    // 3. error al guardar: el plugin no se puede escribir -> dialogo con el motivo, sin colgarse
+    system("rm -f tfs/data/GoldHEN/plugins/vcfg_nx.prx && mkdir -p tfs/data/GoldHEN/plugins/vcfg_nx.prx/x");
+    nscript = 0;
+    press(ORBIS_PAD_BUTTON_CIRCLE, 1);
+    press(ORBIS_PAD_BUTTON_CROSS, 1);                 // Guardar y salir -> falla
+    press(ORBIS_PAD_BUTTON_DOWN, 1);
+    press(ORBIS_PAD_BUTTON_CROSS, 1);                 // Ver diagnostico
+    press(ORBIS_PAD_BUTTON_CIRCLE, 1);                // vuelve a Opciones
+    press(ORBIS_PAD_BUTTON_CIRCLE, 1);                // cierra
+    press(ORBIS_PAD_BUTTON_CIRCLE, 1);                // Salir...
+    press(ORBIS_PAD_BUTTON_DOWN, 1);
+    press(ORBIS_PAD_BUTTON_CROSS, 1);                 // ...sin guardar
+    run_app();
+    CHECK(strstr(diag.save_error, "-31") != NULL, "el error no explica que fallo: '%s'", diag.save_error);
+    system("rm -rf tfs/data/GoldHEN/plugins/vcfg_nx.prx");
+
+    // 4. desinstalar
     nscript = 0;
     press(ORBIS_PAD_BUTTON_OPTIONS, 1);
-    press(ORBIS_PAD_BUTTON_DOWN, 3);
+    press(ORBIS_PAD_BUTTON_DOWN, 4);                  // Desinstalar
     press(ORBIS_PAD_BUTTON_CROSS, 1);
+    press(ORBIS_PAD_BUTTON_UP, 1);                    // el dialogo arranca en "Cancelar"
     press(ORBIS_PAD_BUTTON_CROSS, 1);
     run_app();
     ini = get(PLUGINS_INI);
     CHECK(!strstr(ini, PLUGIN_LINE) && strstr(ini, "otro.prx"), "desinstalar: %s", ini);
     free(ini);
-    CHECK(!exists(PLUGIN_DIR "/vcfg_nx.prx"), "desinstalar no borro el plugin");
+    CHECK(!exists(PLUGIN_DST), "desinstalar no borro el plugin");
     CHECK(exists(CFG_DIR "/CUSA00002.ini"), "desinstalar borro los ajustes");
 
-    // 4. sin juegos ni GoldHEN: no se cuelga
+    // 5. sin juegos ni GoldHEN ni plugin: no se cuelga y lo explica
     system("rm -rf tfs && mkdir -p tfs");
     nscript = 0;
     press(ORBIS_PAD_BUTTON_RIGHT, 2);
     press(ORBIS_PAD_BUTTON_SQUARE, 1);
     press(ORBIS_PAD_BUTTON_CROSS, 1);
-    press(ORBIS_PAD_BUTTON_OPTIONS, 1);
-    press(ORBIS_PAD_BUTTON_DOWN, 4);
-    press(ORBIS_PAD_BUTTON_CROSS, 1);
-    press(ORBIS_PAD_BUTTON_CROSS, 1);
+    press(ORBIS_PAD_BUTTON_L1, 1);
+    press(ORBIS_PAD_BUTTON_CIRCLE, 1);
+    press(ORBIS_PAD_BUTTON_CROSS, 1);                 // Guardar y salir -> no hay plugin en la app
+    press(ORBIS_PAD_BUTTON_DOWN, 2);
+    press(ORBIS_PAD_BUTTON_CROSS, 1);                 // Salir sin guardar
     run_app();
-    CHECK(ngames == 0 && strstr(msg, "GoldHEN") == NULL, "sin juegos");
+    CHECK(ngames == 0, "sin juegos");
+    CHECK(strstr(diag.save_error, "-30") != NULL, "sin plugin en la app: '%s'", diag.save_error);
     system("rm -rf tfs");
     printf(fails ? "%d FALLOS\n" : "OK: app de punta a punta\n", fails);
     return fails != 0;

@@ -20,3 +20,4 @@ installer/test/test_core
 installer/test/test_app
 installer/test/preview
 installer/test/ui_*.ppm
+installer/test/test_sound
