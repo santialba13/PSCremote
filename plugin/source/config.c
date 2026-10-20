@@ -23,7 +23,7 @@ void nx_config_defaults(nx_config_t* c)
     c->out_h = 1080;
     c->max_game_fps = 48;
     c->menu_hold_ms = 1500;
-    c->warmup_flips = 600;     // ~20 s a 30 fps: el juego termina de cargar antes de que reservemos nada
+    c->warmup_flips = 1200;    // ~40 s a 30 fps: el arranque ya quedo confirmado (900) antes de usar la GPU
     c->reserve_mb = 192;
 }
 

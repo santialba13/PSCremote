@@ -23,7 +23,7 @@
 attr_public const char* g_pluginName = "vcfg_nx";
 attr_public const char* g_pluginDesc = "Frame generation + reescalado IA (NXSR) + SMAA/FSR1, menu L3+R3";
 attr_public const char* g_pluginAuth = "VCFG-NX";
-attr_public u32 g_pluginVersion = 0x00000249; // 2.49
+attr_public u32 g_pluginVersion = 0x00000250; // 2.50
 
 // prototipos de las variantes ForWorkload (OpenOrbis las declara sin argumentos)
 typedef s32 (*submit_wl_t)(u64, u32, void**, u32*, void**, u32*);
@@ -219,6 +219,9 @@ static int pf_read_file(const char* path, char* buf, int cap)
     return n;
 }
 
+typedef int (*fsync_fn)(int);
+static fsync_fn g_fsync;
+
 static int write_flags(const char* path, const char* data, int len, int flags)
 {
     int fd = sceKernelOpen(path, K_WRONLY | K_CREAT | flags, 0777);
@@ -233,6 +236,10 @@ static int write_flags(const char* path, const char* data, int len, int flags)
         if (r <= 0) break;
         n += r;
     }
+    // al disco ya: si la consola se cuelga y hay que apagarla a la fuerza, la
+    // marca de arranque y las etapas tienen que quedar (fsync se busca por
+    // nombre: ningun PRX que funcione lo importa)
+    if (g_fsync) g_fsync(fd);
     sceKernelClose(fd);
     return n;
 }
@@ -495,6 +502,7 @@ s32 attr_public plugin_load(s32 argc, const char* argv[])
     if (sys_sdk_proc_info(&info) == 0)
         memcpy(title, info.titleid, sizeof title - 1);
     make_dirs();
+    g_fsync = (fsync_fn)find_sym("sceKernelFsync");
     memcpy(g_title_s, title, sizeof g_title_s);
     boot_mark("plugin_load", title);
     // aviso visible lo antes posible: si no aparece al abrir el juego, GoldHEN no cargo el plugin

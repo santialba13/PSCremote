@@ -230,6 +230,9 @@ static void boot(const game_t* g, int keep_files)
     C.pool = g->pool_mb << 20;
     C.used = g->game_mb << 20;
     C.pro = boot_pro;
+    // los escenarios se escribieron con 600 fotogramas de arranque (el valor por
+    // defecto ahora es 1200: ver el escenario 24)
+    if (!find_file("/data/vcfg_nx/config.ini")) sim_write("/data/vcfg_nx/config.ini", "warmup_flips = 600\n", 19);
     nx_engine_init(&PF, g->title);
     free(g_fb);
     g_fb = calloc(1, 4096);
@@ -325,7 +328,7 @@ int main(int argc, char** argv)
 
     // 3b. GPU trabada con el contador de FPS (queda trabajo propio): pausa y reintento
     boot(&bb, 0);
-    sim_write("/data/vcfg_nx/config.ini", "fps_counter = 1\n", 16);
+    sim_write("/data/vcfg_nx/config.ini", "fps_counter = 1\nwarmup_flips = 600\n", 35);
     nx_engine_init(&PF, bb.title);
     {
         void* ad[2] = { g_fb, g_fb + 256 };
@@ -701,6 +704,14 @@ int main(int argc, char** argv)
     report("    ...reserva de trabajo devuelta al juego");
     CHECK(I()->menu_open && !I()->full_ready, "con solo la base deberia quedar el menu");
     common_checks();
+
+    // 24. por defecto el arranque dura 1200 fotogramas: el plugin no usa la GPU
+    //     antes de que el arranque quede confirmado (900)
+    {
+        nx_config_t c;
+        nx_config_defaults(&c);
+        CHECK(c.warmup_flips == 1200, "warmup por defecto (%d)", c.warmup_flips);
+    }
 
     // 10. juego que arranca en un proceso que no es un juego
     game_t sh = bb; sh.title = "NPXS20001";
