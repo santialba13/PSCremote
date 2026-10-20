@@ -176,8 +176,24 @@ static int sim_write(const char* p, const char* d, int len)
     return len;
 }
 
+// registro del plugin: un solo archivo grande en memoria
+static char sim_logfile[1 << 20];
+static int sim_loglen;
+static char sim_logpath[96];
+
+static int sim_append(const char* p, const char* d, int len)
+{
+    snprintf(sim_logpath, sizeof sim_logpath, "%s", p);
+    if (sim_loglen + len >= (int)sizeof sim_logfile - 1) return -1;
+    memcpy(sim_logfile + sim_loglen, d, (size_t)len);
+    sim_loglen += len;
+    sim_logfile[sim_loglen] = 0;
+    return len;
+}
+
 static const nx_platform_t PF = { sim_alloc, sim_avail, sim_register, sim_rate, sim_submit, sim_submit_flip,
-                                  sim_now, sim_sleep, sim_notify, sim_log, sim_read, sim_write, sim_is_pro, sim_temp };
+                                  sim_now, sim_sleep, sim_notify, sim_log, sim_read, sim_write, sim_append,
+                                  sim_is_pro, sim_temp };
 
 // ------------------------------------------------------------- juego
 typedef struct {
@@ -199,6 +215,7 @@ static void boot(const game_t* g, int keep_files)
     for (int i = 0; i < C.nallocs; ++i) free(C.allocs[i]);
     memset(&C, 0, sizeof C);
     cpu_flips = 0;
+    sim_loglen = 0; sim_logfile[0] = 0;
     if (keep_files) { memcpy(C.files, files, sizeof files); C.nfiles = nfiles; }
     C.pool = g->pool_mb << 20;
     C.used = g->game_mb << 20;
@@ -371,12 +388,15 @@ int main(int argc, char** argv)
     report("5. menu y guardado");
     common_checks();
 
-    // 6. juego HDR: no se toca nada
+    // 6. juego HDR: solo el menu (sin efectos que alteren la imagen)
     game_t hdr = bb; hdr.format = (int32_t)0x88740000;
     boot(&hdr, 0);
     play(&hdr, 2000, 0);
     report("6. juego HDR");
-    CHECK(I()->state == NX_ST_OFF && C.used == (size_t)hdr.game_mb << 20 && C.flips == 2000, "HDR no quedo intacto");
+    CHECK(I()->state == NX_ST_RUN && !I()->full_ready && C.used <= ((size_t)hdr.game_mb << 20) + (1 << 20)
+          && C.flips == 2000 && I()->our_jobs == 0, "HDR deberia quedar intacto salvo el menu");
+    pad_buttons = 0x0002 | 0x0004; play(&hdr, 60, 0); pad_buttons = 0; play(&hdr, 10, 0);
+    CHECK(I()->menu_open && I()->our_jobs > 0, "en HDR el menu deberia abrirse");
     common_checks();
 
     // 7. juego a 60 fps: sin frame generation (pero con reescalado)
@@ -570,6 +590,78 @@ int main(int argc, char** argv)
     play(&bb, 300, 0);
     report("18. interruptor general (menu L3+R3)");
     CHECK(I()->our_jobs > jobs_before + 250 && C.flips > flips_before + 500, "no volvio a procesar (FG)");
+    common_checks();
+
+    // 19. registro de a un buffer por llamada (y un handle de otra salida que se ignora)
+    sim_write("/data/vcfg_nx/guard-CUSA00207.txt", "state=ok\ncrashes=0\n", 19);
+    sim_write("/data/vcfg_nx/CUSA00207.ini", "effects = 1\n", 12);
+    boot(&bb, 1);
+    {
+        // boot() ya registro 0..1 de una; se reinicia y se registra de a uno
+        for (int i = 0; i < 16; ++i) C.registered[i] = 0;
+        nx_engine_init(&PF, bb.title);
+        nx_vo_attr_t at = { bb.format, 0, 0, 1920, 1080, 1920 };
+        for (int i = 0; i < 3; ++i) {
+            void* ad[1] = { g_fb + 256 * i };
+            int rc = sim_register(0, i, ad, 1, &at);
+            nx_engine_on_register(0, i, ad, 1, &at, rc);
+        }
+        void* ad2[1] = { g_fb + 1024 };   // otra salida (p. ej. la social): no cambia nada
+        nx_vo_attr_t small = { bb.format, 0, 0, 640, 360, 640 };
+        nx_engine_on_register(7, 0, ad2, 1, &small, 0);
+    }
+    game_t g19 = bb; g19.nbuf = 3;
+    play(&g19, 2400, 0);
+    report("19. registro de a un buffer");
+    CHECK(I()->state == NX_ST_RUN && I()->full_ready && I()->our_jobs > 1000, "no se activo con buffers registrados de a uno");
+    CHECK(sim_loglen > 0 && strstr(sim_logfile, "RegisterBuffers") && strstr(sim_logfile, "[flip]"),
+          "el registro del juego no se escribio");
+    CHECK(!strcmp(sim_logpath, "/data/vcfg_nx/logs/CUSA00207.log"), "ruta del registro: %s", sim_logpath);
+    common_checks();
+
+    // 20. sondeo propio del mando: el combo funciona aunque el juego no lea con
+    // los hooks; con el menu abierto los hooks siguen filtrando
+    sim_write("/data/vcfg_nx/guard-CUSA00207.txt", "state=ok\ncrashes=0\n", 19);
+    boot(&bb, 1);
+    nx_engine_pad_polled(1);
+    play(&bb, 1200, 0);
+    for (int k = 0; k < 60; ++k) { nx_engine_pad_logic(0x0002 | 0x0004); C.clock_us += 33333; }
+    nx_engine_pad_logic(0);
+    CHECK(I()->menu_open, "el sondeo propio no abrio el menu");
+    pad_buttons = 0x0002 | 0x0004;   // por los hooks no cuenta (no se cierra solo)
+    play(&bb, 120, 0);
+    pad_buttons = 0;
+    CHECK(I()->menu_open, "los hooks no deberian manejar el combo con sondeo propio");
+    b = 0x4000; nx_engine_on_pad(&b, NULL, NULL);
+    CHECK(b == 0, "con el menu abierto el hook deberia filtrar");
+    nx_engine_pad_logic(0x2000); nx_engine_pad_logic(0);
+    CHECK(!I()->menu_open, "O no cerro el menu (sondeo)");
+    report("20. mando por sondeo propio");
+    common_checks();
+
+    // 21. L3+R3 antes de que el juego registre la pantalla: avisa por que no abre
+    nx_engine_init(&PF, bb.title);
+    C.notifies = 0;
+    for (int k = 0; k < 60; ++k) { nx_engine_pad_logic(0x0002 | 0x0004); C.clock_us += 33333; }
+    CHECK(C.notifies == 1 && strstr(C.last_notify, "no disponible"), "sin aviso al pedir el menu sin pantalla (%s)", C.last_notify);
+    printf("  21. L3+R3 sin pantalla: \"%s\"\n", C.last_notify);
+
+    // 22. primero registra una superficie en formato no soportado y despues la pantalla real
+    sim_write("/data/vcfg_nx/guard-CUSA00207.txt", "state=ok\ncrashes=0\n", 19);
+    boot(&bb, 1);
+    for (int i = 0; i < 16; ++i) C.registered[i] = 0;
+    nx_engine_init(&PF, bb.title);
+    {
+        void* ad[2] = { g_fb, g_fb + 256 };
+        nx_vo_attr_t fl = { (int32_t)0xC1060000, 0, 0, 1920, 1080, 1920 };
+        nx_engine_on_register(0, 0, ad, 2, &fl, 0);   // flotante: no sirve, pero no apaga
+        nx_vo_attr_t at = { bb.format, 0, 0, 1920, 1080, 1920 };
+        int rc = sim_register(0, 0, ad, 2, &at);
+        nx_engine_on_register(0, 0, ad, 2, &at, rc);
+    }
+    play(&bb, 2400, 0);
+    report("22. formato raro y despues el real");
+    CHECK(I()->state == NX_ST_RUN && I()->full_ready, "no se activo tras un formato no soportado");
     common_checks();
 
     // 10. juego que arranca en un proceso que no es un juego

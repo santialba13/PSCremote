@@ -6,7 +6,7 @@ GH_SDK    := $(GOLDHEN_SDK)
 OUT       := build
 TARGET    := $(OUT)/vcfg_nx.prx
 
-LIBS := -lGoldHEN_Hook -lSceLibcInternal -lkernel -lSceSysmodule -lSceVideoOut -lSceGnmDriver -lScePad
+LIBS := -lGoldHEN_Hook -lSceLibcInternal -lkernel -lSceSysmodule -lSceVideoOut -lSceGnmDriver -lScePad -lSceUserService
 
 CFLAGS  := --target=x86_64-pc-freebsd12-elf -fPIC -funwind-tables -O2 -Wall -Wno-unused-parameter \
            -isysroot $(TOOLCHAIN) -isystem $(TOOLCHAIN)/include -I$(GH_SDK)/include -Iinclude -Isource -I../third_party/smaa

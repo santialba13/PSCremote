@@ -42,3 +42,7 @@ char* inst_ini_add(const char* ini, const char* section);
 char* inst_ini_remove(const char* ini, const char* section);
 // quita la linea del plugin de todas las secciones
 char* inst_ini_remove_all(const char* ini);
+
+// resume /data/vcfg_nx/logs/<ID>.log (lo escribe el plugin dentro del juego) en
+// una frase. Devuelve 0 = no cargo, 1 = cargo sin poder actuar, 2 = cargo, 3 = activo
+int inst_log_summary(const char* log, char* out, size_t n);

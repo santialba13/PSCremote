@@ -205,3 +205,59 @@ char* inst_ini_remove_all(const char* ini)
     if (!strstr(ini, PLUGIN_LINE)) return NULL;
     return remove_lines(ini, ini, ini + strlen(ini));
 }
+
+// ultima linea de `log` que contiene `key` (NULL si no hay); la copia en out
+static const char* last_line_with(const char* log, const char* key, char* out, size_t n)
+{
+    const char* hit = NULL;
+    for (const char* p = strstr(log, key); p; p = strstr(p + 1, key)) hit = p;
+    if (!hit) return NULL;
+    const char* b = hit;
+    while (b > log && b[-1] != '\n') --b;
+    const char* e = strchr(hit, '\n');
+    size_t len = e ? (size_t)(e - b) : strlen(b);
+    if (len >= n) len = n - 1;
+    memcpy(out, b, len);
+    out[len] = 0;
+    return out;
+}
+
+static unsigned long long field_u(const char* line, const char* key)
+{
+    const char* p = strstr(line, key);
+    return p ? strtoull(p + strlen(key), NULL, 0) : 0;
+}
+
+int inst_log_summary(const char* log, char* out, size_t n)
+{
+    char l[400];
+    if (!log || !*log) {
+        snprintf(out, n, "sin registro: el plugin no carg\xf3 en este juego (revis\xe1 GoldHEN y plugins.ini)");
+        return 0;
+    }
+    if (last_line_with(log, "[flip] estado=", l, sizeof l)) {
+        int st = (int)field_u(l, "estado=");
+        unsigned long long ours = field_u(l, "nuestros="), flips = 0;
+        const char* q = strchr(l, '[');
+        if (q) flips = strtoull(q + 1, NULL, 10);
+        if (st == 3 && ours) { snprintf(out, n, "activo: %llu de %llu fotogramas procesados", ours, flips); return 3; }
+        if (st == 3) { snprintf(out, n, "carg\xf3 y est\xe1 listo, sin efectos aplicados todav\xed" "a"); return 2; }
+        if (st == 4) { snprintf(out, n, "carg\xf3 pero qued\xf3 en pausa (GPU saturada o cambio de pantalla)"); return 2; }
+    }
+    if (strstr(log, "ningun RegisterBuffers")) {
+        snprintf(out, n, "carg\xf3 tarde: el juego registr\xf3 su pantalla antes que el plugin");
+        return 1;
+    }
+    if (strstr(log, "sin ningun flip")) {
+        snprintf(out, n, "carg\xf3, pero el juego presenta la imagen por otra v\xed" "a (a\xfa" "n no compatible)");
+        return 1;
+    }
+    if (last_line_with(log, "no soportado", l, sizeof l) && !strstr(log, "buffers del juego:")) {
+        const char* f = strstr(l, "0x");
+        snprintf(out, n, "carg\xf3, pero el formato de video %.10s no es compatible", f ? f : "?");
+        return 1;
+    }
+    if (strstr(log, "buffers del juego:")) { snprintf(out, n, "carg\xf3 y vio la pantalla del juego (arrancando)"); return 2; }
+    snprintf(out, n, "carg\xf3, esperando que el juego registre su pantalla");
+    return 1;
+}

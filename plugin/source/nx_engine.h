@@ -40,6 +40,7 @@ typedef struct {
     void (*log)(const char* msg);
     int (*read_file)(const char* path, char* buf, int cap); // bytes leidos o < 0
     int (*write_file)(const char* path, const char* data, int len);
+    int (*append_file)(const char* path, const char* data, int len);   // registro (puede ser NULL)
     int (*is_pro)(void);                                    // 1 = el juego corre en modo PS4 Pro (puede ser NULL)
     int (*temp_c)(void);                                    // temperatura del procesador en grados C, < 0 si no se sabe (puede ser NULL)
 } nx_platform_t;
@@ -78,4 +79,11 @@ int nx_engine_on_submit_flip(const nx_submit_t* s);         // hace las submits;
 // lectura del mando: abre/cierra el menu con L3+R3 y, con el menu abierto,
 // se queda con los botones (el juego recibe "nada pulsado")
 void nx_engine_on_pad(uint32_t* buttons, uint8_t sticks[4], uint8_t triggers[2]);
+// hilo de sondeo propio del plugin (no depende de como lea el mando el juego):
+// con el sondeo activo los hooks solo filtran los botones con el menu abierto
+void nx_engine_pad_logic(uint32_t buttons);
+void nx_engine_pad_polled(int on);
+// vuelca el registro pendiente a /data/vcfg_nx/logs/<TITLE>.log
+void nx_engine_flush_log(void);
+void nx_engine_tick(void);   // ~1 vez por segundo desde el hilo del plugin (diagnostico)
 const nx_engine_info_t* nx_engine_info(void);

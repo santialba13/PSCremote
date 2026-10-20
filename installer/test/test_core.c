@@ -90,6 +90,16 @@ int main(void)
     nx_config_parse(&back, txt);
     CHECK(!memcmp(&back.framegen, &g[2].cfg.framegen, sizeof(int)) && back.sr == 3 && back.eco == 1 && back.aa == 0
           && back.temp_limit == 75 && back.dynamic == g[2].cfg.dynamic, "formato del .ini ida y vuelta");
+    char sum[200];
+    CHECK(inst_log_summary(NULL, sum, sizeof sum) == 0, "registro: sin archivo");
+    CHECK(inst_log_summary("[      0] [engine] plugin_load\n[      0] [vo] formato 0xc1060000 1920x1080 no soportado: x\n",
+                           sum, sizeof sum) == 1 && strstr(sum, "0xc1060000"), "registro: formato");
+    printf("registro (formato): %s\n", sum);
+    CHECK(inst_log_summary("[      0] [engine] plugin_load\n[      2] [flip] estado=1 handle=0\n[     30] [diag] 900 flips pero ningun RegisterBuffers visto\n",
+                           sum, sizeof sum) == 1 && strstr(sum, "tarde"), "registro: registro antes de cargar");
+    CHECK(inst_log_summary("[      0] [vo] buffers del juego: 1920x1080\n[   3600] [flip] estado=3 handle=0 idx=1 count=1 gnm=3600 wl=0 cpu=0 nuestros=2900 fps=30.0\n",
+                           sum, sizeof sum) == 3 && strstr(sum, "2900 de 3600"), "registro: activo");
+    printf("registro (activo): %s\n", sum);
     free(a); free(b); free(c); free(d);
     system("rm -rf tmp_app tmp_meta tmp_ext tmp_cfg");
     printf(fails ? "%d FALLOS\n" : "OK\n", fails);

@@ -1056,11 +1056,22 @@ static void open_modal(int kind)
         snprintf(modal_lines[0], 200, "GoldHEN SDK %x.%02x \xb7 acceso fuera del sandbox: %s", diag.sdk >> 8, diag.sdk & 0xFF,
                  jailed ? "NO" : "s\xed");
         snprintf(modal_lines[1], 200, "Plugin en la app: %s", prx ? prx_from : "NO ENCONTRADO");
-        snprintf(modal_lines[2], 200, "Juegos: %d \xb7 iconos cargados: %d (del app.pkg: %d) \xb7 sin icono: %d", ngames,
-                 diag.icons_ok, diag.icons_from_pkg, diag.icons_fail);
-        snprintf(modal_lines[3], 200, "%s%s", diag.icons_fail ? "Primer icono que fall\xf3: " : "",
+        snprintf(modal_lines[2], 200, "Juegos: %d \xb7 iconos: %d (del app.pkg: %d) \xb7 sin icono: %d%s%s", ngames,
+                 diag.icons_ok, diag.icons_from_pkg, diag.icons_fail, diag.icons_fail ? " \xb7 primero: " : "",
                  diag.icons_fail ? diag.icon_fail_path : "");
-        snprintf(modal_lines[4], 200, "\xdaltimo error al guardar: %s", diag.save_error[0] ? diag.save_error : "ninguno");
+        snprintf(modal_lines[3], 200, "\xdaltimo error al guardar: %s", diag.save_error[0] ? diag.save_error : "ninguno");
+        {   // lo que dejo el plugin la ultima vez que se abrio el juego elegido
+            const inst_game_t* g = nvis ? &games[vis[sel]] : NULL;
+            char path[160], sum[160];
+            char* log = NULL;
+            if (g) {
+                snprintf(path, sizeof path, CFG_DIR "/logs/%s.log", g->id);
+                log = read_text(path);
+            }
+            inst_log_summary(log, sum, sizeof sum);
+            snprintf(modal_lines[4], 200, "%.40s: %s", g ? g->title : "Juego", g ? sum : "no hay juegos");
+            free(log);
+        }
         for (int i = 0; i < 5; ++i) modal.body[i] = modal_lines[i];
         modal.opts[0] = "Volver"; modal.nopts = 1;
         break;

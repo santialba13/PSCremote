@@ -75,7 +75,8 @@ static struct {
     char title[16];
     nx_engine_info_t info;
     // framebuffers del juego
-    int handle, game_first, game_num;
+    int handle;
+    uint32_t game_mask;         // indices de VideoOut que registro el juego (puede hacerlo de a uno)
     nx_vo_attr_t attr;
     nx_image_t game_img[16];
     int W, H, Wo, Ho;
@@ -106,8 +107,17 @@ static struct {
     uint64_t combo_since;
     uint32_t last_buttons;
     int crashes;
+    // diagnostico: por que cada fotograma paso intacto
+    uint64_t why[8];
+    uint64_t flips_gnm, flips_wl, flips_cpu;
+    char logbuf[12288];
+    int loglen, log_flushes;
+    char log_path[64];
+    int pad_polled, tick_warned;
+    uint64_t tick_start;             // el hilo de sondeo del mando funciona: los hooks solo filtran
+    int nofmt_notified;
     // calidad dinamica
-    int pro, announced;
+    int pro, announced, hdr;
     uint64_t level_since, last_stall, probe_until, degraded_at;
     int up_fails, degraded_gpu, degraded_retries, slow_run;
     // temperatura
@@ -115,16 +125,52 @@ static struct {
     int hot_reads;
 } E;
 
+// registro: va a la consola de depuracion y a /data/vcfg_nx/logs/<TITLE>.log
+// (en memoria y escrito de a bloques: nunca un archivo por fotograma)
+// el hilo del mando tambien escribe: un candado simple alcanza (es poco y corto)
+static volatile int log_lock;
+static void lock_log(void) { while (__atomic_exchange_n(&log_lock, 1, __ATOMIC_ACQUIRE)) {} }
+static void unlock_log(void) { __atomic_store_n(&log_lock, 0, __ATOMIC_RELEASE); }
+
+static void log_flush_locked(void)
+{
+    if (!E.loglen || !E.pf || !E.pf->append_file || !E.log_path[0]) { E.loglen = 0; return; }
+    if (E.log_flushes < 200) E.pf->append_file(E.log_path, E.logbuf, E.loglen);   // tope ~2 MB por sesion
+    E.log_flushes++;
+    E.loglen = 0;
+}
+
+static void log_flush(void)
+{
+    lock_log();
+    log_flush_locked();
+    unlock_log();
+}
+
 static void logf_(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 static void logf_(const char* fmt, ...)
 {
-    char b[256];
+    char b[320];
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(b, sizeof b, fmt, ap);
+    int n = vsnprintf(b, sizeof b, fmt, ap);
     va_end(ap);
+    if (n < 0) return;
+    if (n >= (int)sizeof b) n = (int)sizeof b - 1;
     if (E.pf && E.pf->log) E.pf->log(b);
+    char t[24];
+    int tn = snprintf(t, sizeof t, "[%7llu] ", (unsigned long long)E.info.flips);
+    lock_log();
+    if (E.loglen + tn + n + 1 > (int)sizeof E.logbuf) log_flush_locked();
+    memcpy(E.logbuf + E.loglen, t, (size_t)tn);
+    memcpy(E.logbuf + E.loglen + tn, b, (size_t)n);
+    E.loglen += tn + n;
+    unlock_log();
 }
+
+enum { WHY_STATE, WHY_NOBASE, WHY_HANDLE, WHY_INDEX, WHY_COUNT, WHY_NOTHING, WHY_STALL, WHY_N };
+static const char* const WHY_NAME[WHY_N] = { "estado", "sin_memoria_menu", "otro_handle", "indice_desconocido",
+                                             "count_raro", "nada_que_hacer", "gpu_atrasada" };
 
 static void notify(const char* msg)
 {
@@ -179,8 +225,11 @@ static int map_format(int32_t fmt, nx_format_t* out)
     case 0x88000000u: /* A2R10G10B10_SRGB: igual que arriba, se lee codificado */
         *out = NX_FMT_RGB10A2_UNORM;
         return 1;
+    case 0x88740000u: /* A2R10G10B10_BT2020_PQ (HDR): solo el menu, sin efectos */
+        *out = NX_FMT_RGB10A2_UNORM;
+        return 2;
     default:
-        return 0;   // HDR (PQ / BT.2020) u otros: no se toca
+        return 0;   // flotante u otros: no se toca
     }
 }
 
@@ -193,6 +242,16 @@ void nx_engine_init(const nx_platform_t* pf, const char* title_id)
     E.prev_idx = -1;
     E.game_rate = -1;
     nx_config_load(&E.cfg, E.title, pf->read_file);
+    if (E.title[0]) {
+        snprintf(E.log_path, sizeof E.log_path, "/data/vcfg_nx/logs/%.12s.log", E.title);
+        if (pf->write_file) {   // un registro por juego: se reemplaza en cada arranque
+            char h[160];
+            int n = snprintf(h, sizeof h, "VCFG-NX plugin: arranque de %s\n", E.title);
+            pf->write_file(E.log_path, h, n);
+        }
+    }
+    logf_("[engine] plugin_load titulo='%s' config: efectos=%d fg=%d sr=%d modelo=%d aa=%d menu=%dms\n", E.title,
+          E.cfg.effects, E.cfg.framegen, E.cfg.sr, E.cfg.sr_model, E.cfg.aa, E.cfg.menu_hold_ms);
     if (strncmp(E.title, "CUSA", 4) != 0 && strncmp(E.title, "PLAS", 4) != 0) {
         E.info.state = NX_ST_OFF;
         set_status("no es un juego");
@@ -203,64 +262,84 @@ void nx_engine_init(const nx_platform_t* pf, const char* title_id)
     E.info.temp_c = -1;
     E.info.state = NX_ST_WAIT_BUFFERS;
     set_status(E.info.safe_mode ? "modo seguro" : "esperando el juego");
+    logf_("[engine] estado: esperando RegisterBuffers (modo seguro=%d, pro=%d)\n", E.info.safe_mode, E.pro);
+    log_flush();
+}
+
+static void adopt_buffers(int handle, int start, void* const* addrs, int num, const nx_vo_attr_t* a, nx_format_t fmt)
+{
+    uint32_t tile = a->tmode == 1 ? NX_TILE_DISPLAY_LINEAR_ALIGNED : NX_TILE_DISPLAY_2D_THIN;
+    for (int i = 0; i < num; ++i) {
+        nx_image_t im = { (uint64_t)(uintptr_t)addrs[i], a->width, a->height, a->pitch, fmt, tile };
+        E.game_img[start + i] = im;
+        E.game_mask |= 1u << (start + i);
+    }
+    E.handle = handle;
+    E.attr = *a;
+    E.W = (int)a->width;
+    E.H = (int)a->height;
 }
 
 void nx_engine_on_register(int handle, int start, void* const* addrs, int num, const nx_vo_attr_t* a, int rc)
 {
+    if (a)
+        logf_("[vo] RegisterBuffers handle=%d start=%d num=%d fmt=0x%08x %ux%u pitch=%u tmode=%d rc=0x%08x\n", handle,
+              start, num, (unsigned)a->format, a->width, a->height, a->pitch, a->tmode, (unsigned)rc);
     if (rc < 0 || !a || !addrs) return;
     if (E.info.state == NX_ST_OFF) return;
-    if (E.info.state != NX_ST_WAIT_BUFFERS) {
-        if (handle != E.handle) return;
-        // el juego re-registra buffers en nuestro handle (vuelta del reposo,
-        // cambio de opciones...). Misma geometria: se adoptan las direcciones.
-        int same = start == E.game_first && num == E.game_num && a->width == E.attr.width
-                   && a->height == E.attr.height && a->format == E.attr.format && a->pitch == E.attr.pitch
-                   && a->tmode == E.attr.tmode;
-        if (same && E.info.state != NX_ST_OFF) {
-            for (int i = 0; i < num; ++i) E.game_img[i].gpu_addr = (uint64_t)(uintptr_t)addrs[i];
+    if (num < 1 || start < 0 || start + num > 16 || (a->width & 1) || (a->height & 1)) return;
+    nx_format_t fmt;
+    int fk = map_format(a->format, &fmt);
+    if (!fk || a->width < 640 || a->height < 360 || a->width > 3840 || a->height > 2160) {
+        logf_("[vo] formato 0x%08x %ux%u no soportado: el plugin no toca este juego\n", (unsigned)a->format, a->width,
+              a->height);
+        // no se apaga del todo: el juego puede registrar despues su pantalla real
+        if (!E.game_mask) { E.nofmt_notified = 1; set_status("formato de video no soportado"); }
+        log_flush();
+        return;
+    }
+    if (E.game_mask && handle != E.handle) {
+        logf_("[vo] otro handle (%d, el del juego es %d): se ignora\n", handle, E.handle);
+        return;
+    }
+    int same = E.game_mask && a->width == E.attr.width && a->height == E.attr.height && a->format == E.attr.format
+               && a->pitch == E.attr.pitch && a->tmode == E.attr.tmode;
+    if (E.game_mask && same) {
+        // mas buffers con la misma geometria (el juego los registra de a uno) o el
+        // mismo indice otra vez (vuelta del reposo): se adoptan
+        int again = (E.game_mask >> start) & ((1u << num) - 1);
+        adopt_buffers(handle, start, addrs, num, a, fmt);
+        if (again) {
             E.prev_idx = -1;
             E.prev_real_valid = 0;
             E.pipe.luma_valid[0] = E.pipe.luma_valid[1] = 0;
             E.info.readopts++;
-            logf_("[engine] re-registro de buffers con la misma geometria: adoptado\n");
-            return;
         }
-        if (E.info.full_ready || E.info.state == NX_ST_OFF) {
-            // nuestros buffers ya estan registrados con la geometria vieja
-            logf_("[engine] re-registro de buffers con otra geometria: pasa a inactivo\n");
-            E.info.state = E.info.full_ready ? NX_ST_DEGRADED : NX_ST_OFF;
-            set_status("el juego cambio sus buffers");
-            return;
-        }
-        // todavia no reservamos nada de efectos: se toma como un registro nuevo
-        logf_("[engine] re-registro antes de activar efectos: se vuelve a empezar\n");
-        E.info.state = NX_ST_WAIT_BUFFERS;
-        E.prev_idx = -1;
-    }
-    if (num < 2 || num > 8 || start < 0 || start + num > 16 || (a->width & 1) || (a->height & 1)) return;
-    nx_format_t fmt;
-    if (!map_format(a->format, &fmt) || a->width < 640 || a->height < 360 || a->width > 3840 || a->height > 2160) {
-        logf_("[engine] formato 0x%08x %ux%u no soportado: inactivo\n", (unsigned)a->format, a->width, a->height);
-        E.info.state = NX_ST_OFF;
-        set_status("formato no soportado (HDR?)");
+        logf_("[vo] buffers del juego: mascara 0x%04x\n", E.game_mask);
+        log_flush();
         return;
     }
-    E.handle = handle;
-    E.game_first = start;
-    E.game_num = num;
-    E.attr = *a;
-    E.W = (int)a->width;
-    E.H = (int)a->height;
-    uint32_t tile = a->tmode == 1 ? NX_TILE_DISPLAY_LINEAR_ALIGNED : NX_TILE_DISPLAY_2D_THIN;
-    for (int i = 0; i < num; ++i) {
-        nx_image_t im = { (uint64_t)(uintptr_t)addrs[i], (uint32_t)E.W, (uint32_t)E.H, a->pitch, fmt, tile };
-        E.game_img[i] = im;
+    if (E.game_mask && E.info.full_ready) {
+        // nuestros buffers de salida tienen la geometria vieja
+        logf_("[vo] el juego cambio la geometria de sus buffers: pasa a inactivo\n");
+        E.info.state = NX_ST_DEGRADED;
+        set_status("el juego cambio sus buffers");
+        log_flush();
+        return;
     }
-    E.info.state = NX_ST_WARMUP;
-    E.next_try_flip = (uint64_t)E.cfg.warmup_flips;
-    if (E.next_try_flip < E.info.flips + 60) E.next_try_flip = E.info.flips + 60;
-    set_status("juego cargando");
-    logf_("[engine] buffers del juego: %dx%d x%d, formato 0x%08x\n", E.W, E.H, num, (unsigned)a->format);
+    if (E.game_mask) logf_("[vo] otra geometria antes de activar efectos: se vuelve a empezar\n");
+    E.game_mask = 0;
+    adopt_buffers(handle, start, addrs, num, a, fmt);
+    E.hdr = fk == 2;
+    E.prev_idx = -1;
+    if (E.info.state == NX_ST_WAIT_BUFFERS) {
+        E.info.state = NX_ST_WARMUP;
+        E.next_try_flip = (uint64_t)E.cfg.warmup_flips;
+        if (E.next_try_flip < E.info.flips + 60) E.next_try_flip = E.info.flips + 60;
+        set_status(E.hdr ? "HDR: solo el men\xfa" : "juego cargando");
+    }
+    logf_("[vo] buffers del juego: %dx%d mascara 0x%04x%s\n", E.W, E.H, E.game_mask, E.hdr ? " (HDR: sin efectos)" : "");
+    log_flush();
 }
 
 int nx_engine_on_set_flip_rate(int handle, int rate)
@@ -305,7 +384,7 @@ static int alloc_base(void)
 
 static int effects_wanted(void)
 {
-    return E.cfg.effects && (E.cfg.framegen || E.cfg.sr || E.cfg.aa || E.cfg.rcas);
+    return !E.hdr && E.cfg.effects && (E.cfg.framegen || E.cfg.sr || E.cfg.aa || E.cfg.rcas);
 }
 
 static int alloc_full(void)
@@ -319,21 +398,25 @@ static int alloc_full(void)
     size_t pitch_o = (size_t)((E.Wo + 63) / 64 * 64);
     size_t buf = (pitch_o * E.Ho * 4 + 0xFFFF) & ~(size_t)0xFFFF;
     size_t total = arena_sz + 2 * MAX_MID * buf;
-    int extra_first = E.game_first + E.game_num;
-    if (extra_first + 2 * MAX_MID > 16) {
+    // nuestros indices: el bloque libre mas alto (el juego suele usar los primeros)
+    int extra_first = -1;
+    for (int s0 = 16 - 2 * MAX_MID; s0 >= 0 && extra_first < 0; --s0)
+        if (!((E.game_mask >> s0) & ((1u << (2 * MAX_MID)) - 1))) extra_first = s0;
+    if (extra_first < 0) {
         set_status("sin indices libres de VideoOut");
+        logf_("[mem] sin indices libres (mascara del juego 0x%04x)\n", E.game_mask);
         return -1;
     }
     size_t avail = E.pf->avail_direct();
     if (avail < total + (size_t)E.cfg.reserve_mb * 1048576) {
-        logf_("[engine] memoria: hacen falta %zu MiB + %d de reserva, libres %zu MiB\n",
+        logf_("[mem] hacen falta %zu MiB + %d de reserva, libres %zu MiB: se reintenta mas tarde\n",
               total >> 20, E.cfg.reserve_mb, avail >> 20);
         E.info.alloc_fail++;
         return 0;
     }
     uint8_t* arena = E.pf->alloc_gpu(arena_sz, 65536);
     uint8_t* outs = arena ? E.pf->alloc_gpu(2 * MAX_MID * buf, 65536) : NULL;
-    if (!arena || !outs) { E.info.alloc_fail++; return 0; }
+    if (!arena || !outs) { E.info.alloc_fail++; logf_("[mem] la reserva fallo (arena %p, salidas %p)\n", (void*)arena, (void*)outs); return 0; }
     nx_arena_t a = { arena, (uint64_t)(uintptr_t)arena, arena_sz, 0 };
     if (nx_pipeline_init(&E.pipe, E.W, E.H, E.Wo, E.Ho, a) != 0) { set_status("error interno (pipeline)"); return -1; }
     E.pipe.label_gpu = E.label_gpu;   // el mismo label que el OSD: la secuencia nunca retrocede
@@ -345,7 +428,7 @@ static int alloc_full(void)
     oa.tmode = 1;   // nuestros kernels escriben en lineal
     int rc = E.pf->register_buffers(E.handle, extra_first, addrs, 2 * MAX_MID, &oa);
     if (rc < 0) { logf_("[engine] RegisterBuffers propio = 0x%08x\n", (unsigned)rc); set_status("VideoOut rechazo los buffers"); return -1; }
-    nx_format_t fmt = E.game_img[0].format;
+    nx_format_t fmt = E.game_img[__builtin_ctz(E.game_mask)].format;
     for (int i = 0; i < MAX_MID; ++i) {
         nx_image_t im = { (uint64_t)(uintptr_t)addrs[i], (uint32_t)E.Wo, (uint32_t)E.Ho, (uint32_t)pitch_o, fmt,
                           NX_TILE_DISPLAY_LINEAR_ALIGNED };
@@ -513,10 +596,30 @@ static void menu_change(int row, int dir)
     }
 }
 
-void nx_engine_on_pad(uint32_t* buttons, uint8_t sticks[4], uint8_t triggers[2])
+// por que no abre el menu: se avisa una vez por pulsacion
+static void menu_unavailable(void)
 {
-    if (!buttons || E.info.state == NX_ST_OFF || E.info.state == NX_ST_WAIT_BUFFERS) return;
-    uint32_t b = *buttons;
+    const char* why;
+    switch (E.info.state) {
+    case NX_ST_OFF: why = E.info.status[0] ? E.info.status : "este juego no es compatible"; break;
+    case NX_ST_WAIT_BUFFERS:
+        why = E.nofmt_notified ? "formato de video no soportado" : "el juego todavia no registro su pantalla";
+        break;
+    case NX_ST_WARMUP: why = "el juego esta cargando, proba en unos segundos"; break;
+    default: why = "sin memoria para el menu"; break;
+    }
+    char m[160];
+    snprintf(m, sizeof m, "VCFG-NX: menu no disponible (%s)", why);
+    notify(m);
+    logf_("[pad] L3+R3 sin menu: estado=%d %s\n", (int)E.info.state, why);
+    log_flush();
+}
+
+// logica del mando: combo L3+R3 y navegacion. La llama el hilo de sondeo del
+// plugin (si funciona) o, si no, los hooks de lectura del juego.
+void nx_engine_pad_logic(uint32_t b)
+{
+    if (!E.pf) return;
     uint64_t t = E.pf->now_us();
     int combo = (b & (BTN_L3 | BTN_R3)) == (BTN_L3 | BTN_R3);
     if (!combo) {
@@ -525,8 +628,15 @@ void nx_engine_on_pad(uint32_t* buttons, uint8_t sticks[4], uint8_t triggers[2])
         E.combo_since = t;
     } else if (E.combo_since != 1 && t - E.combo_since > (uint64_t)E.cfg.menu_hold_ms * 1000) {
         E.combo_since = 1;
-        E.info.menu_open = !E.info.menu_open && E.base_mem != NULL;
-        E.info.menu_row = 0;
+        if (E.info.menu_open) {
+            E.info.menu_open = 0;
+        } else if (E.base_mem && (E.info.state == NX_ST_RUN || E.info.state == NX_ST_DEGRADED)) {
+            E.info.menu_open = 1;
+            E.info.menu_row = 0;
+            logf_("[pad] menu abierto\n");
+        } else {
+            menu_unavailable();
+        }
     }
     if (E.info.menu_open) {
         uint32_t pressed = b & ~E.last_buttons;
@@ -544,20 +654,33 @@ void nx_engine_on_pad(uint32_t* buttons, uint8_t sticks[4], uint8_t triggers[2])
             }
         }
         if (pressed & BTN_CIRCLE) E.info.menu_open = 0;
-        E.last_buttons = b;
-        // el juego no recibe nada mientras el menu esta abierto
-        *buttons = 0;
-        if (sticks) sticks[0] = sticks[1] = sticks[2] = sticks[3] = 0x80;
-        if (triggers) triggers[0] = triggers[1] = 0;
-        return;
     }
     E.last_buttons = b;
 }
 
+void nx_engine_pad_polled(int on)
+{
+    if (on != E.pad_polled) logf_("[pad] sondeo propio del mando: %s\n", on ? "si" : "no (se usan los hooks)");
+    E.pad_polled = on;
+}
+
+void nx_engine_on_pad(uint32_t* buttons, uint8_t sticks[4], uint8_t triggers[2])
+{
+    if (!buttons || !E.pf) return;
+    if (!E.pad_polled) nx_engine_pad_logic(*buttons);
+    if (E.info.menu_open) {
+        // el juego no recibe nada mientras el menu esta abierto
+        *buttons = 0;
+        if (sticks) sticks[0] = sticks[1] = sticks[2] = sticks[3] = 0x80;
+        if (triggers) triggers[0] = triggers[1] = 0;
+    }
+}
+
 // ------------------------------------------------------------- flips
-static int passthrough(const nx_submit_t* s)
+static int passthrough_why(const nx_submit_t* s, int why)
 {
     E.info.passthrough++;
+    E.why[why]++;
     return E.pf->submit_flip(s);
 }
 
@@ -577,6 +700,29 @@ static void set_rate_forced(int on)
 }
 
 const nx_engine_info_t* nx_engine_info(void) { return &E.info; }
+void nx_engine_flush_log(void) { log_flush(); }
+
+// lo llama el hilo del plugin ~1 vez por segundo: deja constancia si el juego
+// nunca llega a los hooks (otra API de presentacion, registro antes de cargar...)
+void nx_engine_tick(void)
+{
+    if (!E.pf || E.info.state == NX_ST_OFF) return;
+    uint64_t t = E.pf->now_us();
+    if (!E.tick_start) E.tick_start = t;
+    uint64_t secs = (t - E.tick_start) / 1000000;
+    if (!E.tick_warned && secs >= 30) {
+        if (!E.info.flips) {
+            E.tick_warned = 1;
+            logf_("[diag] 30 s sin ningun flip por los hooks (gnm/workload/cpu): el juego presenta por otra via\n");
+            log_flush();
+        } else if (E.info.state == NX_ST_WAIT_BUFFERS) {
+            E.tick_warned = 1;
+            logf_("[diag] %llu flips pero ningun RegisterBuffers visto: el juego registro antes de cargar el plugin\n",
+                  (unsigned long long)E.info.flips);
+            log_flush();
+        }
+    }
+}
 
 // ------------------------------------------------------- calidad dinamica
 // escalones, del mas caro al mas barato; solo cuentan los que estan en uso
@@ -667,6 +813,21 @@ static void maybe_level_up(void)
     logf_("[engine] calidad dinamica: prueba subir a -%d\n", E.info.level);
 }
 
+// resumen periodico al registro: cuantos fotogramas y por que pasaron intactos
+static void flip_summary(const nx_submit_t* s)
+{
+    char w[200];
+    int n = 0;
+    for (int i = 0; i < WHY_N && n < (int)sizeof w - 32; ++i)
+        if (E.why[i]) n += snprintf(w + n, sizeof w - (size_t)n, " %s=%llu", WHY_NAME[i], (unsigned long long)E.why[i]);
+    if (!n) snprintf(w, sizeof w, " -");
+    logf_("[flip] estado=%d handle=%u idx=%u count=%u gnm=%llu wl=%llu cpu=%llu nuestros=%llu fps=%.1f nivel=%d intactos:%s\n",
+          (int)E.info.state, s->handle, s->index, s->count, (unsigned long long)E.flips_gnm,
+          (unsigned long long)E.flips_wl, (unsigned long long)E.flips_cpu, (unsigned long long)E.info.our_jobs,
+          (double)E.info.game_fps, E.info.level, w);
+    log_flush();
+}
+
 int nx_engine_on_submit_flip(const nx_submit_t* s)
 {
     E.info.flips++;
@@ -690,16 +851,27 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
         set_status("activo");
         logf_("[engine] reintento tras degradado (%d)\n", E.degraded_retries);
     }
-    if (st == NX_ST_OFF || st == NX_ST_WAIT_BUFFERS) return passthrough(s);
+    if (s->cpu_flip) E.flips_cpu++; else if (s->for_workload) E.flips_wl++; else E.flips_gnm++;
+    if (E.info.flips <= 3 || (E.info.flips % 1800) == 0) flip_summary(s);
+    if (st == NX_ST_OFF || st == NX_ST_WAIT_BUFFERS) return passthrough_why(s, WHY_STATE);
     if (st == NX_ST_RUN && E.info.full_ready) thermal_check();
     if ((st == NX_ST_WARMUP || st == NX_ST_RUN) && E.info.flips >= E.next_try_flip) try_allocations();
     st = E.info.state;
-    int gi = (int)s->index - E.game_first;
-    if (st != NX_ST_RUN || !E.base_mem || (int)s->handle != E.handle || gi < 0 || gi >= E.game_num
-        || (s->count == 0 && !s->cpu_flip) || s->count > 64) {
+    int gi = (int)s->index;
+    int why = st != NX_ST_RUN ? WHY_STATE
+            : !E.base_mem ? WHY_NOBASE
+            : (int)s->handle != E.handle ? WHY_HANDLE
+            : (gi < 0 || gi >= 16 || !((E.game_mask >> gi) & 1)) ? WHY_INDEX
+            : ((s->count == 0 && !s->cpu_flip) || s->count > 64) ? WHY_COUNT : -1;
+    if (why >= 0) {
+        if (why != WHY_STATE && !E.why[why]) {
+            logf_("[flip] primer fotograma sin tocar por %s (handle=%u idx=%u count=%u)\n", WHY_NAME[why],
+                  s->handle, s->index, s->count);
+            log_flush();
+        }
         E.prev_idx = -1;
         set_rate_forced(0);
-        return passthrough(s);
+        return passthrough_why(s, why);
     }
 
     int effects = E.info.full_ready && !E.info.safe_mode && E.cfg.effects;
@@ -722,7 +894,7 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
             if (*E.label_cpu >= E.seq) maybe_level_up();
             else E.last_stall = E.info.flips;
         }
-        return passthrough(s);
+        return passthrough_why(s, WHY_NOTHING);
     }
 
     // el trabajo anterior en este slot tiene que haber terminado (presupuesto acotado)
@@ -745,8 +917,9 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
             set_rate_forced(0);
             notify("VCFG-NX: la GPU no da abasto en este juego; en pausa");
             logf_("[engine] %d fotogramas seguidos con la GPU atrasada: degradado\n", E.stall_run);
+            log_flush();
         }
-        return passthrough(s);
+        return passthrough_why(s, WHY_STALL);
     }
     E.stall_run = 0;
     // la GPU llego, pero esperarla frena al juego: si es sostenido, bajar calidad
