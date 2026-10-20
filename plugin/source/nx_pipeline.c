@@ -1,0 +1,352 @@
+#include "nx_pipeline.h"
+
+#include <math.h>
+#include <string.h>
+
+#include "../include/nx_shaders.h"
+#include "../include/nxflow_weights.h"
+
+enum {
+    K_CONV_14_32, K_CONV_17_32, K_CONV_32_32, K_CONV_32_5, K_CONV_17_16, K_CONV_16_16, K_CONV_16_5,
+    K_AVGPOOL, K_RESIZE, K_UPSAMPLE5, K_BUILD_INPUT, K_BM_TO_FLOW, K_LUMA_FULL, K_LUMA_DOWN2,
+    K_BM_SEARCH, K_BM_MEDIAN3, K_WARP_BLEND, K_EASU, K_RCAS, K_COUNT
+};
+static const char* const k_names[K_COUNT] = {
+    "conv3x3_14_32", "conv3x3_17_32", "conv3x3_32_32", "conv3x3_32_5",
+    "conv3x3_17_16", "conv3x3_16_16", "conv3x3_16_5",
+    "avgpool_rgb", "resize_bilinear", "upsample5", "build_level_input", "bm_to_flow", "luma_full",
+    "luma_down2", "bm_search", "bm_median3", "warp_blend", "easu", "rcas",
+};
+
+// primera capa y numero de capas de cada bloque en nx_layers[] (model/export.py)
+#define BLOCK_A 0, 6
+#define BLOCK_B 6, 6
+#define BLOCK_C 12, 5
+
+#define KERNARG_BYTES (16 * 1024)
+#define DESC_BYTES 1024
+#define WG 8
+
+// --- layouts de kernargs: mismo orden y alineacion natural que los .cl
+typedef struct { uint64_t in; int32_t H, W; uint64_t out; int32_t Ho, Wo; uint64_t w, b;
+                 int32_t stride, pad_top, pad_left, act; uint64_t residual; } ka_conv_t;
+typedef struct { uint64_t src; int32_t H, W; uint64_t out; int32_t Ho, Wo, f; } ka_avgpool_t;
+typedef struct { uint64_t in; int32_t H, W, C, _pad; uint64_t out; int32_t Ho, Wo; } ka_resize_t;
+typedef struct { uint64_t a0, a1, flow5, delta5; int32_t H, W, level, _pad; uint64_t out; } ka_build_t;
+typedef struct { uint64_t vec; int32_t H, W; uint64_t flow5; } ka_bm2flow_t;
+typedef struct { uint64_t in; int32_t H, W; uint64_t out; } ka_up5_t;
+typedef struct { uint64_t src; int32_t Hs, Ws; uint64_t out; int32_t H, W; } ka_luma_t;
+typedef struct { uint64_t in; int32_t H, W; uint64_t out; } ka_down2_t;
+typedef struct { uint64_t l0, l1; int32_t H, W; uint64_t coarse; int32_t cBy, cBx;
+                 uint64_t vec; int32_t By, Bx, radius; } ka_bm_t;
+typedef struct { uint64_t in, out; int32_t By, Bx; } ka_median_t;
+typedef struct { uint64_t f0, f1, samp, low5; int32_t h4, w4; uint64_t dst; int32_t H, W; } ka_warp_t;
+typedef struct { uint64_t src; int32_t H, W; uint64_t dst; int32_t Ho, Wo; } ka_easu_t;
+typedef struct { uint64_t src, dst; int32_t W, H; float sharp; int32_t denoise; } ka_rcas_t;
+
+static size_t align_up(size_t v, size_t a) { return (v + a - 1) / a * a; }
+
+static uint64_t arena_alloc(nx_arena_t* a, size_t bytes, size_t align)
+{
+    size_t off = align_up(a->used, align);
+    if (off + bytes > a->size)
+        return 0;
+    a->used = off + bytes;
+    return a->gpu + off;
+}
+
+static void* arena_cpu(const nx_arena_t* a, uint64_t gpu) { return a->cpu + (gpu - a->gpu); }
+
+static size_t tensor_bytes(int h, int w, int c) { return align_up((size_t)h * w * c * 4, 256); }
+
+static size_t max_sz(size_t a, size_t b) { return a > b ? a : b; }
+
+size_t nx_pipeline_mem_size(int W, int H, int Wo, int Ho)
+{
+    int Wp = (int)align_up(W, 32), Hp = (int)align_up(H, 32);
+    int w4 = Wp / 4, h4 = Hp / 4, w8 = Wp / 8, h8 = Hp / 8, w16 = w8 / 2, h16 = h8 / 2;
+    size_t s = 0;
+    for (int i = 0; i < K_COUNT; ++i) s += 64 * 1024;                       // codigo (holgado)
+    s += align_up(NX_NUM_PARAMS * 4 + NX_NUM_LAYERS * 512, 4096);            // pesos
+    s += 2 * (tensor_bytes(Hp, Wp, 1) + tensor_bytes(Hp / 2, Wp / 2, 1) + tensor_bytes(Hp / 4, Wp / 4, 1));
+    s += 2 * (tensor_bytes(h8, w8, 3) + tensor_bytes(h4, w4, 3));
+    s += 4 * tensor_bytes(h8, w8, 2) + 2 * tensor_bytes(h8, w8, 5) + 2 * tensor_bytes(h4, w4, 5);
+    s += tensor_bytes(h4, w4, 17);
+    s += 3 * max_sz(tensor_bytes(h16, w16, 32), tensor_bytes(h8, w8, 16));
+    s += max_sz(tensor_bytes(h8, w8, 32), tensor_bytes(h4, w4, 16));
+    s += tensor_bytes(H, (int)align_up(W, 64), 1) + tensor_bytes(Ho, (int)align_up(Wo, 64), 1);
+    s += 2 * (KERNARG_BYTES + DESC_BYTES) + 4096;
+    return s + 64 * 1024;
+}
+
+int nx_pipeline_init(nx_pipeline_t* p, int W, int H, int Wo, int Ho, nx_arena_t arena)
+{
+    memset(p, 0, sizeof(*p));
+    p->W = W; p->H = H; p->Wo = Wo; p->Ho = Ho;
+    p->Wp = (int)align_up(W, 32); p->Hp = (int)align_up(H, 32);
+    p->w4 = p->Wp / 4; p->h4 = p->Hp / 4;
+    p->w8 = p->Wp / 8; p->h8 = p->Hp / 8; p->w16 = p->w8 / 2; p->h16 = p->h8 / 2;
+    p->arena = arena;
+    nx_arena_t* a = &p->arena;
+
+    for (int k = 0; k < K_COUNT; ++k) {
+        p->shader[k] = -1;
+        for (int i = 0; i < NX_NUM_SHADERS; ++i)
+            if (!strcmp(nx_shaders[i].name, k_names[k])) p->shader[k] = i;
+        if (p->shader[k] < 0) return -1;
+        const nx_shader_t* s = &nx_shaders[p->shader[k]];
+        p->shader_gpu[k] = arena_alloc(a, s->code_dwords * 4, 256);
+        if (!p->shader_gpu[k]) return -2;
+        memcpy(arena_cpu(a, p->shader_gpu[k]), s->code, s->code_dwords * 4);
+    }
+    for (int l = 0; l < NX_NUM_LAYERS; ++l) {
+        const nx_layer_t* L = &nx_layers[l];
+        size_t wn = (size_t)9 * L->cin * L->cout;
+        p->w_gpu[l] = arena_alloc(a, wn * 4, 256);
+        p->b_gpu[l] = arena_alloc(a, L->cout * 4, 256);
+        if (!p->w_gpu[l] || !p->b_gpu[l]) return -3;
+        memcpy(arena_cpu(a, p->w_gpu[l]), L->w, wn * 4);
+        memcpy(arena_cpu(a, p->b_gpu[l]), L->b, L->cout * 4);
+    }
+    for (int s = 0; s < 2; ++s)
+        for (int lv = 0; lv < 3; ++lv)
+            p->luma[s][lv] = arena_alloc(a, tensor_bytes(p->Hp >> lv, p->Wp >> lv, 1), 256);
+    for (int s = 0; s < 2; ++s) {
+        p->a8[s] = arena_alloc(a, tensor_bytes(p->h8, p->w8, 3), 256);
+        p->a4[s] = arena_alloc(a, tensor_bytes(p->h4, p->w4, 3), 256);
+    }
+    for (int lv = 0; lv < 3; ++lv)
+        p->vec[lv] = arena_alloc(a, tensor_bytes(p->h8 >> lv, p->w8 >> lv, 2), 256);
+    p->vtmp = arena_alloc(a, tensor_bytes(p->h8, p->w8, 2), 256);
+    p->flow5 = arena_alloc(a, tensor_bytes(p->h8, p->w8, 5), 256);
+    p->delta5 = arena_alloc(a, tensor_bytes(p->h8, p->w8, 5), 256);
+    p->flow4 = arena_alloc(a, tensor_bytes(p->h4, p->w4, 5), 256);
+    p->delta4 = arena_alloc(a, tensor_bytes(p->h4, p->w4, 5), 256);
+    p->lvl_in = arena_alloc(a, tensor_bytes(p->h4, p->w4, 17), 256);
+    size_t hid = max_sz(tensor_bytes(p->h16, p->w16, 32), tensor_bytes(p->h8, p->w8, 16));
+    p->hA = arena_alloc(a, hid, 256);
+    p->hB = arena_alloc(a, hid, 256);
+    p->hR = arena_alloc(a, hid, 256);
+    p->up = arena_alloc(a, max_sz(tensor_bytes(p->h8, p->w8, 32), tensor_bytes(p->h4, p->w4, 16)), 256);
+    p->tmp_img = arena_alloc(a, tensor_bytes(H, (int)align_up(W, 64), 1), 64 * 1024);
+    p->tmp_img2 = arena_alloc(a, tensor_bytes(Ho, (int)align_up(Wo, 64), 1), 64 * 1024);
+    for (int s = 0; s < 2; ++s) {
+        p->kernarg_base[s] = arena_alloc(a, KERNARG_BYTES, 256);
+        p->desc_base[s] = arena_alloc(a, DESC_BYTES, 256);
+    }
+    p->label_gpu = arena_alloc(a, 256, 256);
+    if (!p->label_gpu || !p->tmp_img2) return -4;
+    p->label_cpu = (volatile uint32_t*)arena_cpu(a, p->label_gpu);
+    *p->label_cpu = 0;
+    return 0;
+}
+
+// ------------------------------------------------------------ emision
+
+typedef struct {
+    nx_pipeline_t* p;
+    pm4_t* c;
+    uint64_t ka, ka_end, desc, desc_end;
+    int err;
+} ctx_t;
+
+static uint64_t put_kernargs(ctx_t* x, const void* data, size_t n)
+{
+    uint64_t at = align_up(x->ka, 64);
+    if (at + n > x->ka_end) { x->err = 1; return 0; }
+    memcpy(arena_cpu(&x->p->arena, at), data, n);
+    x->ka = at + n;
+    return at;
+}
+
+static uint64_t put_desc(ctx_t* x, const uint32_t* d, int ndw)
+{
+    uint64_t at = align_up(x->desc, 32);
+    if (at + ndw * 4 > x->desc_end) { x->err = 1; return 0; }
+    memcpy(arena_cpu(&x->p->arena, at), d, ndw * 4);
+    x->desc = at + ndw * 4;
+    return at;
+}
+
+static uint64_t tsharp(ctx_t* x, const nx_image_t* img)
+{
+    uint32_t t[8];
+    nx_make_tsharp(t, img);
+    return put_desc(x, t, 8);
+}
+
+static void run(ctx_t* x, int k, const void* args, size_t n, int tx, int ty)
+{
+    const nx_shader_t* s = &nx_shaders[x->p->shader[k]];
+    // el struct C puede tener relleno al final (sizeof redondea a 8): se copian
+    // exactamente los bytes que declara el kernel; si faltan, el layout no coincide
+    if (n < s->kernarg_size || n > s->kernarg_size + 7) { x->err = 2; return; }
+    uint64_t ka = put_kernargs(x, args, s->kernarg_size);
+    uint64_t pgm = x->p->shader_gpu[k];
+    uint32_t pg[2] = { (uint32_t)(pgm >> 8), (uint32_t)(pgm >> 40) };
+    uint32_t rs[2] = { s->rsrc1, s->rsrc2 };
+    uint32_t nt[3] = { WG, WG, 1 };
+    // ABI HSA: s[0:3] = private segment buffer (sin scratch -> 0), s[4:5] = kernarg ptr
+    uint32_t ud[6] = { 0, 0, 0, 0, (uint32_t)ka, (uint32_t)(ka >> 32) };
+    pm4_set_sh(x->c, R_COMPUTE_PGM_LO, pg, 2);
+    pm4_set_sh(x->c, R_COMPUTE_PGM_RSRC1, rs, 2);
+    pm4_set_sh(x->c, R_COMPUTE_NUM_THREAD_X, nt, 3);
+    pm4_set_sh(x->c, R_COMPUTE_USER_DATA_0, ud, s->user_sgprs < 6 ? s->user_sgprs : 6);
+    pm4_dispatch(x->c, (uint32_t)(tx + WG - 1) / WG, (uint32_t)(ty + WG - 1) / WG, 1);
+    pm4_cs_barrier(x->c);
+}
+
+static void same_pads(int n, int stride, int* before)
+{
+    int out = (n + stride - 1) / stride;
+    int total = (out - 1) * stride + 3 - n;
+    if (total < 0) total = 0;
+    *before = total / 2;
+}
+
+static int conv_kernel(int cin, int cout)
+{
+    if (cout == 32) return cin == 14 ? K_CONV_14_32 : cin == 17 ? K_CONV_17_32 : K_CONV_32_32;
+    if (cout == 16) return cin == 17 ? K_CONV_17_16 : K_CONV_16_16;
+    return cin == 32 ? K_CONV_32_5 : K_CONV_16_5;
+}
+
+static void conv(ctx_t* x, int layer, uint64_t in, int H, int W, uint64_t out, uint64_t residual)
+{
+    nx_pipeline_t* p = x->p;
+    const nx_layer_t* L = &nx_layers[layer];
+    int s = L->stride, Ho = (H + s - 1) / s, Wo = (W + s - 1) / s, pt, pl;
+    same_pads(H, s, &pt);
+    same_pads(W, s, &pl);
+    ka_conv_t a = { in, H, W, out, Ho, Wo, p->w_gpu[layer], p->b_gpu[layer], s, pt, pl, L->act, residual };
+    run(x, conv_kernel(L->cin, L->cout), &a, sizeof a, Wo, Ho);
+}
+
+// Bloque de NXFlow (ver model/net.py: block): c0 s2, c1, capas medias (la ultima
+// suma el residual de c1), resize x2 y conv de salida. Entrada en lvl_in (H x W),
+// salida (5 canales) en "delta".
+static void nx_block(ctx_t* x, int first, int n_layers, int H, int W, uint64_t delta)
+{
+    nx_pipeline_t* p = x->p;
+    int h = (H + 1) / 2, w = (W + 1) / 2;
+    conv(x, first + 0, p->lvl_in, H, W, p->hA, 0);
+    conv(x, first + 1, p->hA, h, w, p->hR, 0);
+    uint64_t src = p->hR;
+    int n_mid = n_layers - 3;
+    for (int i = 0; i < n_mid; ++i) {
+        uint64_t dst = src == p->hA ? p->hB : p->hA;
+        conv(x, first + 2 + i, src, h, w, dst, i == n_mid - 1 ? p->hR : 0);
+        src = dst;
+    }
+    ka_resize_t r = { src, h, w, nx_layers[first].cout, 0, p->up, H, W };
+    run(x, K_RESIZE, &r, sizeof r, W, H);
+    conv(x, first + n_layers - 1, p->up, H, W, delta, 0);
+}
+
+static void luma_pyramid(ctx_t* x, const nx_image_t* img, int s)
+{
+    nx_pipeline_t* p = x->p;
+    ka_luma_t l = { tsharp(x, img), p->H, p->W, p->luma[s][0], p->Hp, p->Wp };
+    run(x, K_LUMA_FULL, &l, sizeof l, p->Wp, p->Hp);
+    for (int lv = 1; lv < 3; ++lv) {
+        ka_down2_t d = { p->luma[s][lv - 1], p->Hp >> (lv - 1), p->Wp >> (lv - 1), p->luma[s][lv] };
+        run(x, K_LUMA_DOWN2, &d, sizeof d, p->Wp >> lv, p->Hp >> lv);
+    }
+    ka_avgpool_t a = { tsharp(x, img), p->H, p->W, p->a8[s], p->h8, p->w8, 8 };
+    run(x, K_AVGPOOL, &a, sizeof a, p->w8, p->h8);
+    ka_avgpool_t q = { tsharp(x, img), p->H, p->W, p->a4[s], p->h4, p->w4, 4 };
+    run(x, K_AVGPOOL, &q, sizeof q, p->w4, p->h4);
+}
+
+static nx_image_t linear_img(uint64_t gpu, int w, int h)
+{
+    nx_image_t i = { gpu, (uint32_t)w, (uint32_t)h, (uint32_t)align_up(w, 64),
+                     NX_FMT_RGBA8_UNORM, NX_TILE_DISPLAY_LINEAR_ALIGNED };
+    return i;
+}
+
+// post-proceso FSR1 de "src" (resolucion del juego) hacia "dst" (salida)
+static void post(ctx_t* x, const nx_job_t* job, const nx_image_t* src, const nx_image_t* dst)
+{
+    nx_pipeline_t* p = x->p;
+    float sharp = exp2f(-job->sharpness_stops);
+    const nx_image_t* rin = src;
+    nx_image_t t2 = linear_img(p->tmp_img2, p->Wo, p->Ho);
+    if (job->post == NX_POST_EASU) {
+        ka_easu_t e = { tsharp(x, src), p->H, p->W, tsharp(x, &t2), p->Ho, p->Wo };
+        run(x, K_EASU, &e, sizeof e, p->Wo, p->Ho);
+        rin = &t2;
+    }
+    ka_rcas_t r = { tsharp(x, rin), tsharp(x, dst), p->Wo, p->Ho, sharp, 0 };
+    run(x, K_RCAS, &r, sizeof r, p->Wo, p->Ho);
+}
+
+int nx_pipeline_build(nx_pipeline_t* p, pm4_t* c, const nx_job_t* job)
+{
+    ctx_t x = { p, c, p->kernarg_base[job->slot], p->kernarg_base[job->slot] + KERNARG_BYTES,
+                p->desc_base[job->slot], p->desc_base[job->slot] + DESC_BYTES, 0 };
+    int sc = job->slot, sp = job->slot ^ 1;
+
+    // pase de inicializacion de caches (instrucciones y escalares) por si el
+    // juego dejo datos viejos de una ejecucion anterior del mismo rango
+    pm4_set_sh1(c, R_COMPUTE_TMPRING_SIZE, 0);
+    uint32_t mgmt[2] = { 0xFFFFFFFFu, 0xFFFFFFFFu };
+    pm4_set_sh(c, R_COMPUTE_STATIC_THREAD_MGMT_SE0, mgmt, 2);
+    pm4_set_sh1(c, R_COMPUTE_RESOURCE_LIMITS, 0);
+
+    // 1. luma (piramide) y RGB a 1/8: el del fotograma previo se reutiliza
+    if (!p->luma_valid[sp])
+        luma_pyramid(&x, job->prev, sp);
+    luma_pyramid(&x, job->cur, sc);
+    p->luma_valid[sc] = 1;
+
+    // 2. block-matching simetrico de grueso a fino (prev -> cur)
+    for (int lv = 2; lv >= 0; --lv) {
+        int By = p->h8 >> lv, Bx = p->w8 >> lv;
+        ka_bm_t b = { p->luma[sp][lv], p->luma[sc][lv], p->Hp >> lv, p->Wp >> lv,
+                      lv == 2 ? 0 : p->vec[lv + 1], p->h8 >> (lv + 1), p->w8 >> (lv + 1),
+                      p->vtmp, By, Bx, 3 };
+        run(&x, K_BM_SEARCH, &b, sizeof b, Bx, By);
+        ka_median_t m = { p->vtmp, p->vec[lv], By, Bx };
+        run(&x, K_BM_MEDIAN3, &m, sizeof m, Bx, By);
+    }
+
+    // 3. NXFlow: niveles A y B a 1/8, nivel C a 1/4
+    ka_bm2flow_t f = { p->vec[0], p->h8, p->w8, p->flow5 };
+    run(&x, K_BM_TO_FLOW, &f, sizeof f, p->w8, p->h8);
+    ka_build_t bi = { p->a8[sp], p->a8[sc], p->flow5, 0, p->h8, p->w8, 0, 0, p->lvl_in };
+    run(&x, K_BUILD_INPUT, &bi, sizeof bi, p->w8, p->h8);
+    nx_block(&x, BLOCK_A, p->h8, p->w8, p->delta5);
+    bi.delta5 = p->delta5; bi.level = 1;                 // flow5 += A; entrada de B
+    run(&x, K_BUILD_INPUT, &bi, sizeof bi, p->w8, p->h8);
+    nx_block(&x, BLOCK_B, p->h8, p->w8, p->delta5);
+    bi.level = -1;                                       // flow5 += B
+    run(&x, K_BUILD_INPUT, &bi, sizeof bi, p->w8, p->h8);
+    ka_up5_t u = { p->flow5, p->h8, p->w8, p->flow4 };
+    run(&x, K_UPSAMPLE5, &u, sizeof u, p->w4, p->h4);
+    ka_build_t bc = { p->a4[sp], p->a4[sc], p->flow4, 0, p->h4, p->w4, 1, 0, p->lvl_in };
+    run(&x, K_BUILD_INPUT, &bc, sizeof bc, p->w4, p->h4);
+    nx_block(&x, BLOCK_C, p->h4, p->w4, p->delta4);
+    bc.delta5 = p->delta4; bc.level = -1;                // flow4 += C
+    run(&x, K_BUILD_INPUT, &bc, sizeof bc, p->w4, p->h4);
+
+    // 4. warp + mezcla a resolucion completa (con el sampler bilineal del hardware)
+    uint32_t samp[4];
+    nx_make_ssharp(samp, 1);
+    nx_image_t t1 = linear_img(p->tmp_img, p->W, p->H);
+    const nx_image_t* warp_dst = job->post == NX_POST_NONE ? job->out_mid : &t1;
+    ka_warp_t w = { tsharp(&x, job->prev), tsharp(&x, job->cur), put_desc(&x, samp, 4), p->flow4,
+                    p->h4, p->w4, tsharp(&x, warp_dst), p->H, p->W };
+    run(&x, K_WARP_BLEND, &w, sizeof w, p->W, p->H);
+
+    // 5. FSR1 sobre el generado y sobre el real, para que no "parpadee" la nitidez
+    if (job->post != NX_POST_NONE) {
+        post(&x, job, &t1, job->out_mid);
+        if (job->out_real)
+            post(&x, job, job->cur, job->out_real);
+    }
+
+    pm4_end_of_job(c, p->label_gpu, job->seq);
+    pm4_nop_pad(c, 8);
+    return x.err ? -10 - x.err : (c->overflow ? -20 : 0);
+}

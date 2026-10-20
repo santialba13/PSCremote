@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+shaders/build/
+plugin/build/
+plugin/test/host_test
+*.npy
+*.mp4
+*.pkg
+plugin/test/gpu_emu
+plugin/test/*.o
