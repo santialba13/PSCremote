@@ -23,7 +23,7 @@
 attr_public const char* g_pluginName = "vcfg_nx";
 attr_public const char* g_pluginDesc = "Frame generation + reescalado IA (NXSR) + SMAA/FSR1, menu L3+R3";
 attr_public const char* g_pluginAuth = "VCFG-NX";
-attr_public u32 g_pluginVersion = 0x00000243; // 2.43
+attr_public u32 g_pluginVersion = 0x00000244; // 2.44
 
 // prototipos de las variantes ForWorkload (OpenOrbis las declara sin argumentos)
 typedef s32 (*submit_wl_t)(u64, u32, void**, u32*, void**, u32*);
@@ -41,7 +41,6 @@ HOOK_INIT(scePadRead);
 // las variantes Ext se enganchan solo si el sistema las tiene (sin importarlas)
 HOOK_INIT(scePadReadStateExt);
 HOOK_INIT(scePadReadExt);
-static int g_ext_state, g_ext_read;
 
 static int g_hooked, g_hooked_dm;
 static char g_boot_path[64];   // /data/vcfg_nx/boot-<TITLE>.txt: el arranque con reserva llego a jugarse
@@ -399,7 +398,7 @@ static void* pad_thread(void* arg)
         if (handle >= 0) {
             OrbisPadData d;
             memset(&d, 0, sizeof d);
-            s32 r = HOOK_CONTINUE(scePadReadState, pad_state_fn, handle, &d);
+            s32 r = scePadReadState(handle, &d);
             if (r == 0) {
                 if (!ok_logged) { ok_logged = 1; nx_engine_pad_polled(1); }
                 fails = 0;
@@ -460,6 +459,13 @@ s32 attr_public plugin_load(s32 argc, const char* argv[])
         memcpy(title, info.titleid, sizeof title - 1);
     make_dirs();
     boot_mark("plugin_load", title);
+    // aviso visible lo antes posible: si no aparece al abrir el juego, GoldHEN no cargo el plugin
+    {
+        char n[96];
+        snprintf(n, sizeof n, "VCFG-NX %x.%02x cargado en %s. Mantener L3+R3: menu", g_pluginVersion >> 8,
+                 g_pluginVersion & 0xFF, title);
+        pf_notify(n);
+    }
     nx_engine_init(&g_pf, title);
     if (nx_engine_info()->state == NX_ST_OFF) {
         final_printf("proceso '%s': sin hooks (%s)\n", title, nx_engine_info()->status);
@@ -472,33 +478,20 @@ s32 attr_public plugin_load(s32 argc, const char* argv[])
     HOOK32(sceGnmSubmitAndFlipCommandBuffers);
     HOOK32(sceGnmSubmitAndFlipCommandBuffersForWorkload);
     HOOK32(sceVideoOutSubmitFlip);
-    HOOK32(scePadReadState);
-    HOOK32(scePadRead);
-    void* ext = find_sym("scePadReadStateExt");
-    if (ext) {
-        Detour_Construct(&Detour_scePadReadStateExt, DetourMode_x32);
-        Detour_DetourFunction(&Detour_scePadReadStateExt, (uint64_t)ext, (void*)&scePadReadStateExt_hook);
-        g_ext_state = 1;
-    }
-    ext = find_sym("scePadReadExt");
-    if (ext) {
-        Detour_Construct(&Detour_scePadReadExt, DetourMode_x32);
-        Detour_DetourFunction(&Detour_scePadReadExt, (uint64_t)ext, (void*)&scePadReadExt_hook);
-        g_ext_read = 1;
-    }
+    // el mando NO se engancha (como VCFG v2.23: "pad entry hooks disabled"):
+    // solo lo lee el hilo propio. El juego sigue recibiendo los botones con el
+    // menu abierto, pero no se toca nada de su lectura del mando.
     g_hooked = 1;
     g_pad_run = 1;
     int tr = scePthreadCreate(&g_pad_thread, NULL, pad_thread, NULL, "vcfg_nx_pad");
     if (tr != 0) g_pad_run = 0;
     char m[160];
-    snprintf(m, sizeof m, "[main] plugin %x.%02x cargado en %s; hooks listos (pad Ext: %d/%d); hilo del mando rc=0x%08x; temperatura %s\n",
-             g_pluginVersion >> 8, g_pluginVersion & 0xFF, title, g_ext_state, g_ext_read, (unsigned)tr,
+    snprintf(m, sizeof m, "[main] plugin %x.%02x cargado en %s; hooks listos; hilo del mando rc=0x%08x; temperatura %s\n",
+             g_pluginVersion >> 8, g_pluginVersion & 0xFF, title, (unsigned)tr,
              g_temp ? "disponible" : "no disponible");
     pf_log(m);
     pf_append_file("/data/vcfg_nx/logs/cargas.txt", m, (int)strlen(m));
     nx_engine_flush_log();
-    // aviso visible: si no aparece al abrir el juego, GoldHEN no cargo el plugin
-    pf_notify("VCFG-NX cargado. Mantener L3+R3 para el menu");
     return 0;
 }
 
@@ -512,19 +505,10 @@ s32 attr_public plugin_unload(s32 argc, const char* argv[])
     UNHOOK(sceGnmSubmitAndFlipCommandBuffers);
     UNHOOK(sceGnmSubmitAndFlipCommandBuffersForWorkload);
     UNHOOK(sceVideoOutSubmitFlip);
-    UNHOOK(scePadReadState);
-    UNHOOK(scePadRead);
-    if (g_ext_state) UNHOOK(scePadReadStateExt);
-    if (g_ext_read) UNHOOK(scePadReadExt);
     if (g_hooked_dm) { g_hooked_dm = 0; UNHOOK(sceKernelAllocateDirectMemory); }
     if (g_hooked_main_dm) { g_hooked_main_dm = 0; UNHOOK(sceKernelAllocateMainDirectMemory); }
     return 0;
 }
 
-s32 attr_module_hidden module_start(s64 argc, const void* args)
-{
-    make_dirs();
-    boot_mark("module_start", "");
-    return 0;
-}
+s32 attr_module_hidden module_start(s64 argc, const void* args) { return 0; }
 s32 attr_module_hidden module_stop(s64 argc, const void* args) { return 0; }

@@ -16,3 +16,15 @@ typedef unsigned long OrbisPthread;
 typedef struct { int x; } OrbisPthreadAttr;
 static inline int32_t scePthreadCreate(OrbisPthread* t, const OrbisPthreadAttr* a, void* (*f)(void*), void* arg, const char* n) { return -1; }
 static inline int32_t scePthreadJoin(OrbisPthread t, void** r) { return 0; }
+typedef int32_t OrbisKernelModule;
+// carga de modulos: en el PC solo se mira que el archivo exista
+#include <stdio.h>
+static inline uint32_t sceKernelLoadStartModule(const char* p, size_t a, const void* b, uint32_t c, void* d, void* e)
+{
+    FILE* f = fopen(p, "rb");
+    if (!f) return 0x80020002u;
+    fclose(f);
+    return 0x1234;
+}
+static inline int32_t sceKernelDlsym(int32_t h, const char* s, void** out) { *out = (void*)0x1; return 0; }
+static inline int32_t sceKernelStopUnloadModule(OrbisKernelModule h, size_t a, const void* b, uint32_t c, void* d, int32_t* e) { return 0; }

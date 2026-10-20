@@ -58,7 +58,7 @@
 #define CFG_DIR ROOT "/data/vcfg_nx"
 #define TITLE_ID "VCNX00001"
 #define CONTENT_ID "IV0000-VCNX00001_00-VCFGNXINSTALL000"
-#define VERSION "2.4.3"
+#define VERSION "2.4.4"
 
 #define W 1920
 #define H 1080
@@ -1118,6 +1118,24 @@ enum { M_NONE, M_EXIT, M_OPTIONS, M_CONFIRM_UNINSTALL, M_CONFIRM_RESET, M_SAVE_E
 static int modal_kind;
 static char modal_lines[9][300];
 
+// carga un PRX como lo hace GoldHEN y lo vuelve a descargar (sin llamar a
+// plugin_load). 1 = se pudo cargar y exporta plugin_load
+static int load_test(const char* path, char* out, size_t n)
+{
+    if (jailed) { snprintf(out, n, "sin probar (sin acceso)"); return 0; }
+    FILE* f = fopen(path, "rb");
+    if (!f) { snprintf(out, n, "NO INSTALADO"); return 0; }
+    fclose(f);
+    int32_t h = (int32_t)sceKernelLoadStartModule(path, 0, NULL, 0, NULL, NULL);
+    if (h < 0) { snprintf(out, n, "ERROR 0x%08X al cargar", (unsigned)h); return 0; }
+    void* fn = NULL;
+    int r = sceKernelDlsym(h, "plugin_load", &fn);
+    sceKernelStopUnloadModule(h, 0, NULL, 0, NULL, NULL);
+    if (r != 0 || !fn) { snprintf(out, n, "carga pero sin plugin_load (0x%08X)", (unsigned)r); return 0; }
+    snprintf(out, n, "OK");
+    return 1;
+}
+
 // que tan lejos llego VCFG-NX: archivos instalados, plugins.ini, registros que
 // deja el plugin dentro de los juegos. Tambien escribe /data/vcfg_nx/reporte.txt
 static void diag_collect(void)
@@ -1178,7 +1196,17 @@ static void diag_collect(void)
         diag.line_color[6] = k == 3 ? C_OK : k == 0 ? C_DANGER : C_WARN;
     }
     snprintf(L[6], 300, "%.40s: %s", g ? g->title : "Juego", g ? sum : "no hay juegos");
-    snprintf(L[7], 300, "\xdaltimo error al guardar: %s", diag.save_error[0] ? diag.save_error : "ninguno");
+    // prueba de carga: la app abre los PRX instalados igual que GoldHEN
+    // (sceKernelLoadStartModule) y busca plugin_load. Asi se sabe en esta
+    // consola si el archivo en si se puede cargar.
+    char t1[80], t2[80];
+    int ok1 = load_test(PROBE_DST, t1, sizeof t1), ok2 = load_test(PLUGIN_DST, t2, sizeof t2);
+    snprintf(L[7], 300, "Prueba de carga: sonda %s \xb7 plugin %s", t1, t2);
+    diag.line_color[7] = ok1 && ok2 ? C_OK : C_DANGER;
+    if (diag.save_error[0]) {
+        snprintf(L[7] + strlen(L[7]), 300 - strlen(L[7]), " \xb7 error al guardar: %s", diag.save_error);
+        diag.line_color[7] = C_DANGER;
+    }
     // reporte completo para compartir
     size_t cap = strlen(ini) + strlen(loads) + (log ? strlen(log) : 0) + 8192;
     char* rep = malloc(cap);

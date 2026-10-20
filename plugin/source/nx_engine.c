@@ -732,9 +732,9 @@ void nx_engine_tick(void)
     uint64_t t = E.pf->now_us();
     if (!E.tick_start) E.tick_start = t;
     uint64_t secs = (t - E.tick_start) / 1000000;
-    // a los 40 s, un aviso en pantalla con el estado: sirve para saber que paso
+    // a los 25 s, un aviso en pantalla con el estado: sirve para saber que paso
     // sin tener que buscar el registro
-    if (!E.tick_status && secs >= 40) {
+    if (!E.tick_status && secs >= 25) {
         E.tick_status = 1;
         char m[200];
         if (E.info.state == NX_ST_WAIT_BUFFERS)
@@ -747,7 +747,7 @@ void nx_engine_tick(void)
             snprintf(m, sizeof m, "VCFG-NX: %s \xb7 %dx%d \xb7 %.0f fps \xb7 L3+R3: men\xfa", E.info.status, E.W, E.H,
                      (double)E.info.game_fps);
         notify(m);
-        logf_("[diag] aviso a los 40 s: %s\n", m);
+        logf_("[diag] aviso a los 25 s: %s\n", m);
         log_flush();
     }
     if (!E.tick_warned && secs >= 30) {
