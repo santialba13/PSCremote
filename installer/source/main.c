@@ -58,7 +58,7 @@
 #define CFG_DIR ROOT "/data/vcfg_nx"
 #define TITLE_ID "VCNX00001"
 #define CONTENT_ID "IV0000-VCNX00001_00-VCFGNXINSTALL000"
-#define VERSION "2.4.4"
+#define VERSION "2.4.5"
 
 #define W 1920
 #define H 1080
@@ -1122,18 +1122,25 @@ static char modal_lines[9][300];
 // plugin_load). 1 = se pudo cargar y exporta plugin_load
 static int load_test(const char* path, char* out, size_t n)
 {
+    // el modulo queda cargado (sin plugin_load no hace nada) y el resultado se
+    // guarda: abrir Diagnostico otra vez no lo vuelve a cargar
+    static char done[2][80];
+    static int done_ok[2], tried[2];
+    int k = strstr(path, "probe") != NULL;
+    if (tried[k]) { snprintf(out, n, "%s", done[k]); return done_ok[k]; }
     if (jailed) { snprintf(out, n, "sin probar (sin acceso)"); return 0; }
     FILE* f = fopen(path, "rb");
     if (!f) { snprintf(out, n, "NO INSTALADO"); return 0; }
     fclose(f);
+    tried[k] = 1;
     int32_t h = (int32_t)sceKernelLoadStartModule(path, 0, NULL, 0, NULL, NULL);
-    if (h < 0) { snprintf(out, n, "ERROR 0x%08X al cargar", (unsigned)h); return 0; }
     void* fn = NULL;
-    int r = sceKernelDlsym(h, "plugin_load", &fn);
-    sceKernelStopUnloadModule(h, 0, NULL, 0, NULL, NULL);
-    if (r != 0 || !fn) { snprintf(out, n, "carga pero sin plugin_load (0x%08X)", (unsigned)r); return 0; }
-    snprintf(out, n, "OK");
-    return 1;
+    int r = h < 0 ? -1 : sceKernelDlsym(h, "plugin_load", &fn);
+    if (h < 0) snprintf(done[k], sizeof done[k], "ERROR 0x%08X al cargar", (unsigned)h);
+    else if (r != 0 || !fn) snprintf(done[k], sizeof done[k], "carga pero sin plugin_load (0x%08X)", (unsigned)r);
+    else { snprintf(done[k], sizeof done[k], "OK"); done_ok[k] = 1; }
+    snprintf(out, n, "%s", done[k]);
+    return done_ok[k];
 }
 
 // que tan lejos llego VCFG-NX: archivos instalados, plugins.ini, registros que

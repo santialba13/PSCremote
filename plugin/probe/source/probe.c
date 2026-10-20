@@ -15,7 +15,7 @@
 attr_public const char* g_pluginName = "vcfg_nx_probe";
 attr_public const char* g_pluginDesc = "Sonda de diagnostico de VCFG-NX";
 attr_public const char* g_pluginAuth = "VCFG-NX";
-attr_public u32 g_pluginVersion = 0x00000244; // 2.44
+attr_public u32 g_pluginVersion = 0x00000245; // 2.45
 
 static char g_title[16];
 static OrbisPthread g_thread;
@@ -50,7 +50,7 @@ static int main_loaded(void)
 static void* check_later(void* arg)
 {
     (void)arg;
-    sceKernelSleep(12);
+    sceKernelUsleep(12 * 1000000);
     int m = main_loaded();
     char msg[200];
     snprintf(msg, sizeof msg, m > 0 ? "VCFG-NX sonda: el plugin principal esta cargado en %s"

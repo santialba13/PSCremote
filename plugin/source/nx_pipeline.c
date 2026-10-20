@@ -10,6 +10,18 @@
 #include "../../third_party/smaa/AreaTex.h"
 #include "../../third_party/smaa/SearchTex.h"
 
+// 2^x sin libm: exp2f no esta en todas las versiones de libSceLibcInternal y una
+// importacion que el juego no resuelve impide que GoldHEN cargue el plugin entero
+static float nx_exp2(float x)
+{
+    int k = (int)(x < 0 ? x - 1.0f : x);   // parte entera hacia abajo
+    float f = (x - (float)k) * 0.69314718f, t = 1.0f, e = 1.0f;
+    for (int i = 1; i < 10; ++i) { t *= f / (float)i; e += t; }   // e^(f ln2), f en [0, 1)
+    for (; k > 0; --k) e *= 2.0f;
+    for (; k < 0; ++k) e *= 0.5f;
+    return e;
+}
+
 enum {
     K_CONV_14_32, K_CONV_17_32, K_CONV_32_32, K_CONV_32_5, K_CONV_17_16, K_CONV_16_16, K_CONV_16_5,
     K_AVGPOOL, K_RESIZE, K_UPSAMPLE5, K_BUILD_INPUT, K_BM_TO_FLOW, K_LUMA_FULL, K_LUMA_DOWN2,
@@ -359,7 +371,7 @@ static void post(ctx_t* x, const nx_job_t* job, const nx_image_t* src, const nx_
             ka_nxsr_t r = { tsharp(x, cur), w, h, job->sr_hq ? p->nxsr_hq_w : p->nxsr_w, tsharp(x, o), job->sr_k };
             run(x, job->sr_hq ? K_NXSR_HQ : K_NXSR, &r, sizeof r, w / 2, h / 2);
         } else {
-            ka_rcas_t r = { tsharp(x, cur), tsharp(x, o), w, h, exp2f(-job->sharpness_stops), 0 };
+            ka_rcas_t r = { tsharp(x, cur), tsharp(x, o), w, h, nx_exp2(-job->sharpness_stops), 0 };
             run(x, K_RCAS, &r, sizeof r, w, h);
         }
         cur = o;

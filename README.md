@@ -1,4 +1,4 @@
-# VCFG-NX 2.44: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
+# VCFG-NX 2.45: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
 
 Rediseño del **VCFG v2.14** (generador de fotogramas en beta de la comunidad
 de GoldHEN) que además incorpora un **modelo de reescalado/realce propio,
@@ -6,7 +6,7 @@ NXSR**, como alternativa a GNMScale pero sin el granulado que este agrega.
 Todo con la interfaz de VCFG: app instaladora con lista de juegos y menú en
 pantalla con **L3+R3**.
 
-**Descarga:** [`dist/VCFG-NX_v2.44.pkg`](dist/VCFG-NX_v2.44.pkg) (fPKG, app) ·
+**Descarga:** [`dist/VCFG-NX_v2.45.pkg`](dist/VCFG-NX_v2.45.pkg) (fPKG, app) ·
 [`dist/vcfg_nx.prx`](dist/vcfg_nx.prx) (plugin suelto) · [`dist/SHA256SUMS.txt`](dist/SHA256SUMS.txt)
 
 | servicio | qué hace |
@@ -64,6 +64,21 @@ botones mientras está abierto):
   RCAS, contador de FPS (con temperatura) y comparar.
 * Arriba se ven los FPS, la temperatura y el estado (activo, calidad dinámica,
   calor). **Guardar** deja todo para ese juego; **O** cierra.
+
+## Novedades de la 2.45
+
+**Causa encontrada de que el plugin no cargara en ningún juego.** Comparando
+cada función que importa el plugin con las que importan VCFG v2.23, GNMScale
+y el plugin de ejemplo de GoldHEN, la única distinta era `exp2f` (de
+`libSceLibcInternal`, la usaba la nitidez RCAS). Si la consola no la exporta,
+la PS4 no puede enlazar el PRX y GoldHEN no lo carga: el juego arranca como
+si nada, sin aviso ni menú. Desde la 1.0 estaba. Ahora se calcula dentro del
+plugin (mismo resultado, error < 1e-6). Plugin, sonda y app importan solo
+funciones que también usan esos binarios que funcionan.
+
+Revisión de compatibilidad de los modelos en la GPU de PS4: ningún shader usa
+memoria scratch; LDS máx. 23 KB (NXSR Calidad; límite 32 KB); VGPR máx. 81/256;
+SGPR máx. 94/104.
 
 ## Novedades de la 2.44
 
@@ -245,7 +260,7 @@ compartir para arreglar un juego puntual.
 ## Instalar y usar
 
 1. Requiere **GoldHEN** con soporte de plugins.
-2. Instalar `VCFG-NX_v2.44.pkg` y abrir **VCFG-NX**.
+2. Instalar `VCFG-NX_v2.45.pkg` y abrir **VCFG-NX**.
 3. En la cuadrícula: **X** activa o desactiva VCFG-NX en el juego,
    **CUADRADO** abre los ajustes de ese juego, **TRIÁNGULO** los ajustes por
    defecto, **L1/R1** cambia el filtro, **OPTIONS** abre el menú (activar o
