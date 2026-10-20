@@ -158,25 +158,14 @@ int inst_ini_has(const char* ini, const char* section)
     return p && p < end;
 }
 
-char* inst_ini_add(const char* ini, const char* section)
+// quita las lineas de VCFG-NX (plugin y sonda) entre [from, to) del texto
+static int our_line(const char* p, size_t n)
 {
-    if (inst_ini_has(ini, section)) return NULL;
-    size_t len = strlen(ini);
-    char* out = malloc(len + 128);
-    const char* s = find_section(ini, section);
-    if (!s) {
-        sprintf(out, "%s%s\n[%s]\n%s\n", ini, (len && ini[len - 1] != '\n') ? "\n" : "", section, PLUGIN_LINE);
-    } else {
-        const char* eol = strchr(s, '\n');
-        size_t at = eol ? (size_t)(eol - ini) + 1 : len;
-        memcpy(out, ini, at);
-        int k = sprintf(out + at, "%s%s\n", eol ? "" : "\n", PLUGIN_LINE);
-        strcpy(out + at + k, ini + at);
-    }
-    return out;
+    const char* a = strstr(p, PLUGIN_LINE);
+    const char* b = strstr(p, PROBE_LINE);
+    return (a && a < p + n) || (b && b < p + n);
 }
 
-// quita las lineas del plugin entre [from, to) del texto
 static char* remove_lines(const char* ini, const char* from, const char* to)
 {
     size_t len = strlen(ini);
@@ -185,11 +174,37 @@ static char* remove_lines(const char* ini, const char* from, const char* to)
     for (const char* p = ini; *p;) {
         const char* eol = strchr(p, '\n');
         size_t n = eol ? (size_t)(eol - p) + 1 : strlen(p);
-        int drop = p >= from && p < to && strstr(p, PLUGIN_LINE) && strstr(p, PLUGIN_LINE) < p + n;
+        int drop = p >= from && p < to && our_line(p, n);
         if (!drop) { memcpy(out + o, p, n); o += n; }
         p += n;
     }
     out[o] = 0;
+    return out;
+}
+
+// deja en [section] la sonda y el plugin (en ese orden) justo debajo del
+// encabezado. NULL si ya estaba exactamente asi
+char* inst_ini_add(const char* ini, const char* section)
+{
+    const char* s = find_section(ini, section);
+    char* base;
+    if (s) {
+        base = remove_lines(ini, s, section_end(s));
+    } else {
+        size_t len = strlen(ini);
+        base = malloc(len + 64);
+        sprintf(base, "%s%s[%s]\n", ini, (len && ini[len - 1] != '\n') ? "\n" : "", section);
+    }
+    s = find_section(base, section);
+    size_t len = strlen(base);
+    char* out = malloc(len + 128);
+    const char* eol = strchr(s, '\n');
+    size_t at = eol ? (size_t)(eol - base) + 1 : len;
+    memcpy(out, base, at);
+    int k = sprintf(out + at, "%s%s\n%s\n", eol ? "" : "\n", PROBE_LINE, PLUGIN_LINE);
+    strcpy(out + at + k, base + at);
+    free(base);
+    if (!strcmp(out, ini)) { free(out); return NULL; }
     return out;
 }
 
@@ -202,7 +217,7 @@ char* inst_ini_remove(const char* ini, const char* section)
 
 char* inst_ini_remove_all(const char* ini)
 {
-    if (!strstr(ini, PLUGIN_LINE)) return NULL;
+    if (!strstr(ini, PLUGIN_LINE) && !strstr(ini, PROBE_LINE)) return NULL;
     return remove_lines(ini, ini, ini + strlen(ini));
 }
 
@@ -284,6 +299,8 @@ int inst_ini_section_plugins(const char* ini, const char* section, char* others,
         if (q < p + len && *q == '/') {
             if ((size_t)(p + len - q) == strlen(PLUGIN_LINE) && !strncmp(q, PLUGIN_LINE, strlen(PLUGIN_LINE))) {
                 ours = 1;
+            } else if ((size_t)(p + len - q) == strlen(PROBE_LINE) && !strncmp(q, PROBE_LINE, strlen(PROBE_LINE))) {
+                // la sonda es nuestra
             } else {
                 const char* base = q;
                 for (const char* t = q; t < p + len; ++t) if (*t == '/') base = t + 1;

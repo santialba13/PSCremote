@@ -7,6 +7,8 @@
 
 #define INST_MAX_GAMES 256
 #define PLUGIN_LINE "/data/GoldHEN/plugins/vcfg_nx.prx"
+// sonda de diagnostico: va antes del plugin en la seccion del juego
+#define PROBE_LINE "/data/GoldHEN/plugins/vcfg_nx_probe.prx"
 
 typedef struct {
     char id[16];

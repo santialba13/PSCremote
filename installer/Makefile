@@ -2,7 +2,7 @@
 #   make OO_PS4_TOOLCHAIN=/ruta/OpenOrbis/PS4Toolchain GOLDHEN_SDK=/ruta/GoldHEN_Plugins_SDK
 # Compila tambien el plugin (../plugin) y lo mete en el PKG en /app0/plugins/.
 TITLE       := VCFG-NX
-VERSION     := 2.42
+VERSION     := 2.43
 TITLE_ID    := VCNX00001
 CONTENT_ID  := IV0000-VCNX00001_00-VCFGNXINSTALL000
 
@@ -21,6 +21,9 @@ LDFLAGS := -m elf_x86_64 -pie --script $(TOOLCHAIN)/link.x --eh-frame-hdr -L$(TO
            $(TOOLCHAIN)/lib/crt1.o
 
 all: $(OUT)/$(CONTENT_ID).pkg
+
+../plugin/probe/build/vcfg_nx_probe.prx: FORCE
+	$(MAKE) -C ../plugin/probe OO_PS4_TOOLCHAIN=$(TOOLCHAIN) GOLDHEN_SDK=$(GOLDHEN_SDK)
 
 ../plugin/build/vcfg_nx.prx: FORCE
 	$(MAKE) -C ../plugin
@@ -60,15 +63,16 @@ $(STAGE)/sce_sys/icon0.png: make_icon.py
 	@mkdir -p $(STAGE)/sce_sys
 	python3 make_icon.py $@
 
-stage: $(STAGE)/eboot.bin $(STAGE)/sce_sys/param.sfo $(STAGE)/sce_sys/icon0.png ../plugin/build/vcfg_nx.prx
+stage: $(STAGE)/eboot.bin $(STAGE)/sce_sys/param.sfo $(STAGE)/sce_sys/icon0.png ../plugin/build/vcfg_nx.prx \
+       ../plugin/probe/build/vcfg_nx_probe.prx
 	mkdir -p $(STAGE)/sce_sys/about $(STAGE)/sce_module $(STAGE)/plugins
 	cp $(SAMPLE)/sce_sys/about/right.sprx $(STAGE)/sce_sys/about/
 	cp $(SAMPLE)/sce_module/libc.prx $(SAMPLE)/sce_module/libSceFios2.prx $(STAGE)/sce_module/
-	cp ../plugin/build/vcfg_nx.prx $(STAGE)/plugins/
+	cp ../plugin/build/vcfg_nx.prx ../plugin/probe/build/vcfg_nx_probe.prx $(STAGE)/plugins/
 
 $(OUT)/$(CONTENT_ID).pkg: stage
 	cd $(STAGE) && $(BIN)/create-gp4 -out pkg.gp4 --content-id=$(CONTENT_ID) --files \
-	    "eboot.bin sce_sys/about/right.sprx sce_sys/param.sfo sce_sys/icon0.png sce_module/libc.prx sce_module/libSceFios2.prx plugins/vcfg_nx.prx"
+	    "eboot.bin sce_sys/about/right.sprx sce_sys/param.sfo sce_sys/icon0.png sce_module/libc.prx sce_module/libSceFios2.prx plugins/vcfg_nx.prx plugins/vcfg_nx_probe.prx"
 	# create-gp4 solo declara las carpetas estandar: agregar plugins/
 	sed -i 's|<dir targ_name="sce_module" />|<dir targ_name="sce_module" />\n\t\t<dir targ_name="plugins" />|' $(STAGE)/pkg.gp4
 	cd $(STAGE) && $(PKGTOOL) pkg_build pkg.gp4 ..

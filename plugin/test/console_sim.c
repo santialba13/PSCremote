@@ -34,6 +34,7 @@ static struct {
     struct { volatile uint32_t* addr; uint32_t val; uint64_t at; } pend[16];
     int npend;
     int pro;
+    size_t early_base, early_work;    // reserva temprana del plugin (la hace main.c al cargar)
     int temp;                         // grados C (0 = el sistema no la informa)
     uint64_t groups_total;
     int game_dcb_submits, flips, bad_flips, our_dcbs, bad_dcbs;
@@ -54,6 +55,14 @@ static void* sim_alloc(size_t len, size_t align)
 {
     (void)align;
     len = (len + 0xFFFF) & ~(size_t)0xFFFF;
+    size_t* early = len <= (2u << 20) && C.early_base >= len ? &C.early_base : C.early_work >= len ? &C.early_work : NULL;
+    if (early && C.nallocs < 64) {   // sale de la reserva temprana: no cuenta contra lo libre
+        void* p = aligned_alloc(65536, len);
+        memset(p, 0, len);
+        *early -= len;
+        C.allocs[C.nallocs++] = p;
+        return p;
+    }
     if (C.used + len > C.pool || C.nallocs >= 64) return NULL;
     void* p = aligned_alloc(65536, len);
     memset(p, 0, len);
@@ -148,6 +157,7 @@ static uint64_t sim_now(void) { gpu_resolve(); return C.clock_us; }
 static void sim_sleep(uint32_t us) { C.clock_us += us; gpu_resolve(); }
 static int sim_is_pro(void) { return C.pro; }
 static int sim_temp(void) { return C.temp ? C.temp : -1; }
+static size_t sim_pool_free(int base) { return base ? C.early_base : C.early_work; }
 static void sim_notify(const char* m) { snprintf(C.last_notify, sizeof C.last_notify, "%s", m); C.notifies++; }
 static void sim_log(const char* m) { if (C.verbose) printf("      log: %s", m); }
 
@@ -193,7 +203,7 @@ static int sim_append(const char* p, const char* d, int len)
 
 static const nx_platform_t PF = { sim_alloc, sim_avail, sim_register, sim_rate, sim_submit, sim_submit_flip,
                                   sim_now, sim_sleep, sim_notify, sim_log, sim_read, sim_write, sim_append,
-                                  sim_is_pro, sim_temp };
+                                  sim_is_pro, sim_temp, sim_pool_free };
 
 // ------------------------------------------------------------- juego
 typedef struct {
@@ -662,6 +672,34 @@ int main(int argc, char** argv)
     play(&bb, 2400, 0);
     report("22. formato raro y despues el real");
     CHECK(I()->state == NX_ST_RUN && I()->full_ready, "no se activo tras un formato no soportado");
+    common_checks();
+
+    // 23. GTA V: el juego se queda con casi toda la memoria directa al arrancar
+    //     (quedan 20 MiB). Sin la reserva temprana no habria ni menu; con ella
+    //     (4 MiB base + 112 de trabajo, hecha al cargar el plugin) anda todo.
+    sim_write("/data/vcfg_nx/guard-CUSA00411.txt", "state=ok\ncrashes=0\n", 19);
+    game_t gta = bb; gta.title = "CUSA00411"; gta.game_mb = bb.pool_mb - 20;
+    boot(&gta, 1);
+    play(&gta, 2400, 0);
+    CHECK(!I()->full_ready, "sin reserva temprana no deberia poder reservar");
+    pad_buttons = 0x0002 | 0x0004; play(&gta, 60, 0); pad_buttons = 0; play(&gta, 2, 0);
+    CHECK(!I()->menu_open, "sin memoria no deberia abrir el menu");
+    printf("  23a. GTA V sin reserva temprana: \"%s\"\n", C.last_notify);
+    boot(&gta, 1);
+    C.early_base = 4u << 20; C.early_work = 112u << 20;
+    play(&gta, 2400, 0);
+    report("23. GTA V con reserva temprana");
+    CHECK(I()->state == NX_ST_RUN && I()->full_ready && I()->our_jobs > 1000, "no se activo con la reserva temprana");
+    CHECK(C.used == (size_t)gta.game_mb << 20, "uso memoria del juego teniendo reserva propia");
+    pad_buttons = 0x0002 | 0x0004; play(&gta, 60, 0); pad_buttons = 0; play(&gta, 2, 0);
+    CHECK(I()->menu_open, "con reserva temprana el menu deberia abrir");
+    // la valvula le devolvio la reserva de trabajo al juego: solo menu
+    boot(&gta, 1);
+    C.early_base = 4u << 20; C.early_work = 0;
+    play(&gta, 2400, 0);
+    pad_buttons = 0x0002 | 0x0004; play(&gta, 60, 0); pad_buttons = 0; play(&gta, 2, 0);
+    report("    ...reserva de trabajo devuelta al juego");
+    CHECK(I()->menu_open && !I()->full_ready, "con solo la base deberia quedar el menu");
     common_checks();
 
     // 10. juego que arranca en un proceso que no es un juego

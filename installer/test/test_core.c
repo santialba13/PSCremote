@@ -38,7 +38,7 @@ int main(void)
     char* c = inst_ini_remove(b, "CUSA00207");
     CHECK(c && !inst_ini_has(c, "CUSA00207") && inst_ini_has(c, "CUSA08519") && strstr(c, "x.prx"), "quitar de una seccion");
     char* d = inst_ini_remove_all(c);
-    CHECK(d && !strstr(d, "vcfg_nx.prx") && strstr(d, "afr.prx") && strstr(d, "x.prx"), "desinstalar");
+    CHECK(d && !strstr(d, "vcfg_nx.prx") && !strstr(d, "vcfg_nx_probe") && strstr(d, "afr.prx") && strstr(d, "x.prx"), "desinstalar");
     printf("--- plugins.ini tras agregar 2 juegos ---\n%s---\n", b);
 
     mkdir("tmp_app", 0755); mkdir("tmp_app/CUSA00207", 0755); mkdir("tmp_app/CUSA08519", 0755);
@@ -75,9 +75,9 @@ int main(void)
           "con .ini: por defecto + lo propio");
     // entradas de un PKG real (el de VCFG-NX): icon0.png y param.sfo sin cifrar
     size_t ilen = 0, slen = 0;
-    unsigned char* icon = inst_pkg_entry("../../dist/VCFG-NX_v2.42.pkg", PKG_ENTRY_ICON0, &ilen);
+    unsigned char* icon = inst_pkg_entry("../../dist/VCFG-NX_v2.43.pkg", PKG_ENTRY_ICON0, &ilen);
     CHECK(icon && ilen > 1000 && !memcmp(icon, "\x89PNG", 4), "icon0.png del PKG");
-    unsigned char* sfo = inst_pkg_entry("../../dist/VCFG-NX_v2.42.pkg", PKG_ENTRY_PARAM_SFO, &slen);
+    unsigned char* sfo = inst_pkg_entry("../../dist/VCFG-NX_v2.43.pkg", PKG_ENTRY_PARAM_SFO, &slen);
     char ptitle[64] = "";
     CHECK(sfo && inst_sfo_title(sfo, slen, ptitle, sizeof ptitle) == 0 && !strcmp(ptitle, "VCFG-NX"), "param.sfo del PKG");
     free(icon); free(sfo);

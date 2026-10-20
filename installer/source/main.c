@@ -53,11 +53,12 @@
 #define GOLDHEN_DIR ROOT "/data/GoldHEN"
 #define PLUGIN_DIR ROOT "/data/GoldHEN/plugins"
 #define PLUGIN_DST ROOT "/data/GoldHEN/plugins/vcfg_nx.prx"
+#define PROBE_DST ROOT "/data/GoldHEN/plugins/vcfg_nx_probe.prx"
 #define PLUGINS_INI ROOT "/data/GoldHEN/plugins.ini"
 #define CFG_DIR ROOT "/data/vcfg_nx"
 #define TITLE_ID "VCNX00001"
 #define CONTENT_ID "IV0000-VCNX00001_00-VCFGNXINSTALL000"
-#define VERSION "2.4.2"
+#define VERSION "2.4.3"
 
 #define W 1920
 #define H 1080
@@ -251,6 +252,8 @@ static uint32_t msg_color = C_DIM;
 // es la carpeta de la app (era la causa de "Error al guardar" en la 2.2)
 static uint8_t* prx;
 static size_t prx_len;
+static uint8_t* probe;        // sonda de diagnostico (vcfg_nx_probe.prx)
+static size_t probe_len;
 static char prx_from[200];
 
 static struct {
@@ -308,7 +311,14 @@ static void load_prx(int after_jailbreak)
     for (int i = 0; paths[i]; ++i) {
         if (!after_jailbreak && i > 0) break;
         prx = read_bytes(paths[i], &prx_len);
-        if (prx) { snprintf(prx_from, sizeof prx_from, "%s", paths[i]); return; }
+        if (prx) {
+            snprintf(prx_from, sizeof prx_from, "%s", paths[i]);
+            char pp[200];   // la sonda esta al lado
+            snprintf(pp, sizeof pp, "%.*s/vcfg_nx_probe.prx", (int)(strrchr(paths[i], '/') - paths[i]), paths[i]);
+            free(probe);
+            probe = read_bytes(pp, &probe_len);
+            return;
+        }
     }
 }
 
@@ -320,6 +330,7 @@ static const char* save_error_text(int r)
     case -21: case -22: case -23: return "No se pudo escribir /data/GoldHEN/plugins.ini.";
     case -30: return "La app no encontr\xf3 el plugin en su propio paquete (reinstal\xe1 el PKG).";
     case -31: return "No se pudo escribir /data/GoldHEN/plugins/vcfg_nx.prx.";
+    case -32: return "No se pudo escribir /data/GoldHEN/plugins/vcfg_nx_probe.prx.";
     case -40: return "No se pudo escribir /data/vcfg_nx/config.ini.";
     case -50: return "No se pudieron escribir los ajustes de un juego.";
     default: return "Error desconocido al guardar.";
@@ -357,7 +368,15 @@ static int save_all(int uninstall)
     if (r != 0) return -20 + r;
     if (uninstall) {
         remove(PLUGIN_DST);
+        remove(PROBE_DST);
         return 0;
+    }
+    if (probe) {
+        size_t pl = 0;
+        uint8_t* ph = read_bytes(PROBE_DST, &pl);
+        int psame = ph && pl == probe_len && !memcmp(ph, probe, probe_len);
+        free(ph);
+        if (!psame && write_verified(PROBE_DST, probe, probe_len) != 0) return -32;
     }
     size_t have_len = 0;
     uint8_t* have = read_bytes(PLUGIN_DST, &have_len);
@@ -1140,7 +1159,12 @@ static void diag_collect(void)
     if (last) { const char* e = strchr(last, '\n'); snprintf(lastl, sizeof lastl, "%.*s", e ? (int)(e - last) : 150, last); }
     int starts = 0;
     for (const char* q = loads; (q = strstr(q, "module_start")); ++q) ++starts;
+    const char* sonda = NULL;
+    for (const char* q = loads; (q = strstr(q, "[sonda]")); ++q) sonda = q;
+    char sl[160] = "";
+    if (sonda) { const char* e = strchr(sonda, '\n'); snprintf(sl, sizeof sl, "%.*s", e ? (int)(e - sonda) : 150, sonda); }
     if (nload) snprintf(L[5], 300, "Cargas del plugin en juegos: %d \xb7 \xfaltima: %s", nload, lastl);
+    else if (sonda) snprintf(L[5], 300, "La sonda carg\xf3 pero el plugin principal no: %s", sl);
     else if (starts) snprintf(L[5], 300, "GoldHEN abri\xf3 el plugin %d vez/veces pero plugin_load no termin\xf3", starts);
     else snprintf(L[5], 300, "GoldHEN nunca carg\xf3 VCFG-NX en ning\xfan juego (no hay registro de carga)");
     diag.line_color[5] = nload ? C_OK : C_DANGER;

@@ -23,7 +23,7 @@
 attr_public const char* g_pluginName = "vcfg_nx";
 attr_public const char* g_pluginDesc = "Frame generation + reescalado IA (NXSR) + SMAA/FSR1, menu L3+R3";
 attr_public const char* g_pluginAuth = "VCFG-NX";
-attr_public u32 g_pluginVersion = 0x00000242; // 2.42
+attr_public u32 g_pluginVersion = 0x00000243; // 2.43
 
 // prototipos de las variantes ForWorkload (OpenOrbis las declara sin argumentos)
 typedef s32 (*submit_wl_t)(u64, u32, void**, u32*, void**, u32*);
@@ -43,35 +43,121 @@ HOOK_INIT(scePadReadStateExt);
 HOOK_INIT(scePadReadExt);
 static int g_ext_state, g_ext_read;
 
-static int g_hooked;
+static int g_hooked, g_hooked_dm;
+static char g_boot_path[64];   // /data/vcfg_nx/boot-<TITLE>.txt: el arranque con reserva llego a jugarse
 
 // ------------------------------------------------------------- plataforma
-static void* pf_alloc_gpu(size_t len, size_t align)
+// Memoria. Como VCFG v2.23: se reserva apenas carga el plugin (antes de que el
+// juego se quede con toda la memoria directa, como hace GTA V). Dos bloques:
+//   base (4 MiB): menu, DCBs, OSD. Nunca se devuelve.
+//   trabajo (POOL_MB): arena y buffers de los efectos. Si el juego pide memoria
+//   y no hay, mientras no lo hayamos usado se le devuelve ("valvula") y la
+//   llamada del juego se repite: el juego nunca se queda sin memoria por nosotros.
+HOOK_INIT(sceKernelAllocateDirectMemory);
+typedef int32_t (*alloc_dm_fn)(off_t, off_t, size_t, size_t, int, off_t*);
+typedef int32_t (*avail_fn)(off_t, off_t, size_t, off_t*, size_t*);
+
+#define BASE_POOL (4u << 20)
+#define WORK_POOL_MB 112
+typedef struct { off_t phys; uint8_t* va; size_t len, used; } pool_t;
+static pool_t g_base, g_work;
+static volatile int g_work_given_back, g_valve_count;
+
+static int32_t dm_alloc(off_t lo, off_t hi, size_t len, size_t align, int type, off_t* out)
+{
+    if (g_hooked_dm)
+        return HOOK_CONTINUE(sceKernelAllocateDirectMemory, alloc_dm_fn, lo, hi, len, align, type, out);
+    return sceKernelAllocateDirectMemory(lo, hi, len, align, type, out);
+}
+
+static void* map_new(size_t len, size_t align, off_t* phys_out)
 {
     off_t phys = 0;
     void* va = NULL;
     len = (len + 0xFFFF) & ~(size_t)0xFFFF;
-    if (sceKernelAllocateDirectMemory(0, sceKernelGetDirectMemorySize(), len, align,
-                                      ORBIS_KERNEL_WC_GARLIC, &phys) != 0)
-        return NULL;
-    if (sceKernelMapDirectMemory(&va, len, ORBIS_KERNEL_PROT_CPU_RW | ORBIS_KERNEL_PROT_GPU_RW,
-                                 0, phys, align) != 0) {
+    if (dm_alloc(0, sceKernelGetDirectMemorySize(), len, align, ORBIS_KERNEL_WC_GARLIC, &phys) != 0) return NULL;
+    if (sceKernelMapDirectMemory(&va, len, ORBIS_KERNEL_PROT_CPU_RW | ORBIS_KERNEL_PROT_GPU_RW, 0, phys, align) != 0) {
         sceKernelReleaseDirectMemory(phys, len);
         return NULL;
     }
+    if (phys_out) *phys_out = phys;
     return va;   // en PS4 la direccion virtual de CPU es la misma que ve la GPU
 }
 
-static size_t pf_avail_direct(void)
+static int pool_init(pool_t* p, size_t len)
+{
+    p->va = map_new(len, 2u << 20, &p->phys);
+    p->len = p->va ? len : 0;
+    p->used = 0;
+    return p->va != NULL;
+}
+
+static void* pool_take(pool_t* p, size_t len, size_t align)
+{
+    if (!p->va) return NULL;
+    size_t at = (p->used + align - 1) & ~(align - 1);
+    if (at + len > p->len) return NULL;
+    p->used = at + len;
+    return p->va + at;
+}
+
+static void* pf_alloc_gpu(size_t len, size_t align)
+{
+    len = (len + 0xFFFF) & ~(size_t)0xFFFF;
+    if (align < 65536) align = 65536;
+    void* r = len <= (2u << 20) ? pool_take(&g_base, len, align) : NULL;
+    if (!r && !g_work_given_back) r = pool_take(&g_work, len, align);
+    return r ? r : map_new(len, align, NULL);
+}
+
+static size_t raw_avail(void)
 {
     off_t start = 0;
     size_t size = 0;
     // el bloque contiguo mas grande que queda libre. OpenOrbis declara los dos
     // ultimos parametros por valor; en el sistema son punteros de salida.
-    typedef int32_t (*avail_fn)(off_t, off_t, size_t, off_t*, size_t*);
     if (((avail_fn)sceKernelAvailableDirectMemorySize)(0, sceKernelGetDirectMemorySize(), 64 * 1024, &start, &size) != 0)
         return 0;
     return size;
+}
+
+static size_t pf_avail_direct(void) { return raw_avail(); }
+
+// lo que queda en la reserva propia (base = 1: la del menu)
+static size_t pf_pool_free(int base)
+{
+    if (base) return g_base.va ? g_base.len - g_base.used : 0;
+    return g_work.va && !g_work_given_back ? g_work.len - g_work.used : 0;
+}
+
+static int give_back_work(void)
+{
+    if (!g_work.va || g_work_given_back || g_work.used) return 0;
+    g_work_given_back = 1;
+    sceKernelMunmap(g_work.va, g_work.len);
+    sceKernelReleaseDirectMemory(g_work.phys, g_work.len);
+    g_valve_count++;
+    return 1;
+}
+
+// variante de los SDK nuevos (solo si el sistema la tiene: se busca por nombre)
+HOOK_INIT(sceKernelAllocateMainDirectMemory);
+typedef int32_t (*alloc_main_fn)(size_t, size_t, int, off_t*);
+static int g_hooked_main_dm;
+s32 sceKernelAllocateMainDirectMemory_hook(size_t len, size_t align, int type, off_t* out)
+{
+    s32 r = HOOK_CONTINUE(sceKernelAllocateMainDirectMemory, alloc_main_fn, len, align, type, out);
+    if (r == 0 || !give_back_work()) return r;
+    return HOOK_CONTINUE(sceKernelAllocateMainDirectMemory, alloc_main_fn, len, align, type, out);
+}
+
+// el juego pide memoria directa: si no hay y nuestra reserva de trabajo sigue
+// sin usar, se la devolvemos y se repite su pedido
+s32 sceKernelAllocateDirectMemory_hook(off_t lo, off_t hi, size_t len, size_t align, int type, off_t* out)
+{
+    s32 r = HOOK_CONTINUE(sceKernelAllocateDirectMemory, alloc_dm_fn, lo, hi, len, align, type, out);
+    if (r == 0 || !give_back_work()) return r;
+    return HOOK_CONTINUE(sceKernelAllocateDirectMemory, alloc_dm_fn, lo, hi, len, align, type, out);
 }
 
 static int pf_register(int handle, int start, void* const* addrs, int num, const nx_vo_attr_t* a)
@@ -195,6 +281,7 @@ static int pf_temp_c(void)
 static const nx_platform_t g_pf = {
     pf_alloc_gpu, pf_avail_direct, pf_register, pf_set_flip_rate, pf_submit, pf_submit_flip,
     pf_now_us, pf_sleep_us, pf_notify, pf_log, pf_read_file, pf_write_file, pf_append_file, pf_is_pro, pf_temp_c,
+    pf_pool_free,
 };
 
 // ----------------------------------------------------------------- hooks
@@ -288,11 +375,19 @@ static void* pad_thread(void* arg)
 {
     (void)arg;
     s32 handle = -1;
-    int fails = 0, ok_logged = 0;
+    int fails = 0, ok_logged = 0, boot_ok = 0, valve_seen = 0;
     uint64_t next_tick = 0, next_try = 0;
     while (g_pad_run) {
         uint64_t t = sceKernelGetProcessTime();
-        if (t >= next_tick) { nx_engine_tick(); next_tick = t + 1000000; }
+        if (t >= next_tick) {
+            nx_engine_tick();
+            next_tick = t + 1000000;
+            if (!boot_ok && nx_engine_info()->flips > 900) { boot_ok = 1; pf_write_file(g_boot_path, "ok\n", 3); }
+            if (g_valve_count != valve_seen) {
+                valve_seen = g_valve_count;
+                nx_engine_note("[mem] el juego necesito memoria: se le devolvio la reserva de trabajo");
+            }
+        }
         if (handle < 0 && t >= next_try) {
             next_try = t + 500000;
             s32 user = -1;
@@ -317,6 +412,33 @@ static void* pad_thread(void* arg)
         sceKernelUsleep(16000);
     }
     return NULL;
+}
+
+// reserva temprana. Si el arranque anterior con reserva no llego a jugarse
+// (el juego se cerro antes de ~30 s), esta vez se arranca sin la de trabajo.
+static void early_reserve(const char* title)
+{
+    snprintf(g_boot_path, sizeof g_boot_path, "/data/vcfg_nx/boot-%.12s.txt", title);
+    char prev[32] = { 0 };
+    int n = pf_read_file(g_boot_path, prev, sizeof prev - 1);
+    int skip_work = n > 0 && !strncmp(prev, "pending", 7);
+    pool_init(&g_base, BASE_POOL);
+    if (!skip_work && !nx_engine_info()->safe_mode) pool_init(&g_work, (size_t)WORK_POOL_MB << 20);
+    pf_write_file(g_boot_path, g_work.va ? "pending" : "skipped", 7);
+    HOOK32(sceKernelAllocateDirectMemory);
+    g_hooked_dm = 1;
+    void* mdm = find_sym("sceKernelAllocateMainDirectMemory");
+    if (mdm) {
+        Detour_Construct(&Detour_sceKernelAllocateMainDirectMemory, DetourMode_x32);
+        Detour_DetourFunction(&Detour_sceKernelAllocateMainDirectMemory, (uint64_t)mdm,
+                              (void*)&sceKernelAllocateMainDirectMemory_hook);
+        g_hooked_main_dm = 1;
+    }
+    char m[160];
+    int k = snprintf(m, sizeof m, "[mem] reserva temprana: base %s, trabajo %s (%d MiB)%s; libre del sistema %zu MiB\n",
+                     g_base.va ? "ok" : "FALLO", g_work.va ? "ok" : "no", WORK_POOL_MB,
+                     skip_work ? " [el arranque anterior no termino: sin reserva de trabajo]" : "", raw_avail() >> 20);
+    if (k > 0) pf_append_file("/data/vcfg_nx/logs/cargas.txt", m, k);
 }
 
 // marca en logs/cargas.txt apenas GoldHEN abre el plugin: si el juego no deja
@@ -344,6 +466,7 @@ s32 attr_public plugin_load(s32 argc, const char* argv[])
         return 0;
     }
     g_temp = (temp_fn)find_sym("sceKernelGetCpuTemperature");
+    early_reserve(title);
     HOOK32(sceVideoOutRegisterBuffers);
     HOOK32(sceVideoOutSetFlipRate);
     HOOK32(sceGnmSubmitAndFlipCommandBuffers);
@@ -393,6 +516,8 @@ s32 attr_public plugin_unload(s32 argc, const char* argv[])
     UNHOOK(scePadRead);
     if (g_ext_state) UNHOOK(scePadReadStateExt);
     if (g_ext_read) UNHOOK(scePadReadExt);
+    if (g_hooked_dm) { g_hooked_dm = 0; UNHOOK(sceKernelAllocateDirectMemory); }
+    if (g_hooked_main_dm) { g_hooked_main_dm = 0; UNHOOK(sceKernelAllocateMainDirectMemory); }
     return 0;
 }
 

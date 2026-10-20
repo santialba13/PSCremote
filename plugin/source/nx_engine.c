@@ -113,7 +113,7 @@ static struct {
     char logbuf[12288];
     int loglen, log_flushes;
     char log_path[64];
-    int pad_polled, tick_warned;
+    int pad_polled, tick_warned, tick_status;
     uint64_t tick_start;             // el hilo de sondeo del mando funciona: los hooks solo filtran
     int nofmt_notified;
     // calidad dinamica
@@ -172,9 +172,19 @@ enum { WHY_STATE, WHY_NOBASE, WHY_HANDLE, WHY_INDEX, WHY_COUNT, WHY_NOTHING, WHY
 static const char* const WHY_NAME[WHY_N] = { "estado", "sin_memoria_menu", "otro_handle", "indice_desconocido",
                                              "count_raro", "nada_que_hacer", "gpu_atrasada" };
 
+// los textos del motor son Latin-1 (los usa el menu); las notificaciones, UTF-8
 static void notify(const char* msg)
 {
-    if (E.pf && E.pf->notify) E.pf->notify(msg);
+    if (!E.pf || !E.pf->notify) return;
+    char u[320];
+    size_t o = 0;
+    for (const unsigned char* p = (const unsigned char*)msg; *p && o + 3 < sizeof u; ++p) {
+        if (*p < 0x80) { u[o++] = (char)*p; continue; }
+        u[o++] = (char)(0xC0 | (*p >> 6));
+        u[o++] = (char)(0x80 | (*p & 0x3F));
+    }
+    u[o] = 0;
+    E.pf->notify(u);
 }
 
 static void set_status(const char* s)
@@ -355,7 +365,8 @@ static int alloc_base(void)
     size_t osd_sz = nx_osd_mem_size();
     size_t need = (size_t)(2 * DCB_DWORDS + NOP_DWORDS) * 4 + 4 * 4096 + sizeof nx_osd_font + osd_sz + 8192;
     // la base son pocos KiB (menu + DCBs): alcanza con dejar 32 MiB libres
-    if (E.pf->avail_direct() < need + 32u * 1048576) return 0;
+    size_t pool = E.pf->pool_free ? E.pf->pool_free(1) : 0;
+    if (pool < need && E.pf->avail_direct() < need + 32u * 1048576) return 0;
     E.base_mem = E.pf->alloc_gpu(need, 65536);
     if (!E.base_mem) return 0;
     uint8_t* p = E.base_mem;
@@ -408,9 +419,11 @@ static int alloc_full(void)
         return -1;
     }
     size_t avail = E.pf->avail_direct();
-    if (avail < total + (size_t)E.cfg.reserve_mb * 1048576) {
-        logf_("[mem] hacen falta %zu MiB + %d de reserva, libres %zu MiB: se reintenta mas tarde\n",
-              total >> 20, E.cfg.reserve_mb, avail >> 20);
+    size_t pool = E.pf->pool_free ? E.pf->pool_free(0) : 0;
+    // con la reserva temprana alcanza: es nuestra, no se le quita nada al juego
+    if (pool < total + 2 * 65536 && avail < total + (size_t)E.cfg.reserve_mb * 1048576) {
+        logf_("[mem] hacen falta %zu MiB + %d de reserva, libres %zu MiB (reserva propia %zu MiB): se reintenta mas tarde\n",
+              total >> 20, E.cfg.reserve_mb, avail >> 20, pool >> 20);
         E.info.alloc_fail++;
         return 0;
     }
@@ -605,7 +618,10 @@ static void menu_unavailable(void)
     case NX_ST_WAIT_BUFFERS:
         why = E.nofmt_notified ? "formato de video no soportado" : "el juego todavia no registro su pantalla";
         break;
-    case NX_ST_WARMUP: why = "el juego esta cargando, proba en unos segundos"; break;
+    case NX_ST_WARMUP:
+        why = !strcmp(E.info.status, "sin memoria para el menu") ? "el juego ocupa toda la memoria; no queda ni para el menu"
+                                                                 : "el juego esta cargando, proba en unos segundos";
+        break;
     default: why = "sin memoria para el menu"; break;
     }
     char m[160];
@@ -702,6 +718,12 @@ static void set_rate_forced(int on)
 const nx_engine_info_t* nx_engine_info(void) { return &E.info; }
 void nx_engine_flush_log(void) { log_flush(); }
 
+void nx_engine_note(const char* line)
+{
+    logf_("%s\n", line);
+    log_flush();
+}
+
 // lo llama el hilo del plugin ~1 vez por segundo: deja constancia si el juego
 // nunca llega a los hooks (otra API de presentacion, registro antes de cargar...)
 void nx_engine_tick(void)
@@ -710,6 +732,24 @@ void nx_engine_tick(void)
     uint64_t t = E.pf->now_us();
     if (!E.tick_start) E.tick_start = t;
     uint64_t secs = (t - E.tick_start) / 1000000;
+    // a los 40 s, un aviso en pantalla con el estado: sirve para saber que paso
+    // sin tener que buscar el registro
+    if (!E.tick_status && secs >= 40) {
+        E.tick_status = 1;
+        char m[200];
+        if (E.info.state == NX_ST_WAIT_BUFFERS)
+            snprintf(m, sizeof m, "VCFG-NX: %s (fotogramas vistos: %llu)",
+                     E.nofmt_notified ? "formato de video no soportado" : "no vio la pantalla del juego",
+                     (unsigned long long)E.info.flips);
+        else if (!E.info.flips)
+            snprintf(m, sizeof m, "VCFG-NX: el juego no paso por los hooks de presentacion");
+        else
+            snprintf(m, sizeof m, "VCFG-NX: %s \xb7 %dx%d \xb7 %.0f fps \xb7 L3+R3: men\xfa", E.info.status, E.W, E.H,
+                     (double)E.info.game_fps);
+        notify(m);
+        logf_("[diag] aviso a los 40 s: %s\n", m);
+        log_flush();
+    }
     if (!E.tick_warned && secs >= 30) {
         if (!E.info.flips) {
             E.tick_warned = 1;

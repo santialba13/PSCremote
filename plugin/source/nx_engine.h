@@ -43,6 +43,7 @@ typedef struct {
     int (*append_file)(const char* path, const char* data, int len);   // registro (puede ser NULL)
     int (*is_pro)(void);                                    // 1 = el juego corre en modo PS4 Pro (puede ser NULL)
     int (*temp_c)(void);                                    // temperatura del procesador en grados C, < 0 si no se sabe (puede ser NULL)
+    size_t (*pool_free)(int base);                          // bytes libres de la reserva temprana (base = 1: la del menu); puede ser NULL
 } nx_platform_t;
 
 typedef enum {
@@ -85,5 +86,6 @@ void nx_engine_pad_logic(uint32_t buttons);
 void nx_engine_pad_polled(int on);
 // vuelca el registro pendiente a /data/vcfg_nx/logs/<TITLE>.log
 void nx_engine_flush_log(void);
-void nx_engine_tick(void);   // ~1 vez por segundo desde el hilo del plugin (diagnostico)
+void nx_engine_tick(void);
+void nx_engine_note(const char* line);   // una linea al registro del juego (desde la plataforma)   // ~1 vez por segundo desde el hilo del plugin (diagnostico)
 const nx_engine_info_t* nx_engine_info(void);

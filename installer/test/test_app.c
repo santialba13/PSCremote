@@ -48,10 +48,11 @@ static void make_fs(void)
     }
     // un juego sin appmeta: nombre e icono salen de su app.pkg (aca, el PKG de VCFG-NX)
     mkdir("tfs/user/app/CUSA00009", 0755);
-    system("cp ../../dist/VCFG-NX_v2.42.pkg tfs/user/app/CUSA00009/app.pkg");
+    system("cp ../../dist/VCFG-NX_v2.43.pkg tfs/user/app/CUSA00009/app.pkg");
     put("tfs/data/GoldHEN/plugins.ini", "[default]\n/data/GoldHEN/plugins/otro.prx\n\n[CUSA00003]\n" PLUGIN_LINE "\n");
     put("tfs/data/vcfg_nx/CUSA00003.ini", "sr = 1\n");
     put("tfs/app0/plugins/vcfg_nx.prx", "PRX de prueba");
+    put("tfs/app0/plugins/vcfg_nx_probe.prx", "sonda de prueba");
 }
 
 static int closed_by_ps;   // el guion termina a proposito: como cerrar la app con el boton PS
@@ -76,6 +77,7 @@ static void run_app(void)
     ngames = nvis = sel = top_row = filter = dirty_cfg = backup_done = jailed = 0;
     view = modal_of = V_GRID; modal_kind = M_NONE; settings_game = -1;
     free(prx); prx = NULL; prx_len = 0;
+    free(probe); probe = NULL; probe_len = 0;
     memset(&diag, 0, sizeof diag);
     memset(icons, 0, sizeof icons); big_icon.game = -1;
     fake_exit_armed = 1;
@@ -130,6 +132,12 @@ int main(void)
     char* plug = get(PLUGIN_DST);
     CHECK(!strcmp(plug, "PRX de prueba"), "el plugin instalado no es el de la app (/app0 oculto tras el jailbreak)");
     free(plug);
+    char* pr = get(PROBE_DST);
+    CHECK(!strcmp(pr, "sonda de prueba"), "la sonda no se instalo");
+    free(pr);
+    ini = get(PLUGINS_INI);
+    CHECK(strstr(ini, "[CUSA00001]\n" PROBE_LINE "\n" PLUGIN_LINE "\n") != NULL, "sonda y plugin en la seccion: %s", ini);
+    free(ini);
     CHECK(diag.save_error[0] == 0, "error al guardar: %s", diag.save_error);
     {   // lo que guardo la app lo lee igual el plugin
         nx_config_t c;
@@ -188,7 +196,7 @@ int main(void)
     ini = get(PLUGINS_INI);
     CHECK(!strstr(ini, PLUGIN_LINE) && strstr(ini, "otro.prx"), "desinstalar: %s", ini);
     free(ini);
-    CHECK(!exists(PLUGIN_DST), "desinstalar no borro el plugin");
+    CHECK(!exists(PLUGIN_DST) && !exists(PROBE_DST), "desinstalar no borro el plugin o la sonda");
     CHECK(exists(CFG_DIR "/CUSA00002.ini"), "desinstalar borro los ajustes");
 
     // 5. sin juegos ni GoldHEN ni plugin: no se cuelga y lo explica
