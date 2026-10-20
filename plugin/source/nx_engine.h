@@ -67,6 +67,7 @@ typedef struct {
     uint64_t flips, our_jobs, passthrough, stalls, alloc_fail;
     char status[64];
     const uint8_t* menu_text;   // grilla del menu (menu_cols x menu_rows, Latin-1), para pruebas
+    const uint8_t* menu_attr;   // color de cada celda
     int menu_cols, menu_rows;
 } nx_engine_info_t;
 

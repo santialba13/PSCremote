@@ -10,9 +10,12 @@
 #include "pm4.h"
 
 typedef struct {
-    uint64_t text_gpu, font_gpu;   // grilla de caracteres Latin-1 y fuente 8x16
+    uint64_t text_gpu, attr_gpu, font_gpu;   // grilla Latin-1, color por celda, atlas (nx_osd_font.h)
     int cols, rows, x0, y0, scale, sel_row;
 } nx_osd_t;
+
+// tamano del panel en pixeles (para centrarlo)
+void nx_osd_panel_size(int cols, int rows, int scale, int* w, int* h);
 
 typedef struct {
     const nx_shader_t* sh_draw;

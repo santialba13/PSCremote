@@ -32,8 +32,8 @@ typedef struct { uint64_t src; int32_t W, H; uint64_t edges; } ka_smaa_edges_t;
 typedef struct { uint64_t edges; int32_t W, H; uint64_t area, search, weights; } ka_smaa_weights_t;
 typedef struct { uint64_t src, samp, weights; int32_t W, H; uint64_t dst; } ka_smaa_blend_t;
 typedef struct { uint64_t src; int32_t W, H; uint64_t w; uint64_t dst; float k; } ka_nxsr_t;
-typedef struct { uint64_t dst; int32_t W, H; uint64_t text; int32_t cols, rows; uint64_t font;
-                 int32_t x0, y0, scale, sel_row; } ka_osd_t;
+typedef struct { uint64_t dst; int32_t W, H; uint64_t text, attr; int32_t cols, rows; uint64_t font;
+                 int32_t cw, ch, x0, y0, scale, sel_row; } ka_osd_t;
 typedef struct { uint64_t src, dst; int32_t x0, y0, w, h; } ka_copy_t;
 
 #define O(t, f) (int)offsetof(t, f)
@@ -72,9 +72,9 @@ static const layout_t layouts[] = {
         O(ka_nxsr_t, k) } },
     { "wg_nxsr_hq", 6, { O(ka_nxsr_t, src), O(ka_nxsr_t, W), O(ka_nxsr_t, H), O(ka_nxsr_t, w), O(ka_nxsr_t, dst),
         O(ka_nxsr_t, k) } },
-    { "osd_draw", 11, { O(ka_osd_t, dst), O(ka_osd_t, W), O(ka_osd_t, H), O(ka_osd_t, text), O(ka_osd_t, cols),
-        O(ka_osd_t, rows), O(ka_osd_t, font), O(ka_osd_t, x0), O(ka_osd_t, y0), O(ka_osd_t, scale),
-        O(ka_osd_t, sel_row) } },
+    { "osd_draw", 14, { O(ka_osd_t, dst), O(ka_osd_t, W), O(ka_osd_t, H), O(ka_osd_t, text), O(ka_osd_t, attr),
+        O(ka_osd_t, cols), O(ka_osd_t, rows), O(ka_osd_t, font), O(ka_osd_t, cw), O(ka_osd_t, ch), O(ka_osd_t, x0),
+        O(ka_osd_t, y0), O(ka_osd_t, scale), O(ka_osd_t, sel_row) } },
     { "copy_rect", 6, { O(ka_copy_t, src), O(ka_copy_t, dst), O(ka_copy_t, x0), O(ka_copy_t, y0), O(ka_copy_t, w),
         O(ka_copy_t, h) } },
 };

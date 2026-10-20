@@ -6,7 +6,7 @@ NXSR**, como alternativa a GNMScale pero sin el granulado que este agrega.
 Todo con la interfaz de VCFG: app instaladora con lista de juegos y menú en
 pantalla con **L3+R3**.
 
-**Descarga:** [`dist/VCFG-NX_v2.31.pkg`](dist/VCFG-NX_v2.31.pkg) (fPKG, app) ·
+**Descarga:** [`dist/VCFG-NX_v2.32.pkg`](dist/VCFG-NX_v2.32.pkg) (fPKG, app) ·
 [`dist/vcfg_nx.prx`](dist/vcfg_nx.prx) (plugin suelto) · [`dist/SHA256SUMS.txt`](dist/SHA256SUMS.txt)
 
 | servicio | qué hace |
@@ -47,6 +47,23 @@ juego):
   PSNR es moderada: con ~1000 operaciones por píxel (lo que la GPU de la PS4
   puede pagar a 1080p junto con la generación de fotogramas) no se puede
   "inventar" mucho detalle; lo que gana es nitidez real sin artefactos.
+
+## Menú dentro del juego (L3+R3)
+
+![menú L3+R3](docs/img/menu_juego.jpg)
+
+Mantener **L3+R3** 1,5 s abre el panel sobre el juego (el juego no recibe los
+botones mientras está abierto):
+
+* **Todos los efectos**: interruptor general; apaga o prende todo de una vez
+  sin perder lo que elegiste en cada fila.
+* **Modelo IA**: izquierda/derecha cambia entre **Calidad**, **Rápido** y
+  **Auto** (muestra cuál usa: "Auto: Calidad" en PS4 Pro, "Auto: Rápido" en
+  PS4 normal; con modo ahorro, "Rápido (ahorro)").
+* Generación de fotogramas, NXSR (Suave / Normal / Fuerte), modo ahorro, SMAA,
+  RCAS, contador de FPS (con temperatura) y comparar.
+* Arriba se ven los FPS, la temperatura y el estado (activo, calidad dinámica,
+  calor). **Guardar** deja todo para ese juego; **O** cierra.
 
 ## Novedades de la 2.3
 
@@ -141,7 +158,7 @@ no son juegos (`CUSA`/`PLAS`).
 ## Instalar y usar
 
 1. Requiere **GoldHEN** con soporte de plugins.
-2. Instalar `VCFG-NX_v2.31.pkg` y abrir **VCFG-NX**.
+2. Instalar `VCFG-NX_v2.32.pkg` y abrir **VCFG-NX**.
 3. En la cuadrícula: **X** activa o desactiva VCFG-NX en el juego,
    **CUADRADO** abre los ajustes de ese juego, **TRIÁNGULO** los ajustes por
    defecto, **L1/R1** cambia el filtro, **OPTIONS** abre el menú (activar o
@@ -157,6 +174,7 @@ no son juegos (`CUSA`/`PLAS`).
 Configuración (`/data/vcfg_nx/config.ini`, o `/data/vcfg_nx/<TITLE_ID>.ini` por juego):
 
 ```ini
+effects = 1         ; interruptor general (menu L3+R3)
 framegen = 1        ; 30 -> 60
 sr = 2              ; NXSR: 0 off, 1 suave, 2 normal, 3 fuerte
 sr_model = 0        ; 0 auto (Calidad en PS4 Pro), 1 rapido, 2 calidad

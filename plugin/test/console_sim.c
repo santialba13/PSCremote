@@ -344,19 +344,28 @@ int main(int argc, char** argv)
     boot(&bb, 0);
     play(&bb, 700, 0);
     pad_buttons = 0x0002 | 0x0004; play(&bb, 60, 0);
-    uint32_t b = 0x4000; uint8_t st[4] = { 1, 2, 3, 4 }, tr[2] = { 9, 9 };
+    uint32_t b = 0x1000; uint8_t st[4] = { 1, 2, 3, 4 }, tr[2] = { 9, 9 };   // triangulo: el menu no lo usa
     nx_engine_on_pad(&b, st, tr);
     CHECK(b == 0 && st[0] == 0x80 && tr[0] == 0, "el juego recibio input con el menu abierto");
     pad_buttons = 0; play(&bb, 1, 0);
-    {   // grilla del menu para el preview (plugin/test/osd_preview.py)
+    for (int k = 0; k < 3; ++k) { pad_buttons = 0x0040; play(&bb, 1, 0); pad_buttons = 0; play(&bb, 1, 0); }
+    {   // grilla del menu (fila "Modelo IA" elegida) para gpu_emu osd
         FILE* mf = fopen("menu_grid.bin", "wb");
-        if (mf && I()->menu_text) { fwrite(I()->menu_text, 1, (size_t)I()->menu_cols * I()->menu_rows, mf); }
+        if (mf && I()->menu_text) {
+            fwrite(I()->menu_text, 1, (size_t)I()->menu_cols * I()->menu_rows, mf);
+            fwrite(I()->menu_attr, 1, (size_t)I()->menu_cols * I()->menu_rows, mf);
+        }
         if (mf) fclose(mf);
     }
-    for (int k = 0; k < 8; ++k) { pad_buttons = 0x0040; play(&bb, 1, 0); pad_buttons = 0; play(&bb, 1, 0); }
+    CHECK(I()->menu_row == 3, "fila del menu (%d)", I()->menu_row);
+    pad_buttons = 0x0020; play(&bb, 1, 0); pad_buttons = 0; play(&bb, 1, 0);   // derecha: modelo Auto -> Rapido
+    for (int k = 0; k < 3; ++k) { pad_buttons = 0x0010; play(&bb, 1, 0); pad_buttons = 0; play(&bb, 1, 0); }
+    pad_buttons = 0x4000; play(&bb, 1, 0); pad_buttons = 0; play(&bb, 1, 0);   // X en "Todos los efectos": OFF
+    for (int k = 0; k < 9; ++k) { pad_buttons = 0x0040; play(&bb, 1, 0); pad_buttons = 0; play(&bb, 1, 0); }
     pad_buttons = 0x4000; play(&bb, 1, 0); pad_buttons = 0; play(&bb, 1, 0);   // X en "Guardar"
     file_t* ini = find_file("/data/vcfg_nx/CUSA00207.ini");
-    CHECK(ini && strstr(ini->data, "framegen = 0") && strstr(ini->data, "sr = 2"), "no se guardo el ini del juego (con FG apagado por la X)");
+    CHECK(ini && strstr(ini->data, "effects = 0") && strstr(ini->data, "framegen = 1") && strstr(ini->data, "sr_model = 1"),
+          "no se guardo el ini del juego (efectos OFF, modelo Rapido)");
     pad_buttons = 0x2000; play(&bb, 1, 0); pad_buttons = 0; play(&bb, 1, 0);   // O cierra
     CHECK(!I()->menu_open, "O no cerro el menu");
     report("5. menu y guardado");
@@ -538,6 +547,29 @@ int main(int argc, char** argv)
            (unsigned long long)eco_groups, (unsigned long long)full_groups,
            100.0 * (1.0 - (double)eco_groups / (double)full_groups));
     CHECK(eco_groups < full_groups, "modo ahorro no redujo el trabajo");
+    common_checks();
+
+    // 18. interruptor general desde el menu: todo apagado y despues vuelve
+    sim_write("/data/vcfg_nx/guard-CUSA00207.txt", "state=ok\ncrashes=0\n", 19);
+    sim_write("/data/vcfg_nx/CUSA00207.ini", "effects = 1\n", 12);
+    boot(&bb, 1);
+    play(&bb, 1200, 0);
+    CHECK(I()->full_ready && I()->our_jobs > 500, "no arranco activo");
+    pad_buttons = 0x0002 | 0x0004; play(&bb, 60, 0); pad_buttons = 0; play(&bb, 1, 0);   // abrir menu
+    pad_buttons = 0x4000; play(&bb, 1, 0); pad_buttons = 0; play(&bb, 1, 0);           // X: todos OFF
+    pad_buttons = 0x2000; play(&bb, 1, 0); pad_buttons = 0; play(&bb, 1, 0);           // O: cerrar
+    jobs_before = I()->our_jobs;
+    flips_before = C.flips;
+    play(&bb, 300, 0);
+    CHECK(I()->our_jobs == jobs_before && C.flips == flips_before + 300, "con todo apagado sigue procesando");
+    pad_buttons = 0x0002 | 0x0004; play(&bb, 60, 0); pad_buttons = 0; play(&bb, 1, 0);
+    pad_buttons = 0x4000; play(&bb, 1, 0); pad_buttons = 0; play(&bb, 1, 0);           // X: todos ON
+    pad_buttons = 0x2000; play(&bb, 1, 0); pad_buttons = 0; play(&bb, 1, 0);
+    jobs_before = I()->our_jobs;
+    flips_before = C.flips;
+    play(&bb, 300, 0);
+    report("18. interruptor general (menu L3+R3)");
+    CHECK(I()->our_jobs > jobs_before + 250 && C.flips > flips_before + 500, "no volvio a procesar (FG)");
     common_checks();
 
     // 10. juego que arranca en un proceso que no es un juego

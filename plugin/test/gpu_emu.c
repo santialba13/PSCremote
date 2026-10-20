@@ -111,7 +111,7 @@ void smaa_weights(P, int, int, P, P, P);
 void smaa_blend(P, P, P, int, int, P);
 void wg_nxsr(P, int, int, P, P, float);
 void wg_nxsr_hq(P, int, int, P, P, float);
-void osd_draw(P, int, int, P, int, int, P, int, int, int, int);
+void osd_draw(P, int, int, P, P, int, int, P, int, int, int, int, int, int);
 void copy_rect(P, P, int, int, int, int);
 
 static const uint8_t* ka;
@@ -149,7 +149,8 @@ static void call(const char* n)
     else if (IS("smaa_blend")) smaa_blend(ap(0), ap(1), ap(2), ai(3), ai(4), ap(5));
     else if (IS("wg_nxsr")) wg_nxsr(ap(0), ai(1), ai(2), ap(3), ap(4), af(5));
     else if (IS("wg_nxsr_hq")) wg_nxsr_hq(ap(0), ai(1), ai(2), ap(3), ap(4), af(5));
-    else if (IS("osd_draw")) osd_draw(ap(0), ai(1), ai(2), ap(3), ai(4), ai(5), ap(6), ai(7), ai(8), ai(9), ai(10));
+    else if (IS("osd_draw"))
+        osd_draw(ap(0), ai(1), ai(2), ap(3), ap(4), ai(5), ai(6), ap(7), ai(8), ai(9), ai(10), ai(11), ai(12), ai(13));
     else if (IS("copy_rect")) copy_rect(ap(0), ap(1), ai(2), ai(3), ai(4), ai(5));
     else { fprintf(stderr, "kernel desconocido %s\n", n); exit(4); }
 }
@@ -212,10 +213,12 @@ static void save_rgba(const char* path, const uint8_t* img, int W, int Hh, int p
     fclose(f);
 }
 
-#include "../include/nx_font.h"
+#define NX_OSD_FONT_DATA
+#include "../include/nx_osd_font.h"
 #include "../source/nx_osd.h"
 
-// modo OSD: dibuja una grilla de texto (cols x rows) sobre frame0 con el kernel osd_draw
+// modo OSD: dibuja una grilla (cols x rows de texto y luego cols x rows de colores,
+// como la deja console_sim en menu_grid.bin) sobre frame0 con el kernel osd_draw
 static int osd_mode(int W, int Hh, const char* frame, const char* grid, int cols, int rows, int sel, const char* out)
 {
     int pitch = (W + 63) / 64 * 64;
@@ -223,7 +226,7 @@ static int osd_mode(int W, int Hh, const char* frame, const char* grid, int cols
     uint8_t* img = calloc(1, bytes);
     uint8_t* src = load_rgba(frame, (size_t)W * Hh * 4);
     for (int y = 0; y < Hh; ++y) memcpy(img + (size_t)y * pitch * 4, src + (size_t)y * W * 4, (size_t)W * 4);
-    size_t msz = nx_osd_mem_size() + 8192 + sizeof nx_font8x16;
+    size_t msz = nx_osd_mem_size() + 8192 + sizeof nx_osd_font;
     uint8_t* mem = aligned_alloc(256, (msz + 255) / 256 * 256);
     uint64_t base = 0x0000006000000000ull;
     map_region(base, mem, msz);
@@ -231,11 +234,14 @@ static int osd_mode(int W, int Hh, const char* frame, const char* grid, int cols
     nx_osd_ctx_t o;
     if (nx_osd_init(&o, mem, base) != 0) return 1;
     size_t off = nx_osd_mem_size();
-    uint8_t* text = load_rgba(grid, (size_t)cols * rows);
+    uint8_t* text = load_rgba(grid, (size_t)cols * rows * 2);
     memcpy(mem + off, text, (size_t)cols * rows);
-    memcpy(mem + off + 4096, nx_font8x16, sizeof nx_font8x16);
-    nx_osd_t d = { base + off, base + off + 4096, cols, rows, 0, 0, 2, sel };
-    d.x0 = (W - (cols * 16 + 24)) / 2; d.y0 = (Hh - (rows * 32 + 24)) / 2;
+    memcpy(mem + off + 4096, text + (size_t)cols * rows, (size_t)cols * rows);
+    memcpy(mem + off + 8192, nx_osd_font, sizeof nx_osd_font);
+    nx_osd_t d = { base + off, base + off + 4096, base + off + 8192, cols, rows, 0, 0, 1, sel };
+    int pw, ph;
+    nx_osd_panel_size(cols, rows, 1, &pw, &ph);
+    d.x0 = (W - pw) / 2; d.y0 = (Hh - ph) / 2;
     const nx_osd_t* list[2] = { &d, NULL };
     nx_image_t im = { 0x0000005000000000ull, (uint32_t)W, (uint32_t)Hh, (uint32_t)pitch, NX_FMT_RGBA8_UNORM,
                       NX_TILE_DISPLAY_LINEAR_ALIGNED };

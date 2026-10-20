@@ -48,7 +48,7 @@ static void make_fs(void)
     }
     // un juego sin appmeta: nombre e icono salen de su app.pkg (aca, el PKG de VCFG-NX)
     mkdir("tfs/user/app/CUSA00009", 0755);
-    system("cp ../../dist/VCFG-NX_v2.31.pkg tfs/user/app/CUSA00009/app.pkg");
+    system("cp ../../dist/VCFG-NX_v2.32.pkg tfs/user/app/CUSA00009/app.pkg");
     put("tfs/data/GoldHEN/plugins.ini", "[default]\n/data/GoldHEN/plugins/otro.prx\n\n[CUSA00003]\n" PLUGIN_LINE "\n");
     put("tfs/data/vcfg_nx/CUSA00003.ini", "sr = 1\n");
     put("tfs/app0/plugins/vcfg_nx.prx", "PRX de prueba");

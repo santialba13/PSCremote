@@ -1,6 +1,7 @@
 #pragma once
 
 typedef struct {
+    int effects;           // interruptor general: 0 = todos los efectos apagados (sin perder los ajustes)
     int framegen;          // 1 = generar fotogramas intermedios (30 -> 60)
     int sr;                // reescalado IA NXSR: 0 off, 1 suave, 2 normal, 3 fuerte
     int sr_model;          // modelo NXSR: 0 auto (Calidad en PS4 Pro), 1 Rapido, 2 Calidad

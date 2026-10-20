@@ -2,10 +2,18 @@
 
 #include <string.h>
 
+#include "../include/nx_osd_font.h"
+
 #define RING_BYTES 8192
 
-typedef struct { uint64_t dst; int32_t W, H; uint64_t text; int32_t cols, rows; uint64_t font;
-                 int32_t x0, y0, scale, sel_row; } ka_osd_t;
+typedef struct { uint64_t dst; int32_t W, H; uint64_t text, attr; int32_t cols, rows; uint64_t font;
+                 int32_t cw, ch, x0, y0, scale, sel_row; } ka_osd_t;
+
+void nx_osd_panel_size(int cols, int rows, int scale, int* w, int* h)
+{
+    *w = cols * NX_OSD_CW * scale + 36 * scale;
+    *h = rows * NX_OSD_CH * scale + 36 * scale;
+}
 typedef struct { uint64_t src, dst; int32_t x0, y0, w, h; } ka_copy_t;
 
 size_t nx_osd_mem_size(void)
@@ -50,11 +58,12 @@ int nx_osd_draw(nx_osd_ctx_t* o, pm4_t* c, int slot, const nx_image_t* img, cons
     for (int i = 0; i < n; ++i) {
         const nx_osd_t* d = osds[i];
         if (!d) continue;
-        int pw = d->cols * 8 * d->scale + 12 * d->scale, ph = d->rows * 16 * d->scale + 12 * d->scale;
+        int pw, ph;
+        nx_osd_panel_size(d->cols, d->rows, d->scale, &pw, &ph);
         uint64_t t = tsharp(&o->ring[slot], img);
         if (!t) return -1;
-        ka_osd_t a = { t, (int32_t)img->width, (int32_t)img->height, d->text_gpu, d->cols, d->rows, d->font_gpu,
-                       d->x0, d->y0, d->scale, d->sel_row };
+        ka_osd_t a = { t, (int32_t)img->width, (int32_t)img->height, d->text_gpu, d->attr_gpu, d->cols, d->rows,
+                       d->font_gpu, NX_OSD_CW, NX_OSD_CH, d->x0, d->y0, d->scale, d->sel_row };
         int r = nx_dispatch(c, &o->ring[slot], o->sh_draw, o->code_draw, &a, sizeof a, pw, ph);
         if (r) return r;
     }

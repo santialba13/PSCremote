@@ -29,7 +29,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "../include/nx_font.h"
+#define NX_OSD_FONT_DATA
+#include "../include/nx_osd_font.h"
 #include "nx_pipeline.h"
 
 #define MAX_MID 2
@@ -49,7 +50,7 @@
 #define DEGRADED_RETRY_FLIPS 5400   // ~3 min en "solo pasar" -> reintentar con lo minimo
 #define MAX_DEGRADED_RETRIES 2
 #define OSD_COLS 40
-#define OSD_ROWS 13
+#define OSD_ROWS 14
 #define TEMP_FLIPS 60           // lectura de temperatura cada ~2 s
 #define TEMP_STEP_FLIPS 450     // con calor, un escalon cada ~15 s
 #define TEMP_HOT_READS 3        // lecturas seguidas por encima del limite antes de bajar
@@ -66,7 +67,7 @@
 #define BTN_CIRCLE 0x2000
 #define BTN_CROSS 0x4000
 
-enum { ROW_FG, ROW_SR, ROW_MODEL, ROW_ECO, ROW_AA, ROW_RCAS, ROW_FPS, ROW_CMP, ROW_SAVE, ROW_CLOSE, ROW_COUNT };
+enum { ROW_ALL, ROW_FG, ROW_SR, ROW_MODEL, ROW_ECO, ROW_AA, ROW_RCAS, ROW_FPS, ROW_CMP, ROW_SAVE, ROW_CLOSE, ROW_COUNT };
 
 static struct {
     const nx_platform_t* pf;
@@ -84,7 +85,8 @@ static struct {
     uint32_t* dcb[2];
     uint32_t* nop_dcb;
     uint8_t* osd_text[2];       // menu, contador
-    uint8_t* osd_font;
+    uint8_t* osd_attr[2];       // color de cada celda (paleta de shaders/osd.cl)
+    uint8_t* osd_font;          // atlas suavizado (nx_osd_font.h)
     nx_osd_ctx_t osd;
     volatile uint32_t* label_cpu;   // un solo label para todo nuestro trabajo de GPU
     uint64_t label_gpu;
@@ -272,7 +274,7 @@ int nx_engine_on_set_flip_rate(int handle, int rate)
 static int alloc_base(void)
 {
     size_t osd_sz = nx_osd_mem_size();
-    size_t need = (size_t)(2 * DCB_DWORDS + NOP_DWORDS) * 4 + 2 * 4096 + NX_FONT_COUNT * 16 + osd_sz + 8192;
+    size_t need = (size_t)(2 * DCB_DWORDS + NOP_DWORDS) * 4 + 4 * 4096 + sizeof nx_osd_font + osd_sz + 8192;
     // la base son pocos KiB (menu + DCBs): alcanza con dejar 32 MiB libres
     if (E.pf->avail_direct() < need + 32u * 1048576) return 0;
     E.base_mem = E.pf->alloc_gpu(need, 65536);
@@ -290,8 +292,12 @@ static int alloc_base(void)
     E.info.menu_cols = OSD_COLS;
     E.info.menu_rows = ROW_COUNT + 3;
     E.osd_text[1] = p; p += 4096;
-    E.osd_font = p; p += NX_FONT_COUNT * 16;
-    memcpy(E.osd_font, nx_font8x16, sizeof nx_font8x16);
+    E.osd_attr[0] = p; p += 4096;
+    E.info.menu_attr = E.osd_attr[0];
+    E.osd_attr[1] = p; p += 4096;
+    p = ALIGN256(p);
+    E.osd_font = p; p += sizeof nx_osd_font;
+    memcpy(E.osd_font, nx_osd_font, sizeof nx_osd_font);
     p = ALIGN256(p);
     if (nx_osd_init(&E.osd, p, (uint64_t)(uintptr_t)p) != 0) return 0;
     return 1;
@@ -299,7 +305,7 @@ static int alloc_base(void)
 
 static int effects_wanted(void)
 {
-    return E.cfg.framegen || E.cfg.sr || E.cfg.aa || E.cfg.rcas;
+    return E.cfg.effects && (E.cfg.framegen || E.cfg.sr || E.cfg.aa || E.cfg.rcas);
 }
 
 static int alloc_full(void)
@@ -380,63 +386,109 @@ static void try_allocations(void)
 }
 
 // -------------------------------------------------------------- menu (OSD)
-static const char* onoff(int v) { return v ? "ON " : "OFF"; }
 
-static void osd_line(uint8_t* t, int row, const char* s)
+// atributos (colores) de la paleta de shaders/osd.cl
+enum { A_TEXT, A_DIM, A_ON, A_OFF, A_ACCENT, A_WARN, A_TITLE, A_ERROR };
+
+static void osd_clear(uint8_t* t, uint8_t* a, int row)
 {
-    int n = (int)strlen(s);
     memset(t + row * OSD_COLS, ' ', OSD_COLS);
-    memcpy(t + row * OSD_COLS, s, n > OSD_COLS ? OSD_COLS : n);
+    memset(a + row * OSD_COLS, A_TEXT, OSD_COLS);
+}
+
+static void osd_put(uint8_t* t, uint8_t* a, int row, int col, int attr, const char* s)
+{
+    for (int i = 0; s[i] && col + i < OSD_COLS; ++i) {
+        if (col + i < 0) continue;
+        t[row * OSD_COLS + col + i] = (uint8_t)s[i];
+        a[row * OSD_COLS + col + i] = (uint8_t)attr;
+    }
+}
+
+// fila "etiqueta ........ valor" con el valor alineado a la derecha
+static void osd_item(uint8_t* t, uint8_t* a, int row, const char* label, const char* value, int vattr, int dim)
+{
+    osd_clear(t, a, row);
+    osd_put(t, a, row, 1, dim ? A_DIM : A_TEXT, label);
+    if (value) osd_put(t, a, row, OSD_COLS - 1 - (int)strlen(value), dim && vattr != A_ERROR ? A_OFF : vattr, value);
+}
+
+static void osd_switch(uint8_t* t, uint8_t* a, int row, const char* label, int on, int dim)
+{
+    osd_item(t, a, row, label, on ? "ON" : "OFF", on ? A_ON : A_OFF, dim);
 }
 
 static void build_menu_text(void)
 {
     static const char* sr_names[] = { "OFF", "Suave", "Normal", "Fuerte" };
     static const char* rc_names[] = { "OFF", "Baja", "Media", "Alta" };
+    uint8_t *t = E.osd_text[0], *a = E.osd_attr[0];
     char l[64];
-    uint8_t* t = E.osd_text[0];
-    snprintf(l, sizeof l, " VCFG-NX  %s  juego %.0f fps", E.title, E.info.game_fps);
-    osd_line(t, 0, l);
-    char tc[16] = "";
-    if (E.info.temp_c > 0) snprintf(tc, sizeof tc, " %d\xb0" "C", E.info.temp_c);
-    if (E.info.level > 0)
-        snprintf(l, sizeof l, " estado: %.18s%s -%d%s", E.info.status, E.info.hot ? " calor" : "", E.info.level, tc);
-    else
-        snprintf(l, sizeof l, " estado: %.24s%s", E.info.status, tc);
-    osd_line(t, 1, l);
-    // \xf3 = o con tilde (Latin-1)
-    snprintf(l, sizeof l, "  Generaci\xf3n de fotogramas   [%s]", onoff(E.cfg.framegen)); osd_line(t, 2 + ROW_FG, l);
-    snprintf(l, sizeof l, "  Reescalado IA (NXSR)      [%s]", sr_names[E.cfg.sr]); osd_line(t, 2 + ROW_SR, l);
-    static const char* model_names[] = { "Auto", "R\xe1pido", "Calidad" };
-    snprintf(l, sizeof l, "  Modelo IA                 [%s]", model_names[E.cfg.sr_model]);
-    osd_line(t, 2 + ROW_MODEL, l);
-    snprintf(l, sizeof l, "  Modo ahorro (menos calor) [%s]", onoff(E.cfg.eco)); osd_line(t, 2 + ROW_ECO, l);
-    snprintf(l, sizeof l, "  Antialiasing SMAA         [%s]", onoff(E.cfg.aa)); osd_line(t, 2 + ROW_AA, l);
-    snprintf(l, sizeof l, "  Nitidez FSR1 (RCAS)       [%s]", rc_names[E.cfg.rcas]); osd_line(t, 2 + ROW_RCAS, l);
-    snprintf(l, sizeof l, "  Contador de FPS           [%s]", onoff(E.cfg.fps_counter)); osd_line(t, 2 + ROW_FPS, l);
-    snprintf(l, sizeof l, "  Comparar (izq. original)  [%s]", onoff(E.cfg.compare)); osd_line(t, 2 + ROW_CMP, l);
-    osd_line(t, 2 + ROW_SAVE, "  Guardar para este juego");
-    osd_line(t, 2 + ROW_CLOSE, "  Cerrar men\xfa");
-    snprintf(l, sizeof l, " arriba/abajo izq/der X aceptar O cerrar");
-    osd_line(t, 2 + ROW_COUNT, l);
+    // titulo + fps/temperatura
+    osd_clear(t, a, 0);
+    osd_put(t, a, 0, 1, A_TITLE, "VCFG-NX");
+    if (E.info.temp_c > 0) snprintf(l, sizeof l, "%.0f fps  %d\xb0" "C", E.info.game_fps, E.info.temp_c);
+    else snprintf(l, sizeof l, "%.0f fps", E.info.game_fps);
+    osd_put(t, a, 0, OSD_COLS - 1 - (int)strlen(l), A_DIM, l);
+    // estado
+    osd_clear(t, a, 1);
+    int warn = E.info.safe_mode || E.info.hot || E.info.level > 0 || E.info.state == NX_ST_DEGRADED || !E.info.full_ready;
+    if (!E.cfg.effects) snprintf(l, sizeof l, "efectos apagados");
+    else if (E.info.hot) snprintf(l, sizeof l, "%s: consola caliente (-%d)", E.info.hot == 2 ? "pausa" : "ahorro", E.info.level);
+    else if (E.info.level > 0) snprintf(l, sizeof l, "%.26s (carga -%d)", E.info.status, E.info.level);
+    else snprintf(l, sizeof l, "%.36s", E.info.status);
+    osd_put(t, a, 1, 1, !E.cfg.effects ? A_OFF : (warn ? A_WARN : A_ACCENT), l);
+    int dim = !E.cfg.effects;
+    // interruptor general
+    osd_item(t, a, 2 + ROW_ALL, "Todos los efectos", E.cfg.effects ? "ON" : "OFF", E.cfg.effects ? A_ON : A_ERROR, 0);
+    osd_switch(t, a, 2 + ROW_FG, "Generaci\xf3n de fotogramas", E.cfg.framegen, dim);
+    osd_item(t, a, 2 + ROW_SR, "Reescalado IA (NXSR)", sr_names[E.cfg.sr & 3], E.cfg.sr ? A_ACCENT : A_OFF, dim);
+    // modelo: lo que eligio el usuario y lo que se usa de verdad
+    const char* mv;
+    if (E.cfg.eco) mv = "R\xe1pido (ahorro)";
+    else if (E.cfg.sr_model == 2) mv = "Calidad";
+    else if (E.cfg.sr_model == 1) mv = "R\xe1pido";
+    else mv = E.pro ? "Auto: Calidad" : "Auto: R\xe1pido";
+    osd_item(t, a, 2 + ROW_MODEL, "Modelo IA", mv, A_ACCENT, dim || !E.cfg.sr);
+    osd_switch(t, a, 2 + ROW_ECO, "Modo ahorro (menos calor)", E.cfg.eco, dim);
+    osd_switch(t, a, 2 + ROW_AA, "Antialiasing SMAA", E.cfg.aa, dim || E.cfg.eco);
+    osd_item(t, a, 2 + ROW_RCAS, "Nitidez FSR1 (RCAS)", rc_names[E.cfg.rcas & 3], E.cfg.rcas ? A_ACCENT : A_OFF,
+             dim || E.cfg.sr);
+    osd_switch(t, a, 2 + ROW_FPS, "Contador de FPS", E.cfg.fps_counter, 0);
+    osd_switch(t, a, 2 + ROW_CMP, "Comparar (izq. original)", E.cfg.compare, dim);
+    osd_item(t, a, 2 + ROW_SAVE, "Guardar para este juego", NULL, 0, 0);
+    osd_item(t, a, 2 + ROW_CLOSE, "Cerrar men\xfa", NULL, 0, 0);
+    osd_clear(t, a, 2 + ROW_COUNT);
+    osd_put(t, a, 2 + ROW_COUNT, 1, A_DIM, "\xab \xbb cambiar   X aceptar   O cerrar");
+    // fila elegida: sobre la pastilla azul, lo azul y lo gris se leen mejor en blanco
+    uint8_t* ra = a + (2 + E.info.menu_row) * OSD_COLS;
+    for (int i = 0; i < OSD_COLS; ++i)
+        if (ra[i] == A_ACCENT || ra[i] == A_DIM || ra[i] == A_OFF) ra[i] = A_TITLE;
 }
 
 static void build_fps_text(int fg_on)
 {
     char l[64];
-    if (E.info.temp_c > 0)
-        snprintf(l, sizeof l, " %2.0f fps%s %d\xb0" "C", E.info.game_fps * (fg_on ? 2.0f : 1.0f), fg_on ? " (FG)" : "",
-                 E.info.temp_c);
-    else
-        snprintf(l, sizeof l, " %2.0f fps%s", E.info.game_fps * (fg_on ? 2.0f : 1.0f), fg_on ? " (FG)" : "");
-    memset(E.osd_text[1], ' ', OSD_COLS);
-    memcpy(E.osd_text[1], l, strlen(l));
+    uint8_t *t = E.osd_text[1], *a = E.osd_attr[1];
+    osd_clear(t, a, 0);
+    snprintf(l, sizeof l, "%.0f fps", E.info.game_fps * (fg_on ? 2.0f : 1.0f));
+    int x = (int)strlen(l);
+    osd_put(t, a, 0, 0, A_TITLE, l);
+    if (fg_on) { osd_put(t, a, 0, x + 1, A_ON, "FG"); x += 3; }
+    if (E.info.temp_c > 0) {
+        snprintf(l, sizeof l, "%d\xb0" "C", E.info.temp_c);
+        osd_put(t, a, 0, x + 1, E.info.hot ? A_WARN : A_DIM, l);
+    }
 }
 
 static void menu_change(int row, int dir)
 {
     nx_config_t* c = &E.cfg;
     switch (row) {
+    case ROW_ALL:
+        c->effects = !c->effects;
+        if (c->effects && !E.info.full_ready) E.next_try_flip = E.info.flips;   // reservar ya si hace falta
+        break;
     case ROW_FG: c->framegen = !c->framegen; break;
     case ROW_SR: c->sr = (c->sr + (dir > 0 ? 1 : 3)) % 4; break;
     case ROW_MODEL: c->sr_model = (c->sr_model + (dir > 0 ? 1 : 2)) % 3; break;
@@ -650,7 +702,7 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
         return passthrough(s);
     }
 
-    int effects = E.info.full_ready && !E.info.safe_mode;
+    int effects = E.info.full_ready && !E.info.safe_mode && E.cfg.effects;
     int want_fg = effects && E.cfg.framegen && !E.cfg.compare && E.info.game_fps > 1.0f
                   && E.info.game_fps < (float)E.cfg.max_game_fps;
     int sr = effects && E.cfg.sr > 0;
@@ -717,15 +769,17 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
     int no = 0;
     if (osd_fps) {
         build_fps_text(want_fg);
-        fps = (nx_osd_t){ (uint64_t)(uintptr_t)E.osd_text[1], (uint64_t)(uintptr_t)E.osd_font, 19, 1, 24, 24, 2, -1 };
+        fps = (nx_osd_t){ (uint64_t)(uintptr_t)E.osd_text[1], (uint64_t)(uintptr_t)E.osd_attr[1],
+                          (uint64_t)(uintptr_t)E.osd_font, 16, 1, 24, 24, E.Wo >= 3000 ? 2 : 1, -1 };
         osds[no++] = &fps;
     }
     if (osd_menu) {
         build_menu_text();
-        int scale = E.Wo >= 1600 ? 2 : 1;
-        int pw = OSD_COLS * 8 * scale + 12 * scale, ph = (ROW_COUNT + 3) * 16 * scale + 12 * scale;
-        menu = (nx_osd_t){ (uint64_t)(uintptr_t)E.osd_text[0], (uint64_t)(uintptr_t)E.osd_font, OSD_COLS,
-                           ROW_COUNT + 3, (E.Wo - pw) / 2, (E.Ho - ph) / 2, scale, 2 + E.info.menu_row };
+        int scale = E.Wo >= 3000 ? 2 : 1, pw, ph;   // la fuente ya es de 15x30: x2 solo en 4K
+        nx_osd_panel_size(OSD_COLS, ROW_COUNT + 3, scale, &pw, &ph);
+        menu = (nx_osd_t){ (uint64_t)(uintptr_t)E.osd_text[0], (uint64_t)(uintptr_t)E.osd_attr[0],
+                           (uint64_t)(uintptr_t)E.osd_font, OSD_COLS, ROW_COUNT + 3, (E.Wo - pw) / 2, (E.Ho - ph) / 2,
+                           scale, 2 + E.info.menu_row };
         osds[no++] = &menu;
     }
     int fg_mode = want_fg ? 1 : 0;
