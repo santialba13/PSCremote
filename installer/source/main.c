@@ -57,7 +57,7 @@
 #define CFG_DIR ROOT "/data/vcfg_nx"
 #define TITLE_ID "VCNX00001"
 #define CONTENT_ID "IV0000-VCNX00001_00-VCFGNXINSTALL000"
-#define VERSION "2.3"
+#define VERSION "2.3.1"
 
 #define W 1920
 #define H 1080
@@ -241,7 +241,7 @@ static char prx_from[200];
 
 static struct {
     uint32_t sdk;
-    int icons_ok, icons_fail;
+    int icons_ok, icons_fail, icons_from_pkg;
     char icon_fail_path[200];
     char save_error[200];
 } diag;
@@ -407,6 +407,14 @@ static ui_img_t decode_icon(int gi, int size, int radius)
         int r = icon_path(gi, k, p, sizeof p);
         if (r < 0) break;
         if (r) src = stbi_load(p, &w, &h, &n, 4);
+    }
+    if (!src && games[gi].app[0]) {   // respaldo: el icon0.png que viene dentro del app.pkg instalado
+        size_t len = 0;
+        snprintf(p, sizeof p, "%s/app.pkg", games[gi].app);
+        unsigned char* png = inst_pkg_entry(p, PKG_ENTRY_ICON0, &len);
+        if (png) src = stbi_load_from_memory(png, (int)len, &w, &h, &n, 4);
+        free(png);
+        if (src) diag.icons_from_pkg++;
     }
     if (!src) {
         diag.icons_fail++;
@@ -1048,8 +1056,8 @@ static void open_modal(int kind)
         snprintf(modal_lines[0], 200, "GoldHEN SDK %x.%02x \xb7 acceso fuera del sandbox: %s", diag.sdk >> 8, diag.sdk & 0xFF,
                  jailed ? "NO" : "s\xed");
         snprintf(modal_lines[1], 200, "Plugin en la app: %s", prx ? prx_from : "NO ENCONTRADO");
-        snprintf(modal_lines[2], 200, "Juegos: %d \xb7 iconos cargados: %d \xb7 sin icono: %d", ngames, diag.icons_ok,
-                 diag.icons_fail);
+        snprintf(modal_lines[2], 200, "Juegos: %d \xb7 iconos cargados: %d (del app.pkg: %d) \xb7 sin icono: %d", ngames,
+                 diag.icons_ok, diag.icons_from_pkg, diag.icons_fail);
         snprintf(modal_lines[3], 200, "%s%s", diag.icons_fail ? "Primer icono que fall\xf3: " : "",
                  diag.icons_fail ? diag.icon_fail_path : "");
         snprintf(modal_lines[4], 200, "\xdaltimo error al guardar: %s", diag.save_error[0] ? diag.save_error : "ninguno");

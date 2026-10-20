@@ -73,6 +73,16 @@ int main(void)
     inst_load_game_cfg(&g[2], &def, "tmp_cfg");
     CHECK(g[2].custom && g[2].cfg.sr == 3 && g[2].cfg.eco && g[2].cfg.temp_limit == 75 && g[2].cfg.aa == 0,
           "con .ini: por defecto + lo propio");
+    // entradas de un PKG real (el de VCFG-NX): icon0.png y param.sfo sin cifrar
+    size_t ilen = 0, slen = 0;
+    unsigned char* icon = inst_pkg_entry("../../dist/VCFG-NX_v2.31.pkg", PKG_ENTRY_ICON0, &ilen);
+    CHECK(icon && ilen > 1000 && !memcmp(icon, "\x89PNG", 4), "icon0.png del PKG");
+    unsigned char* sfo = inst_pkg_entry("../../dist/VCFG-NX_v2.31.pkg", PKG_ENTRY_PARAM_SFO, &slen);
+    char ptitle[64] = "";
+    CHECK(sfo && inst_sfo_title(sfo, slen, ptitle, sizeof ptitle) == 0 && !strcmp(ptitle, "VCFG-NX"), "param.sfo del PKG");
+    free(icon); free(sfo);
+    CHECK(inst_pkg_entry("test_core.c", PKG_ENTRY_ICON0, &ilen) == NULL, "un archivo que no es PKG");
+    CHECK(inst_pkg_entry("no_existe.pkg", PKG_ENTRY_ICON0, &ilen) == NULL, "PKG inexistente");
     char txt[512];
     nx_config_format(&g[2].cfg, "test", txt, sizeof txt);
     nx_config_t back;

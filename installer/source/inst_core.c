@@ -52,6 +52,7 @@ int inst_list_games(const char* dir_app, const char* const* metas, inst_game_t* 
         memset(g, 0, sizeof *g);
         snprintf(g->id, sizeof g->id, "%.9s", e->d_name);
         snprintf(g->title, sizeof g->title, "%.9s", e->d_name);
+        snprintf(g->app, sizeof g->app, "%.110s/%.9s", dir_app, e->d_name);
         for (int k = 0; metas && metas[k]; ++k) {
             char p[256];
             snprintf(p, sizeof p, "%.200s/%.9s/param.sfo", metas[k], e->d_name);
@@ -64,10 +65,44 @@ int inst_list_games(const char* dir_app, const char* const* metas, inst_game_t* 
             snprintf(g->meta, sizeof g->meta, "%.110s/%.9s", metas[k], e->d_name);
             break;
         }
+        if (!g->meta[0]) {   // sin appmeta: el nombre sale del param.sfo dentro del app.pkg
+            char p[256];
+            size_t len = 0;
+            snprintf(p, sizeof p, "%.200s/app.pkg", g->app);
+            unsigned char* sfo = inst_pkg_entry(p, PKG_ENTRY_PARAM_SFO, &len);
+            if (sfo) inst_sfo_title(sfo, len, g->title, sizeof g->title);
+            free(sfo);
+        }
     }
     closedir(d);
     qsort(games, n, sizeof *games, cmp_game);
     return n;
+}
+
+static uint32_t be32(const unsigned char* p) { return (uint32_t)p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]; }
+
+unsigned char* inst_pkg_entry(const char* pkg_path, unsigned id, size_t* len)
+{
+    FILE* f = fopen(pkg_path, "rb");
+    if (!f) return NULL;
+    unsigned char hdr[0x20], ent[32];
+    unsigned char* out = NULL;
+    if (fread(hdr, 1, sizeof hdr, f) != sizeof hdr || be32(hdr) != 0x7F434E54u) goto done;   // "\x7FCNT"
+    uint32_t count = be32(hdr + 0x10), table = be32(hdr + 0x18);
+    if (count == 0 || count > 4096) goto done;
+    for (uint32_t i = 0; i < count; ++i) {
+        if (fseek(f, (long)table + (long)i * 32, SEEK_SET) != 0 || fread(ent, 1, 32, f) != 32) break;
+        if (be32(ent) != id) continue;
+        uint32_t flags = be32(ent + 8), off = be32(ent + 16), size = be32(ent + 20);
+        if ((flags & 0x80000000u) || size == 0 || size > (8u << 20)) break;   // cifrada o absurda
+        out = malloc(size);
+        if (out && (fseek(f, (long)off, SEEK_SET) != 0 || fread(out, 1, size, f) != size)) { free(out); out = NULL; }
+        if (out) *len = size;
+        break;
+    }
+done:
+    fclose(f);
+    return out;
 }
 
 void inst_load_game_cfg(inst_game_t* g, const nx_config_t* defaults, const char* cfg_dir)

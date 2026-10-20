@@ -12,6 +12,7 @@ typedef struct {
     char id[16];
     char title[64];
     char meta[128];   // carpeta con su param.sfo e icon0.png ("" si no se encontro)
+    char app[128];    // carpeta del juego instalado (<...>/user/app/<id>, con su app.pkg)
     int enabled;      // el plugin figura en la seccion [id] de plugins.ini
     int custom;       // tiene ajustes propios (/data/vcfg_nx/<id>.ini)
     int custom_saved; // ...y el archivo existe en disco
@@ -25,6 +26,13 @@ int inst_sfo_title(const unsigned char* sfo, size_t len, char* out, size_t cap);
 // ids; el titulo sale del primer metas[k]/<id>/param.sfo que exista (metas
 // termina en NULL). Devuelve el total, ordenado por titulo sin mayusculas.
 int inst_list_games(const char* dir_app, const char* const* metas, inst_game_t* games, int n, int max);
+// una entrada sin cifrar de un PKG de PS4 (tabla de entradas de la cabecera):
+// 0x1000 = param.sfo, 0x1200 = icon0.png. Lee solo lo necesario aunque el PKG
+// pese decenas de GB. Devuelve malloc (len en *len) o NULL.
+#define PKG_ENTRY_PARAM_SFO 0x1000
+#define PKG_ENTRY_ICON0 0x1200
+unsigned char* inst_pkg_entry(const char* pkg_path, unsigned id, size_t* len);
+
 // lee cfg_dir/<id>.ini sobre los ajustes por defecto: custom = existe
 void inst_load_game_cfg(inst_game_t* g, const nx_config_t* defaults, const char* cfg_dir);
 

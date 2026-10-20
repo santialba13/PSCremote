@@ -46,6 +46,9 @@ static void make_fs(void)
         snprintf(p, sizeof p, "tfs/user/appmeta/%s", ids[i]); mkdir(p, 0755);
         snprintf(p, sizeof p, "tfs/user/appmeta/%s/param.sfo", ids[i]); write_sfo(p, titles[i]);
     }
+    // un juego sin appmeta: nombre e icono salen de su app.pkg (aca, el PKG de VCFG-NX)
+    mkdir("tfs/user/app/CUSA00009", 0755);
+    system("cp ../../dist/VCFG-NX_v2.31.pkg tfs/user/app/CUSA00009/app.pkg");
     put("tfs/data/GoldHEN/plugins.ini", "[default]\n/data/GoldHEN/plugins/otro.prx\n\n[CUSA00003]\n" PLUGIN_LINE "\n");
     put("tfs/data/vcfg_nx/CUSA00003.ini", "sr = 1\n");
     put("tfs/app0/plugins/vcfg_nx.prx", "PRX de prueba");
@@ -101,7 +104,10 @@ int main(void)
     press(ORBIS_PAD_BUTTON_CROSS, 1);                 // ...Guardar y salir
     fake_hide_app0 = 1;                               // como en la consola: fuera del sandbox no hay /app0
     run_app();
-    CHECK(ngames == 3 && !strcmp(games[0].title, "Alpha") && !strcmp(games[1].title, "beta"), "lista ordenada");
+    CHECK(ngames == 4 && !strcmp(games[0].title, "Alpha") && !strcmp(games[1].title, "beta"), "lista ordenada");
+    CHECK(!strcmp(games[3].title, "VCFG-NX"), "nombre desde el app.pkg: '%s'", games[3].title);
+    CHECK(diag.icons_from_pkg >= 1 && diag.icons_ok >= 1, "icono desde el app.pkg (ok %d, pkg %d, fallos %d)",
+          diag.icons_ok, diag.icons_from_pkg, diag.icons_fail);
     char* ini = get(PLUGINS_INI);
     CHECK(inst_ini_has(ini, "CUSA00001") && !inst_ini_has(ini, "CUSA00002") && inst_ini_has(ini, "CUSA00003"),
           "plugins.ini con Alpha y Gamma: %s", ini);

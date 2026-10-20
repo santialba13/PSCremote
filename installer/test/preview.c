@@ -57,6 +57,11 @@ int main(int argc, char** argv)
         snprintf(games[i].id, 16, "%s", id[i]);
         snprintf(games[i].title, 64, "%s", t[i]);
         if (argc > 1) snprintf(games[i].meta, sizeof games[i].meta, "%s/%s", argv[1], id[i]);
+        // argv[2]: carpeta con <ID>/app.pkg (PKG reales): esos juegos toman el icono del PKG
+        if (argc > 2 && i < 3) {
+            games[i].meta[0] = 0;
+            snprintf(games[i].app, sizeof games[i].app, "%s/%s", argv[2], id[i]);
+        }
         games[i].enabled = i % 3 != 2;
         games[i].cfg = defaults;
     }
