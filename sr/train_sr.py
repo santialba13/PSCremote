@@ -79,9 +79,10 @@ def main():
     st = opt.init(p)
 
     @functools.partial(jax.jit, static_argnums=(4, 5))
-    def step(p, st, lr, hr, dy, dx):
+    def step(p, st, lr, hr, dy, dx, scale):
         l, g = jax.value_and_grad(loss_fn)(p, lr, hr, dy, dx)
         u, st = opt.update(g, st, p)
+        u = jax.tree_util.tree_map(lambda v: v * scale, u)
         return optax.apply_updates(p, u), st, l
 
     infer = jax.jit(lambda p, x: net_sr.apply(p, x))
@@ -93,6 +94,7 @@ def main():
     print(f"val sin procesar {psnr(vlr, vhr):.2f} dB", flush=True)
     rng = np.random.default_rng(a.seed)
     best, t0 = -1, time.time()
+    best_p, scale = p, 1.0
     for it in range(1, a.steps + 1):
         idx = rng.integers(0, len(HR), a.batch)
         lr, hr = LR[idx].astype(np.float32) / 255, HR[idx].astype(np.float32) / 255
@@ -100,12 +102,18 @@ def main():
             perm = rng.permutation(3)
             lr, hr = lr[..., perm], hr[..., perm]
         dy, dx = [(0, 1), (1, 0), (1, 1)][it % 3]
-        p, st, l = step(p, st, lr, hr, dy, dx)
+        p, st, l = step(p, st, lr, hr, dy, dx, scale)
         if it % 500 == 0 or it == a.steps:
             vp = evaluate(p)
             print(f"it {it} loss {float(l):.4f} val {vp:.2f} dB desplaz {shift_err(p):.3f} {time.time() - t0:.0f}s", flush=True)
+            if best > 0 and (vp < best - 1.0 or not np.isfinite(vp)):
+                # divergio: se vuelve al mejor punto con la mitad de paso
+                scale *= 0.5
+                p, st = best_p, opt.init(best_p)
+                print(f"  divergencia: vuelvo al mejor ({best:.2f} dB), paso x{scale}", flush=True)
+                continue
             if vp > best:
-                best = vp
+                best, best_p = vp, p
                 with open(a.out, "wb") as f:
                     pickle.dump(jax.tree_util.tree_map(np.asarray, p), f)
     print(f"mejor val {best:.2f} dB -> {a.out}")
