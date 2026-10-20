@@ -61,7 +61,23 @@ escalador bilineal de VideoOut (lo que usa la consola cuando un juego entrega
 900p/720p) EASU sí es mejor (+1,2 dB). La ventaja real de esta etapa es
 perceptual y conviene juzgarla mirando (`pipeline/run.py --compare`).
 
-## 3. Verificación del camino de GPU
+## 3. Antialiasing (SMAA 1x)
+
+Escena de prueba con bordes duros (`upscale/aa_testscene.py`, 256x160):
+rectángulos rotados y círculos. Referencia: la misma escena con
+supersampling 8x8 (64 muestras por píxel).
+
+| método | PSNR vs SSAA 8x8 |
+|---|---|
+| sin AA (1 muestra por píxel, como un juego sin AA) | 31.74 dB |
+| RCAS (la nitidez de FSR1) | 30.47 dB |
+| **SMAA 1x** | **38.37 dB** |
+
+SMAA recupera la mayor parte de la diferencia con el supersampling; RCAS la
+empeora porque realza el escalonado. En juegos que ya traen su propio AA
+(FXAA/TAA) el beneficio será menor: se puede apagar por juego con `aa = 0`.
+
+## 4. Verificación del camino de GPU
 
 | prueba | resultado |
 |---|---|
@@ -70,11 +86,16 @@ perceptual y conviene juzgarla mirando (`pipeline/run.py --compare`).
 | `host_test`: DCB 1080p / 900p→1080p / 720p→1080p | PM4 bien formado, 39-43 dispatches, 36-70 MiB |
 | `gpu_emu` (DCB ejecutado con los kernels compilados para x86) vs runtime NumPy, 1280x720 | dif. máx. 1/255 (≈88 dB) |
 | RCAS del camino GPU vs `upscale/fsr1.py` | ≈59 dB |
+| SMAA del camino GPU (3 kernels) vs `upscale/smaa.py` | idéntico (0/255) |
+| `host_test` con SMAA | 45-49 dispatches, 45-90 MiB de memoria de trabajo |
+| plugin compilado con OpenOrbis + GoldHEN SDK | `vcfg_nx.prx`, exporta `plugin_load`/`plugin_unload` |
+| PKG (`PkgTool.Core`) descifrado con `tools/pkg/pfs_extract.py` | eboot y prx idénticos a los compilados |
+| edición de `plugins.ini` del instalador (test en PC) | respeta lo existente, idempotente |
 
 Lo que **no** está verificado: ejecución en la GPU real de la PS4 (tiling de
 los backbuffers, coherencia de caches, orden de los flips, rendimiento).
 
-## 4. Ejemplo visual
+## 5. Ejemplo visual
 
 Los tres recortes sintéticos donde NXFlow más mejora al block-matching
 (+1,0 a +1,7 dB). Se ve que corrige los bordes en bloque y parte del

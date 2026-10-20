@@ -8,3 +8,5 @@ plugin/test/host_test
 *.pkg
 plugin/test/gpu_emu
 plugin/test/*.o
+installer/build/
+!dist/*.pkg

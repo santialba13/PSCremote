@@ -17,10 +17,10 @@
 
 #include "config.h"
 #include "nx_pipeline.h"
-#include "plugin_common.h"
+#include "nx_sys.h"
 
 attr_public const char* g_pluginName = "vcfg_nx";
-attr_public const char* g_pluginDesc = "Frame generation (NXFlow) + FSR1 para juegos a 30 fps";
+attr_public const char* g_pluginDesc = "Frame generation (NXFlow) + SMAA + FSR1 para juegos a 30 fps";
 attr_public const char* g_pluginAuth = "VCFG-NX";
 attr_public u32 g_pluginVersion = 0x00000100; // 1.00
 
@@ -132,7 +132,8 @@ s32 sceVideoOutRegisterBuffers_hook(s32 handle, s32 start, void* const* addrs, s
     // buffers de salida propios: mismos atributos que el juego (salvo tamano con EASU)
     size_t pitch_o = (size_t)((Wo + 63) / 64 * 64);
     size_t buf_bytes = (pitch_o * Ho * 4 + 0xFFFF) & ~(size_t)0xFFFF;
-    int nbuf = post == NX_POST_NONE ? MAX_MID : 2 * MAX_MID;
+    int own_real = post != NX_POST_NONE || g.cfg.aa;   // el real tambien pasa por SMAA/FSR1
+    int nbuf = own_real ? 2 * MAX_MID : MAX_MID;
     uint8_t* outs = gpu_alloc(buf_bytes * nbuf, 64 * 1024);
     uint32_t* dcbs = gpu_alloc((2 * DCB_DWORDS + 64) * 4, 4096);
     if (!arena || !outs || !dcbs) {
@@ -164,7 +165,7 @@ s32 sceVideoOutRegisterBuffers_hook(s32 handle, s32 start, void* const* addrs, s
                           NX_TILE_DISPLAY_LINEAR_ALIGNED };
         g.mid_index[i] = first + i;
         g.mid_img[i] = im;
-        if (post != NX_POST_NONE) {
+        if (own_real) {
             im.gpu_addr = (uint64_t)extra[MAX_MID + i];
             g.real_index[i] = first + MAX_MID + i;
             g.real_img[i] = im;
@@ -177,7 +178,8 @@ s32 sceVideoOutRegisterBuffers_hook(s32 handle, s32 start, void* const* addrs, s
     g.prev_idx = -1;
     g.ready = 1;
     g.active = g.cfg.framegen;
-    final_printf("listo: %dx%d -> %dx%d post=%d, %zu MiB\n", W, H, Wo, Ho, post, (need + buf_bytes * nbuf) >> 20);
+    final_printf("listo: %dx%d -> %dx%d post=%d aa=%d, %zu MiB\n", W, H, Wo, Ho, post, g.cfg.aa,
+                 (need + buf_bytes * nbuf) >> 20);
     Notify(TEX_ICON_SYSTEM, "VCFG-NX listo. L3+R3 para activar/desactivar.");
     return r;
 }
@@ -240,9 +242,11 @@ s32 sceGnmSubmitAndFlipCommandBuffers_hook(u32 count, void** dcb, u32* dcb_sz, v
     int m = (int)(g.seq & 1);
     pm4_t c;
     pm4_init(&c, g.dcb[s], DCB_DWORDS);
-    nx_job_t job = { &g.game_img[g.prev_idx], &g.game_img[gi], &g.mid_img[m],
-                     g.cfg.post == NX_POST_NONE ? NULL : &g.real_img[m], s, (nx_post_t)g.cfg.post,
-                     g.cfg.sharpness, ++g.seq };
+    int own_real = g.cfg.post != NX_POST_NONE || g.cfg.aa;
+    nx_job_t job = { .prev = &g.game_img[g.prev_idx], .cur = &g.game_img[gi], .out_mid = &g.mid_img[m],
+                     .out_real = own_real ? &g.real_img[m] : NULL, .slot = s,
+                     .post = (nx_post_t)g.cfg.post, .aa = g.cfg.aa,
+                     .sharpness_stops = g.cfg.sharpness, .seq = ++g.seq };
     if (nx_pipeline_build(&g.pipe, &c, &job) != 0) {
         g.active = 0;
         Notify(TEX_ICON_SYSTEM, "VCFG-NX: error armando el DCB, desactivado");
@@ -256,7 +260,7 @@ s32 sceGnmSubmitAndFlipCommandBuffers_hook(u32 count, void** dcb, u32* dcb_sz, v
                       handle, (u32)g.mid_index[m], 1 /* VSYNC */, arg);
 
     // 3. el fotograma real, un vblank despues
-    int real = g.cfg.post == NX_POST_NONE ? (int)index : g.real_index[m];
+    int real = own_real ? g.real_index[m] : (int)index;
     flip_only(handle, real, 1, arg);
 
     g.prev_idx = gi;
@@ -287,7 +291,6 @@ s32 scePadReadState_hook(s32 handle, OrbisPadData* data)
 s32 attr_public plugin_load(s32 argc, const char* argv[])
 {
     final_printf("[GoldHEN] <%s\\Ver.0x%08x> %s\n", g_pluginName, g_pluginVersion, __func__);
-    boot_ver();
     struct proc_info info;
     if (sys_sdk_proc_info(&info) == 0)
         memcpy(g.title, info.titleid, sizeof g.title - 1);

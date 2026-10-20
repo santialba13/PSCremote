@@ -4,7 +4,7 @@
 //   de shaders/*.cl compilados para x86 (-DNX_HOST).
 // La salida se compara con model/reference_runtime.py (ver test_gpu_path.py).
 //
-//   gpu_emu W H frame0.rgba frame1.rgba out_mid.rgba [post: 0 none, 1 rcas] [out_real.rgba]
+//   gpu_emu W H frame0.rgba frame1.rgba out_mid.rgba [post: 0 none, 1 rcas, 2 smaa] [out_real.rgba]
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -104,6 +104,9 @@ void bm_median3(P, P, int, int);
 void warp_blend(P, P, P, P, int, int, P, int, int);
 void easu(P, int, int, P, int, int);
 void rcas(P, P, int, int, float, int);
+void smaa_edges(P, int, int, P);
+void smaa_weights(P, int, int, P, P, P);
+void smaa_blend(P, P, P, int, int, P);
 
 static const uint8_t* ka;
 static const uint8_t* offs;
@@ -135,6 +138,9 @@ static void call(const char* n)
     else if (IS("warp_blend")) warp_blend(ap(0), ap(1), ap(2), ap(3), ai(4), ai(5), ap(6), ai(7), ai(8));
     else if (IS("easu")) easu(ap(0), ai(1), ai(2), ap(3), ai(4), ai(5));
     else if (IS("rcas")) rcas(ap(0), ap(1), ai(2), ai(3), af(4), ai(5));
+    else if (IS("smaa_edges")) smaa_edges(ap(0), ai(1), ai(2), ap(3));
+    else if (IS("smaa_weights")) smaa_weights(ap(0), ai(1), ai(2), ap(3), ap(4), ap(5));
+    else if (IS("smaa_blend")) smaa_blend(ap(0), ap(1), ap(2), ai(3), ai(4), ap(5));
     else { fprintf(stderr, "kernel desconocido %s\n", n); exit(4); }
 }
 
@@ -220,8 +226,9 @@ int main(int argc, char** argv)
     static uint32_t dcb[64 * 1024];
     pm4_t c;
     pm4_init(&c, dcb, sizeof dcb / 4);
-    nx_job_t job = { &img[0], &img[1], &img[2], post ? &img[3] : NULL, 1,
-                     post ? NX_POST_RCAS : NX_POST_NONE, 0.25f, 7 };
+    nx_job_t job = { .prev = &img[0], .cur = &img[1], .out_mid = &img[2], .out_real = post ? &img[3] : NULL,
+                     .slot = 1, .post = post == 1 ? NX_POST_RCAS : NX_POST_NONE, .aa = post == 2,
+                     .sharpness_stops = 0.25f, .seq = 7 };
     if (nx_pipeline_build(&p, &c, &job) != 0) { fprintf(stderr, "build fallo\n"); return 1; }
     int d = run_dcb(&p, dcb, c.n);
     if (d < 0) return 1;

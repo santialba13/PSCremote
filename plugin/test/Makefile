@@ -18,8 +18,11 @@ kernels_host.o: ../../shaders/nxflow.cl ../../shaders/nx_common.h
 fsr1_host.o: ../../shaders/fsr1.cl ../../shaders/nx_common.h
 	$(CC) -x cl -cl-std=CL1.2 -target x86_64-unknown-linux-gnu -DNX_HOST -I../../shaders -O2 -c $< -o $@
 
-gpu_emu: gpu_emu.c kernels_host.o fsr1_host.o $(PORTABLE) $(HEADERS)
-	$(CC) $(CFLAGS) -Wno-unused-parameter -I../source -o $@ gpu_emu.c kernels_host.o fsr1_host.o $(PORTABLE) -lm
+smaa_host.o: ../../shaders/smaa.cl ../../shaders/nx_common.h
+	$(CC) -x cl -cl-std=CL1.2 -target x86_64-unknown-linux-gnu -DNX_HOST -I../../shaders -O2 -c $< -o $@
+
+gpu_emu: gpu_emu.c kernels_host.o fsr1_host.o smaa_host.o $(PORTABLE) $(HEADERS)
+	$(CC) $(CFLAGS) -Wno-unused-parameter -I../source -o $@ gpu_emu.c kernels_host.o fsr1_host.o smaa_host.o $(PORTABLE) -lm
 
 run: host_test
 	./host_test

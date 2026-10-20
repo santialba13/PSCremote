@@ -10,6 +10,7 @@ void nx_config_defaults(nx_config_t* c)
 {
     c->framegen = 1;
     c->post = 1;
+    c->aa = 1;
     c->sharpness = 0.25f;
     c->out_w = 1920;
     c->out_h = 1080;
@@ -40,6 +41,7 @@ static void parse(nx_config_t* c, const char* path)
         char* v = trim(eq + 1);
         if (!strcmp(k, "framegen")) c->framegen = atoi(v);
         else if (!strcmp(k, "post")) c->post = atoi(v);
+        else if (!strcmp(k, "aa")) c->aa = atoi(v) != 0;
         else if (!strcmp(k, "sharpness")) c->sharpness = (float)atof(v);
         else if (!strcmp(k, "out_w")) c->out_w = atoi(v);
         else if (!strcmp(k, "out_h")) c->out_h = atoi(v);

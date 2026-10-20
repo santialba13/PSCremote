@@ -5,17 +5,21 @@
 
 #include "../include/nx_shaders.h"
 #include "../include/nxflow_weights.h"
+#include "../../third_party/smaa/AreaTex.h"
+#include "../../third_party/smaa/SearchTex.h"
 
 enum {
     K_CONV_14_32, K_CONV_17_32, K_CONV_32_32, K_CONV_32_5, K_CONV_17_16, K_CONV_16_16, K_CONV_16_5,
     K_AVGPOOL, K_RESIZE, K_UPSAMPLE5, K_BUILD_INPUT, K_BM_TO_FLOW, K_LUMA_FULL, K_LUMA_DOWN2,
-    K_BM_SEARCH, K_BM_MEDIAN3, K_WARP_BLEND, K_EASU, K_RCAS, K_COUNT
+    K_BM_SEARCH, K_BM_MEDIAN3, K_WARP_BLEND, K_EASU, K_RCAS,
+    K_SMAA_EDGES, K_SMAA_WEIGHTS, K_SMAA_BLEND, K_COUNT
 };
 static const char* const k_names[K_COUNT] = {
     "conv3x3_14_32", "conv3x3_17_32", "conv3x3_32_32", "conv3x3_32_5",
     "conv3x3_17_16", "conv3x3_16_16", "conv3x3_16_5",
     "avgpool_rgb", "resize_bilinear", "upsample5", "build_level_input", "bm_to_flow", "luma_full",
     "luma_down2", "bm_search", "bm_median3", "warp_blend", "easu", "rcas",
+    "smaa_edges", "smaa_weights", "smaa_blend",
 };
 
 // primera capa y numero de capas de cada bloque en nx_layers[] (model/export.py)
@@ -24,7 +28,7 @@ static const char* const k_names[K_COUNT] = {
 #define BLOCK_C 12, 5
 
 #define KERNARG_BYTES (16 * 1024)
-#define DESC_BYTES 1024
+#define DESC_BYTES 4096
 #define WG 8
 
 // --- layouts de kernargs: mismo orden y alineacion natural que los .cl
@@ -43,6 +47,9 @@ typedef struct { uint64_t in, out; int32_t By, Bx; } ka_median_t;
 typedef struct { uint64_t f0, f1, samp, low5; int32_t h4, w4; uint64_t dst; int32_t H, W; } ka_warp_t;
 typedef struct { uint64_t src; int32_t H, W; uint64_t dst; int32_t Ho, Wo; } ka_easu_t;
 typedef struct { uint64_t src, dst; int32_t W, H; float sharp; int32_t denoise; } ka_rcas_t;
+typedef struct { uint64_t src; int32_t W, H; uint64_t edges; } ka_smaa_edges_t;
+typedef struct { uint64_t edges; int32_t W, H; uint64_t area, search, weights; } ka_smaa_weights_t;
+typedef struct { uint64_t src, samp, weights; int32_t W, H; uint64_t dst; } ka_smaa_blend_t;
 
 static size_t align_up(size_t v, size_t a) { return (v + a - 1) / a * a; }
 
@@ -75,6 +82,8 @@ size_t nx_pipeline_mem_size(int W, int H, int Wo, int Ho)
     s += 3 * max_sz(tensor_bytes(h16, w16, 32), tensor_bytes(h8, w8, 16));
     s += max_sz(tensor_bytes(h8, w8, 32), tensor_bytes(h4, w4, 16));
     s += tensor_bytes(H, (int)align_up(W, 64), 1) + tensor_bytes(Ho, (int)align_up(Wo, 64), 1);
+    s += tensor_bytes(H, (int)align_up(W, 64), 1) + 64 * 1024;               // imagen tras SMAA
+    s += align_up((size_t)W * H * 6, 256) + align_up(sizeof areaTexBytes + sizeof searchTexBytes, 4096);
     s += 2 * (KERNARG_BYTES + DESC_BYTES) + 4096;
     return s + 64 * 1024;
 }
@@ -130,6 +139,14 @@ int nx_pipeline_init(nx_pipeline_t* p, int W, int H, int Wo, int Ho, nx_arena_t 
     p->up = arena_alloc(a, max_sz(tensor_bytes(p->h8, p->w8, 32), tensor_bytes(p->h4, p->w4, 16)), 256);
     p->tmp_img = arena_alloc(a, tensor_bytes(H, (int)align_up(W, 64), 1), 64 * 1024);
     p->tmp_img2 = arena_alloc(a, tensor_bytes(Ho, (int)align_up(Wo, 64), 1), 64 * 1024);
+    p->tmp_aa = arena_alloc(a, tensor_bytes(H, (int)align_up(W, 64), 1), 64 * 1024);
+    p->smaa_edges = arena_alloc(a, (size_t)W * H * 2, 256);
+    p->smaa_weights = arena_alloc(a, (size_t)W * H * 4, 256);
+    p->smaa_area = arena_alloc(a, sizeof areaTexBytes, 256);
+    p->smaa_search = arena_alloc(a, sizeof searchTexBytes, 256);
+    if (!p->smaa_search) return -5;
+    memcpy(arena_cpu(a, p->smaa_area), areaTexBytes, sizeof areaTexBytes);
+    memcpy(arena_cpu(a, p->smaa_search), searchTexBytes, sizeof searchTexBytes);
     for (int s = 0; s < 2; ++s) {
         p->kernarg_base[s] = arena_alloc(a, KERNARG_BYTES, 256);
         p->desc_base[s] = arena_alloc(a, DESC_BYTES, 256);
@@ -265,20 +282,42 @@ static nx_image_t linear_img(uint64_t gpu, int w, int h)
     return i;
 }
 
-// post-proceso FSR1 de "src" (resolucion del juego) hacia "dst" (salida)
+// SMAA 1x de "src" a "dst" (misma resolucion: la del juego)
+static void smaa(ctx_t* x, const nx_image_t* src, const nx_image_t* dst)
+{
+    nx_pipeline_t* p = x->p;
+    uint32_t samp[4];
+    nx_make_ssharp(samp, 1);
+    ka_smaa_edges_t e = { tsharp(x, src), p->W, p->H, p->smaa_edges };
+    run(x, K_SMAA_EDGES, &e, sizeof e, p->W, p->H);
+    ka_smaa_weights_t w = { p->smaa_edges, p->W, p->H, p->smaa_area, p->smaa_search, p->smaa_weights };
+    run(x, K_SMAA_WEIGHTS, &w, sizeof w, p->W, p->H);
+    ka_smaa_blend_t b = { tsharp(x, src), put_desc(x, samp, 4), p->smaa_weights, p->W, p->H, tsharp(x, dst) };
+    run(x, K_SMAA_BLEND, &b, sizeof b, p->W, p->H);
+}
+
+// post-proceso de "src" (resolucion del juego) hacia "dst" (salida):
+//   [SMAA] -> [EASU si la salida es mas grande] -> [RCAS]; el ultimo pase escribe en dst
 static void post(ctx_t* x, const nx_job_t* job, const nx_image_t* src, const nx_image_t* dst)
 {
     nx_pipeline_t* p = x->p;
-    float sharp = exp2f(-job->sharpness_stops);
-    const nx_image_t* rin = src;
+    const nx_image_t* cur = src;
+    nx_image_t taa = linear_img(p->tmp_aa, p->W, p->H);
     nx_image_t t2 = linear_img(p->tmp_img2, p->Wo, p->Ho);
-    if (job->post == NX_POST_EASU) {
-        ka_easu_t e = { tsharp(x, src), p->H, p->W, tsharp(x, &t2), p->Ho, p->Wo };
-        run(x, K_EASU, &e, sizeof e, p->Wo, p->Ho);
-        rin = &t2;
+    if (job->aa) {
+        const nx_image_t* o = job->post == NX_POST_NONE ? dst : &taa;
+        smaa(x, cur, o);
+        cur = o;
     }
-    ka_rcas_t r = { tsharp(x, rin), tsharp(x, dst), p->Wo, p->Ho, sharp, 0 };
-    run(x, K_RCAS, &r, sizeof r, p->Wo, p->Ho);
+    if (job->post == NX_POST_EASU) {
+        ka_easu_t e = { tsharp(x, cur), p->H, p->W, tsharp(x, &t2), p->Ho, p->Wo };
+        run(x, K_EASU, &e, sizeof e, p->Wo, p->Ho);
+        cur = &t2;
+    }
+    if (job->post != NX_POST_NONE) {
+        ka_rcas_t r = { tsharp(x, cur), tsharp(x, dst), p->Wo, p->Ho, exp2f(-job->sharpness_stops), 0 };
+        run(x, K_RCAS, &r, sizeof r, p->Wo, p->Ho);
+    }
 }
 
 int nx_pipeline_build(nx_pipeline_t* p, pm4_t* c, const nx_job_t* job)
@@ -334,13 +373,14 @@ int nx_pipeline_build(nx_pipeline_t* p, pm4_t* c, const nx_job_t* job)
     uint32_t samp[4];
     nx_make_ssharp(samp, 1);
     nx_image_t t1 = linear_img(p->tmp_img, p->W, p->H);
-    const nx_image_t* warp_dst = job->post == NX_POST_NONE ? job->out_mid : &t1;
+    int any_post = job->post != NX_POST_NONE || job->aa;
+    const nx_image_t* warp_dst = any_post ? &t1 : job->out_mid;
     ka_warp_t w = { tsharp(&x, job->prev), tsharp(&x, job->cur), put_desc(&x, samp, 4), p->flow4,
                     p->h4, p->w4, tsharp(&x, warp_dst), p->H, p->W };
     run(&x, K_WARP_BLEND, &w, sizeof w, p->W, p->H);
 
-    // 5. FSR1 sobre el generado y sobre el real, para que no "parpadee" la nitidez
-    if (job->post != NX_POST_NONE) {
+    // 5. SMAA / FSR1 sobre el generado y sobre el real, para que no "parpadee" la imagen
+    if (any_post) {
         post(&x, job, &t1, job->out_mid);
         if (job->out_real)
             post(&x, job, job->cur, job->out_real);

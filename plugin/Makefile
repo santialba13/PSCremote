@@ -1,99 +1,33 @@
-# Makefile del plugin (basado en GoldHEN_Plugins_Repository, licencia GPL-3.0).
-# Copiar esta carpeta como GoldHEN_Plugins_Repository/plugin_src/vcfg_nx y ejecutar make
-# con OO_PS4_TOOLCHAIN y GOLDHEN_SDK definidos.
-# Library metadata.
+# Compila vcfg_nx.prx (plugin de GoldHEN).
+#   make OO_PS4_TOOLCHAIN=/ruta/OpenOrbis/PS4Toolchain GOLDHEN_SDK=/ruta/GoldHEN_Plugins_SDK
+# GOLDHEN_SDK tiene que estar compilado antes (make en su carpeta: libGoldHEN_Hook.a y build/crtprx.o).
+TOOLCHAIN := $(OO_PS4_TOOLCHAIN)
+GH_SDK    := $(GOLDHEN_SDK)
+OUT       := build
+TARGET    := $(OUT)/vcfg_nx.prx
 
-DEBUG_FLAGS = -D__FINAL__=1
-LOG_TYPE = -D__USE_PRINTF__
-BUILD_TYPE = _final
+LIBS := -lGoldHEN_Hook -lSceLibcInternal -lkernel -lSceSysmodule -lSceVideoOut -lSceGnmDriver -lScePad
 
-ifeq ($(DEBUG),1)
-    DEBUG_FLAGS = -D__FINAL__=0
-    BUILD_TYPE = _debug
-endif
+CFLAGS  := --target=x86_64-pc-freebsd12-elf -fPIC -funwind-tables -O2 -Wall -Wno-unused-parameter \
+           -isysroot $(TOOLCHAIN) -isystem $(TOOLCHAIN)/include -I$(GH_SDK)/include -Iinclude -Isource -I../third_party/smaa
+LDFLAGS := -m elf_x86_64 -pie --script $(TOOLCHAIN)/link.x -e _init --eh-frame-hdr \
+           -L$(TOOLCHAIN)/lib -L$(GH_SDK) $(LIBS)
 
-TYPE         := $(BUILD_TYPE)
-FINAL        := $(DEBUG_FLAGS)
-BUILD_FOLDER := $(shell pwd)/../../bin/plugins
-OUTPUT_PRX   := $(shell basename $(CURDIR))
-TARGET       := $(BUILD_FOLDER)/prx$(TYPE)/$(OUTPUT_PRX)
-TARGET_ELF   := $(BUILD_FOLDER)/elf$(TYPE)/$(OUTPUT_PRX)
-TARGETSTUB   := $(OUTPUT_PRX).so
+SRCS := $(wildcard source/*.c)
+OBJS := $(patsubst source/%.c,$(OUT)/%.o,$(SRCS))
 
-# Libraries linked into the ELF.
-LIBS := -lSceLibcInternal -lSceVideoOut -lSceGnmDriver -lScePad -lGoldHEN_Hook -lkernel -lSceSysmodule
+all: $(TARGET)
 
-EXTRAFLAGS := $(DEBUG_FLAGS) $(LOG_TYPE) -fcolor-diagnostics -Wall
+$(OUT)/%.o: source/%.c include/nx_shaders.h include/nxflow_weights.h
+	@mkdir -p $(OUT)
+	clang $(CFLAGS) -c -o $@ $<
 
-# You likely won't need to touch anything below this point.
-# Root vars
-TOOLCHAIN     := $(OO_PS4_TOOLCHAIN)
-GH_SDK        := $(GOLDHEN_SDK)
-PROJDIR       := ../$(shell basename $(CURDIR))/source
-INTDIR        := ../$(shell basename $(CURDIR))/build
-INCLUDEDIR    := ../$(shell basename $(CURDIR))/include
-COMMON_DIR    := ../../common
-
-# Define objects to build
-CFILES      := $(wildcard $(PROJDIR)/*.c)
-CPPFILES    := $(wildcard $(PROJDIR)/*.cpp)
-COMMONFILES := $(wildcard $(COMMONDIR)/*.cpp)
-OBJS        := $(patsubst $(PROJDIR)/%.c, $(INTDIR)/%.o, $(CFILES)) $(patsubst $(PROJDIR)/%.cpp, $(INTDIR)/%.o, $(CPPFILES)) $(patsubst $(COMMONDIR)/%.cpp, $(INTDIR)/%.o, $(COMMONFILES))
-STUBOBJS    := $(patsubst $(PROJDIR)/%.c, $(INTDIR)/%.o, $(CFILES)) $(patsubst $(PROJDIR)/%.cpp, $(INTDIR)/%.o.stub, $(CPPFILES)) $(patsubst $(COMMONDIR)/%.cpp, $(INTDIR)/%.o.stub, $(COMMONFILES))
-
-# Define final C/C++ flags
-CFLAGS      := $(FINAL) --target=x86_64-pc-freebsd12-elf -fPIC -funwind-tables -c $(EXTRAFLAGS) -isysroot $(TOOLCHAIN) -isystem $(TOOLCHAIN)/include -I$(GH_SDK)/include -I$(INCLUDEDIR) -I$(COMMON_DIR) $(O_FLAG)
-CXXFLAGS    := $(CFLAGS) -isystem $(TOOLCHAIN)/$(INCLUDEDIR)/c++/v1
-LDFLAGS     := -m elf_x86_64 -pie --script $(TOOLCHAIN)/link.x -e _init --eh-frame-hdr -L$(TOOLCHAIN)/lib -L$(GH_SDK) $(LIBS) 
-
-# Create the intermediate directory incase it doesn't already exist.
-_unused     := $(shell mkdir -p $(INTDIR))
-
-# Check for linux vs macOS and account for clang/ld path
-UNAME_S     := $(shell uname -s)
-
-ifeq ($(UNAME_S),Linux)
-        CC      := clang
-        CCX     := clang++
-        LD      := ld.lld
-        CDIR    := linux
-endif
-ifeq ($(UNAME_S),Darwin)
-        CC      := /usr/local/opt/llvm/bin/clang
-        CCX     := /usr/local/opt/llvm/bin/clang++
-        LD      := /usr/local/opt/llvm/bin/ld.lld
-        CDIR    := macos
-endif
-
-$(TARGET): $(INTDIR) $(OBJS)
-	$(LD) $(GH_SDK)/build/crtprx.o $(INTDIR)/*.o -o $(TARGET_ELF).elf $(LDFLAGS)
-	$(TOOLCHAIN)/bin/$(CDIR)/create-fself -in=$(TARGET_ELF).elf -out=$(TARGET_ELF).oelf --lib=$(TARGET).prx --paid 0x3800000000000011
-
-$(TARGETSTUB): $(INTDIR) $(STUBOBJS)
-	$(CC) $(INTDIR)/*.o.stub -o $(TARGETSTUB) -target x86_64-pc-linux-gnu -shared -fuse-ld=lld -ffreestanding -nostdlib -fno-builtin -L$(TOOLCHAIN)/lib $(LIBS)
-
-$(INTDIR)/%.o: $(PROJDIR)/%.c
-	$(CC) $(CFLAGS) -o $@ $<
-
-$(INTDIR)/%.o: $(PROJDIR)/%.cpp
-	$(CCX) $(CXXFLAGS) -o $@ $<
-
-$(INTDIR)/%.o.stub: $(PROJDIR)/%.c
-	$(CC) -target x86_64-pc-linux-gnu -ffreestanding -nostdlib -fno-builtin -fPIC $(O_FLAG) -s -c -o $@ $<
-
-$(INTDIR)/%.o.stub: $(PROJDIR)/%.cpp
-	$(CCX) -target x86_64-pc-linux-gnu -ffreestanding -nostdlib -fno-builtin -fPIC $(O_FLAG) -s -c -o $@ $<
-
-build-info:
-	$(shell echo "#define GIT_COMMIT \"$(shell git rev-parse HEAD)\"" > $(COMMON_DIR)/git_ver.h)
-	$(shell echo "#define GIT_VER \"$(shell git branch --show-current)\"" >> $(COMMON_DIR)/git_ver.h)
-	$(shell echo "#define GIT_NUM $(shell git rev-list HEAD --count)" >> $(COMMON_DIR)/git_ver.h)
-	$(shell echo "#define BUILD_DATE \"$(shell date '+%b %d %Y @ %T')\"" >> $(COMMON_DIR)/git_ver.h)
-
-.PHONY: clean
-.DEFAULT_GOAL := all
-
-all: build-info $(TARGET)
+$(TARGET): $(OBJS)
+	ld.lld $(GH_SDK)/build/crtprx.o $(OBJS) -o $(OUT)/vcfg_nx.elf $(LDFLAGS)
+	$(TOOLCHAIN)/bin/linux/create-fself -in=$(OUT)/vcfg_nx.elf -out=$(OUT)/vcfg_nx.oelf \
+	    --lib=$@ --paid 0x3800000000000011
 
 clean:
-	rm -rf $(TARGET) $(TARGETSTUB) $(INTDIR) $(OBJS)
+	rm -rf $(OUT)
+
+.PHONY: all clean

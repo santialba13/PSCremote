@@ -19,7 +19,7 @@ FSR, con un coste de GPU de pocos milisegundos por fotograma generado.
         │     NXFlow nivel B (1/8, interno 1/16): residuo
         │     NXFlow nivel C (1/4, interno 1/8, 16 canales): residuo fino y máscara a 4 px
         │     warp_blend 1080p: backward-warp de N-1 y N con el sampler bilineal + mezcla
-        │     [FSR1: EASU (si el juego renderiza < salida) + RCAS] en intermedio Y real
+        │     [SMAA 1x] [FSR1: EASU (si el juego renderiza < salida) + RCAS] en intermedio Y real
         │     → flip del intermedio (VSYNC)
         │
         └─ 3. flip del real (VSYNC, un vblank después)
@@ -44,14 +44,15 @@ Así nunca rinde peor que el original y el entrenamiento converge rápido.
 | NXFlow (17 conv 3x3: A y B 32 canales a 1/16, C 16 canales a 1/8) | ~1,25 GMAC | 1,5-3,5 ms (según eficiencia) |
 | warp + mezcla 1080p | 2 muestras bilineales por píxel | ~0,3 ms |
 | RCAS (real + generado) | 5 lecturas por píxel ×2 | ~0,3 ms |
-| **Total** | | **~3-5 ms** |
+| SMAA 1x (real + generado) | 3 pases; la búsqueda solo en píxeles de borde | ~1-1,5 ms |
+| **Total** | | **~4-6,5 ms** |
 
 Son estimaciones a partir de 1,84 TFLOPS y del ancho de banda de la GPU de
 PS4, no mediciones. La GPU de la consola ya está ocupada ~33 ms por el juego,
 así que esto solo cabe en juegos que no usan el 100 % de la GPU; hay que
 medirlo en consola (el plugin original mide sus pasadas con timestamps de GPU).
 
-Memoria: 70 MiB (1080p, FG + RCAS) + 4 buffers de salida. Lo más pesado es la
+Memoria: 90 MiB de trabajo (1080p, FG + SMAA + RCAS) + 4 buffers de salida (33 MiB). Lo más pesado es la
 pirámide de luma en float32 de dos fotogramas (22 MiB); pasarla a 8/16 bits es
 la optimización obvia.
 
@@ -105,6 +106,15 @@ la optimización obvia.
 Para mejorar el modelo, lo más rentable es entrenar con capturas reales del
 juego objetivo: grabar gameplay a 60 fps (o 30 fps), pasarlo por
 `model/data.py --videos ...` y reentrenar.
+
+## SMAA 1x
+
+`shaders/smaa.cl` es una traducción de `SMAA.hlsl` a compute y a coordenadas
+en píxeles (preset HIGH sin búsqueda diagonal, con detección de esquinas).
+Usa las texturas precalculadas Area (160x560 RG8) y Search (64x16 R8)
+originales, y guarda bordes y pesos en 8 bits como el SMAA original. Se
+aplica sobre la imagen a resolución del juego, antes de EASU/RCAS, tanto al
+fotograma generado como al real.
 
 ## Qué falta validar en una consola
 

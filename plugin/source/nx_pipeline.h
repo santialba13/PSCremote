@@ -1,6 +1,6 @@
 // Pipeline de GPU de VCFG-NX: arma el DCB que genera un fotograma intermedio
 // (block-matching + NXFlow niveles A/B a 1/8 y C a 1/4 + warp) y opcionalmente
-// lo pasa por FSR1.
+// lo pasa por SMAA 1x y/o FSR1.
 // C portable: la parte especifica de PS4 (memoria, hooks, flips) esta en main.c.
 #pragma once
 #include <stddef.h>
@@ -33,7 +33,8 @@ typedef struct {
     // tensores
     uint64_t luma[2][3], a8[2], a4[2];
     uint64_t vec[3], vtmp, flow5, delta5, flow4, delta4, lvl_in, hA, hB, hR, up;
-    uint64_t tmp_img, tmp_img2;     // imagenes intermedias para el post-proceso
+    uint64_t tmp_img, tmp_img2, tmp_aa;   // imagenes intermedias para el post-proceso
+    uint64_t smaa_edges, smaa_weights, smaa_area, smaa_search;
     uint64_t kernarg_base[2], desc_base[2];
     uint64_t label_gpu;
     volatile uint32_t* label_cpu;
@@ -44,9 +45,10 @@ typedef struct {
     const nx_image_t* prev;     // fotograma N-1 del juego
     const nx_image_t* cur;      // fotograma N del juego
     const nx_image_t* out_mid;  // destino del fotograma generado (buffer del plugin)
-    const nx_image_t* out_real; // destino del real post-procesado (NULL si post = NONE)
+    const nx_image_t* out_real; // destino del real post-procesado (NULL si post = NONE y aa = 0)
     int slot;                   // 0/1: alterna por fotograma (doble buffer de kernargs)
     nx_post_t post;
+    int aa;                     // 1 = SMAA 1x antes del escalado / nitidez
     float sharpness_stops;      // 0 = maxima nitidez, 2 = suave (como FSR)
     uint32_t seq;               // valor que el GPU escribe en label al terminar
 } nx_job_t;

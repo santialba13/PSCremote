@@ -28,6 +28,9 @@ typedef struct { uint64_t in, out; int32_t By, Bx; } ka_median_t;
 typedef struct { uint64_t f0, f1, samp, low5; int32_t h4, w4; uint64_t dst; int32_t H, W; } ka_warp_t;
 typedef struct { uint64_t src; int32_t H, W; uint64_t dst; int32_t Ho, Wo; } ka_easu_t;
 typedef struct { uint64_t src, dst; int32_t W, H; float sharp; int32_t denoise; } ka_rcas_t;
+typedef struct { uint64_t src; int32_t W, H; uint64_t edges; } ka_smaa_edges_t;
+typedef struct { uint64_t edges; int32_t W, H; uint64_t area, search, weights; } ka_smaa_weights_t;
+typedef struct { uint64_t src, samp, weights; int32_t W, H; uint64_t dst; } ka_smaa_blend_t;
 
 #define O(t, f) (int)offsetof(t, f)
 typedef struct { const char* name; int n; int offs[16]; } layout_t;
@@ -55,6 +58,12 @@ static const layout_t layouts[] = {
         O(ka_easu_t, Ho), O(ka_easu_t, Wo) } },
     { "rcas", 6, { O(ka_rcas_t, src), O(ka_rcas_t, dst), O(ka_rcas_t, W), O(ka_rcas_t, H),
         O(ka_rcas_t, sharp), O(ka_rcas_t, denoise) } },
+    { "smaa_edges", 4, { O(ka_smaa_edges_t, src), O(ka_smaa_edges_t, W), O(ka_smaa_edges_t, H),
+        O(ka_smaa_edges_t, edges) } },
+    { "smaa_weights", 6, { O(ka_smaa_weights_t, edges), O(ka_smaa_weights_t, W), O(ka_smaa_weights_t, H),
+        O(ka_smaa_weights_t, area), O(ka_smaa_weights_t, search), O(ka_smaa_weights_t, weights) } },
+    { "smaa_blend", 6, { O(ka_smaa_blend_t, src), O(ka_smaa_blend_t, samp), O(ka_smaa_blend_t, weights),
+        O(ka_smaa_blend_t, W), O(ka_smaa_blend_t, H), O(ka_smaa_blend_t, dst) } },
 };
 
 static int fails = 0;
@@ -116,7 +125,7 @@ static void walk_pm4(const uint32_t* b, size_t n, int* dispatches, int* sh_write
     CHECK(i == n, "el DCB no termina en un limite de paquete (%zu vs %zu)", i, n);
 }
 
-static void run_case(int W, int H, int Wo, int Ho, nx_post_t post, const char* label)
+static void run_case(int W, int H, int Wo, int Ho, nx_post_t post, int aa, const char* label)
 {
     size_t sz = nx_pipeline_mem_size(W, H, Wo, Ho);
     nx_arena_t a = { calloc(1, sz), 0x0000004000000000ull, sz, 0 };
@@ -134,8 +143,9 @@ static void run_case(int W, int H, int Wo, int Ho, nx_post_t post, const char* l
     for (int frame = 0; frame < 3; ++frame) {
         pm4_t c;
         pm4_init(&c, dcb, sizeof dcb / 4);
-        nx_job_t job = { frame & 1 ? &f1 : &f0, frame & 1 ? &f0 : &f1, &mid,
-                         post == NX_POST_NONE ? NULL : &real, frame & 1, post, 0.25f, 100 + frame };
+        nx_job_t job = { .prev = frame & 1 ? &f1 : &f0, .cur = frame & 1 ? &f0 : &f1, .out_mid = &mid,
+                         .out_real = post == NX_POST_NONE && !aa ? NULL : &real, .slot = frame & 1,
+                         .post = post, .aa = aa, .sharpness_stops = 0.25f, .seq = 100 + frame };
         r = nx_pipeline_build(p, &c, &job);
         CHECK(r == 0, "%s: build devolvio %d", label, r);
         int d, s;
@@ -152,10 +162,12 @@ static void run_case(int W, int H, int Wo, int Ho, nx_post_t post, const char* l
 int main(void)
 {
     check_layouts();
-    run_case(1920, 1080, 1920, 1080, NX_POST_NONE, "1080p FG");
-    run_case(1920, 1080, 1920, 1080, NX_POST_RCAS, "1080p FG + RCAS");
-    run_case(1600, 900, 1920, 1080, NX_POST_EASU, "900p -> 1080p FG + FSR1");
-    run_case(1280, 720, 1920, 1080, NX_POST_EASU, "720p -> 1080p FG + FSR1");
+    run_case(1920, 1080, 1920, 1080, NX_POST_NONE, 0, "1080p FG");
+    run_case(1920, 1080, 1920, 1080, NX_POST_RCAS, 0, "1080p FG + RCAS");
+    run_case(1920, 1080, 1920, 1080, NX_POST_NONE, 1, "1080p FG + SMAA");
+    run_case(1920, 1080, 1920, 1080, NX_POST_RCAS, 1, "1080p FG + SMAA + RCAS");
+    run_case(1600, 900, 1920, 1080, NX_POST_EASU, 1, "900p->1080p FG+SMAA+FSR1");
+    run_case(1280, 720, 1920, 1080, NX_POST_EASU, 1, "720p->1080p FG+SMAA+FSR1");
     printf(fails ? "\n%d FALLOS\n" : "\nOK: todo en orden\n", fails);
     return fails != 0;
 }

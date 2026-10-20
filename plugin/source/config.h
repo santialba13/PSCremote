@@ -3,6 +3,7 @@
 typedef struct {
     int framegen;          // 1 = generar fotogramas intermedios (30 -> 60)
     int post;              // 0 = nada, 1 = RCAS, 2 = FSR1 (EASU + RCAS)
+    int aa;                // 1 = SMAA 1x (antialiasing de bordes) en reales y generados
     float sharpness;       // stops de FSR: 0 = maxima nitidez, 2 = suave
     int out_w, out_h;      // salida de EASU cuando el juego registra buffers mas chicos
     int max_game_fps;      // si el juego ya corre por encima, FG se desactiva solo
