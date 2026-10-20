@@ -4,7 +4,7 @@
 //   de shaders/*.cl compilados para x86 (-DNX_HOST).
 // La salida se compara con model/reference_runtime.py (ver test_gpu_path.py).
 //
-//   gpu_emu W H frame0.rgba frame1.rgba out_mid.rgba [post: 0 none, 1 rcas, 2 smaa] [out_real.rgba]
+//   gpu_emu W H frame0.rgba frame1.rgba out_mid.rgba [modo 0-4, ver main] [out_real.rgba]
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -37,9 +37,11 @@ static void* H(uint64_t gpu)
 }
 
 // --------------------------------------------- servicios para los kernels
-static int gx, gy;
+static int gx, gy, grx, gry;
 int nx_host_gid_x(void) { return gx; }
 int nx_host_gid_y(void) { return gy; }
+int nx_host_group_x(void) { return grx; }
+int nx_host_group_y(void) { return gry; }
 
 typedef struct { uint8_t* base; int w, h, pitch; } img_t;
 
@@ -107,6 +109,9 @@ void rcas(P, P, int, int, float, int);
 void smaa_edges(P, int, int, P);
 void smaa_weights(P, int, int, P, P, P);
 void smaa_blend(P, P, P, int, int, P);
+void wg_nxsr(P, int, int, P, P, float);
+void osd_draw(P, int, int, P, int, int, P, int, int, int, int);
+void copy_rect(P, P, int, int, int, int);
 
 static const uint8_t* ka;
 static const uint8_t* offs;
@@ -141,6 +146,9 @@ static void call(const char* n)
     else if (IS("smaa_edges")) smaa_edges(ap(0), ai(1), ai(2), ap(3));
     else if (IS("smaa_weights")) smaa_weights(ap(0), ai(1), ai(2), ap(3), ap(4), ap(5));
     else if (IS("smaa_blend")) smaa_blend(ap(0), ap(1), ap(2), ai(3), ai(4), ap(5));
+    else if (IS("wg_nxsr")) wg_nxsr(ap(0), ai(1), ai(2), ap(3), ap(4), af(5));
+    else if (IS("osd_draw")) osd_draw(ap(0), ai(1), ai(2), ap(3), ai(4), ai(5), ap(6), ai(7), ai(8), ai(9), ai(10));
+    else if (IS("copy_rect")) copy_rect(ap(0), ap(1), ai(2), ai(3), ai(4), ai(5));
     else { fprintf(stderr, "kernel desconocido %s\n", n); exit(4); }
 }
 
@@ -167,9 +175,15 @@ static int run_dcb(const nx_pipeline_t* p, const uint32_t* b, size_t n)
             ka = H(kptr);
             offs = s->arg_offsets;
             uint32_t tx = SH(R_COMPUTE_NUM_THREAD_X), ty = SH(R_COMPUTE_NUM_THREAD_X + 4);
-            for (gy = 0; gy < (int)(body[1] * ty); ++gy)
-                for (gx = 0; gx < (int)(body[0] * tx); ++gx)
-                    call(s->name);
+            if (!strncmp(s->name, "wg_", 3)) {   // kernels por grupo (LDS + barreras)
+                for (gry = 0; gry < (int)body[1]; ++gry)
+                    for (grx = 0; grx < (int)body[0]; ++grx)
+                        call(s->name);
+            } else {
+                for (gy = 0; gy < (int)(body[1] * ty); ++gy)
+                    for (gx = 0; gx < (int)(body[0] * tx); ++gx)
+                        call(s->name);
+            }
             ++dispatches;
         } else if (op == PM4_EVENT_WRITE_EOP) {
             uint64_t addr = body[1] | (uint64_t)(body[2] & 0xFFFF) << 32;
@@ -196,14 +210,58 @@ static void save_rgba(const char* path, const uint8_t* img, int W, int Hh, int p
     fclose(f);
 }
 
+#include "../include/nx_font.h"
+#include "../source/nx_osd.h"
+
+// modo OSD: dibuja una grilla de texto (cols x rows) sobre frame0 con el kernel osd_draw
+static int osd_mode(int W, int Hh, const char* frame, const char* grid, int cols, int rows, int sel, const char* out)
+{
+    int pitch = (W + 63) / 64 * 64;
+    size_t bytes = (size_t)pitch * Hh * 4;
+    uint8_t* img = calloc(1, bytes);
+    uint8_t* src = load_rgba(frame, (size_t)W * Hh * 4);
+    for (int y = 0; y < Hh; ++y) memcpy(img + (size_t)y * pitch * 4, src + (size_t)y * W * 4, (size_t)W * 4);
+    size_t msz = nx_osd_mem_size() + 8192 + sizeof nx_font8x16;
+    uint8_t* mem = aligned_alloc(256, (msz + 255) / 256 * 256);
+    uint64_t base = 0x0000006000000000ull;
+    map_region(base, mem, msz);
+    map_region(0x0000005000000000ull, img, bytes);
+    nx_osd_ctx_t o;
+    if (nx_osd_init(&o, mem, base) != 0) return 1;
+    size_t off = nx_osd_mem_size();
+    uint8_t* text = load_rgba(grid, (size_t)cols * rows);
+    memcpy(mem + off, text, (size_t)cols * rows);
+    memcpy(mem + off + 4096, nx_font8x16, sizeof nx_font8x16);
+    nx_osd_t d = { base + off, base + off + 4096, cols, rows, 0, 0, 2, sel };
+    d.x0 = (W - (cols * 16 + 24)) / 2; d.y0 = (Hh - (rows * 32 + 24)) / 2;
+    const nx_osd_t* list[2] = { &d, NULL };
+    nx_image_t im = { 0x0000005000000000ull, (uint32_t)W, (uint32_t)Hh, (uint32_t)pitch, NX_FMT_RGBA8_UNORM,
+                      NX_TILE_DISPLAY_LINEAR_ALIGNED };
+    static uint32_t dcb[4096];
+    pm4_t c;
+    pm4_init(&c, dcb, 4096);
+    nx_osd_begin(&o, 0);
+    if (nx_osd_draw(&o, &c, 0, &im, list, 2) != 0) return 1;
+    // el emulador busca el kernel por direccion: registro la del OSD
+    static nx_pipeline_t fake;
+    fake.shader[0] = (int)(o.sh_draw - nx_shaders); fake.shader_gpu[0] = o.code_draw;
+    fake.shader[1] = (int)(o.sh_copy - nx_shaders); fake.shader_gpu[1] = o.code_copy;
+    if (run_dcb(&fake, dcb, c.n) < 0) return 1;
+    save_rgba(out, img, W, Hh, pitch);
+    return 0;
+}
+
 int main(int argc, char** argv)
 {
+    if (argc >= 9 && !strcmp(argv[1], "osd"))
+        return osd_mode(atoi(argv[2]), atoi(argv[3]), argv[4], argv[5], atoi(argv[6]), atoi(argv[7]), atoi(argv[8]),
+                        argv[9]);
     if (argc < 6) { fprintf(stderr, "uso: %s W H f0.rgba f1.rgba out_mid.rgba [post] [out_real.rgba]\n", argv[0]); return 1; }
     int W = atoi(argv[1]), Hh = atoi(argv[2]), post = argc > 6 ? atoi(argv[6]) : 0;
     int pitch = (W + 63) / 64 * 64;
     size_t img_bytes = (size_t)pitch * Hh * 4;
     // los fotogramas del juego, con pitch de 64 px como los buffers de VideoOut
-    uint8_t* frames = calloc(4, img_bytes);
+    uint8_t* frames = calloc(5, img_bytes);
     for (int k = 0; k < 2; ++k) {
         uint8_t* src = load_rgba(argv[3 + k], (size_t)W * Hh * 4);
         for (int y = 0; y < Hh; ++y)
@@ -211,7 +269,7 @@ int main(int argc, char** argv)
         free(src);
     }
     uint64_t fgpu = 0x0000005000000000ull;
-    map_region(fgpu, frames, 4 * img_bytes);
+    map_region(fgpu, frames, 5 * img_bytes);
 
     size_t sz = nx_pipeline_mem_size(W, Hh, W, Hh);
     nx_arena_t a = { calloc(1, sz), 0x0000004000000000ull, sz, 0 };
@@ -219,16 +277,19 @@ int main(int argc, char** argv)
     static nx_pipeline_t p;
     if (nx_pipeline_init(&p, W, Hh, W, Hh, a) != 0) { fprintf(stderr, "init fallo\n"); return 1; }
 
-    nx_image_t img[4];
-    for (int k = 0; k < 4; ++k)
+    nx_image_t img[5];
+    for (int k = 0; k < 5; ++k)
         img[k] = (nx_image_t){ fgpu + k * img_bytes, (uint32_t)W, (uint32_t)Hh, (uint32_t)pitch,
                                NX_FMT_RGBA8_UNORM, NX_TILE_DISPLAY_LINEAR_ALIGNED };
     static uint32_t dcb[64 * 1024];
     pm4_t c;
     pm4_init(&c, dcb, sizeof dcb / 4);
+    // modos: 0 FG, 1 FG+RCAS, 2 FG+SMAA, 3 solo NXSR (k=1), 4 FG+NXSR procesando antes de interpolar
     nx_job_t job = { .prev = &img[0], .cur = &img[1], .out_mid = &img[2], .out_real = post ? &img[3] : NULL,
                      .slot = 1, .post = post == 1 ? NX_POST_RCAS : NX_POST_NONE, .aa = post == 2,
-                     .sharpness_stops = 0.25f, .seq = 7 };
+                     .sharpness_stops = 0.25f, .seq = 7, .fg = post != 3,
+                     .sr = post >= 3, .sr_k = 1.0f, .enhance_first = post == 4,
+                     .prev_real = &img[4], .prev_real_valid = 0 };
     if (nx_pipeline_build(&p, &c, &job) != 0) { fprintf(stderr, "build fallo\n"); return 1; }
     int d = run_dcb(&p, dcb, c.n);
     if (d < 0) return 1;

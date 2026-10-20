@@ -7,6 +7,7 @@
 #include <stdint.h>
 
 #include "gcn_desc.h"
+#include "nx_osd.h"
 #include "pm4.h"
 
 typedef enum {
@@ -34,7 +35,7 @@ typedef struct {
     uint64_t luma[2][3], a8[2], a4[2];
     uint64_t vec[3], vtmp, flow5, delta5, flow4, delta4, lvl_in, hA, hB, hR, up;
     uint64_t tmp_img, tmp_img2, tmp_aa;   // imagenes intermedias para el post-proceso
-    uint64_t smaa_edges, smaa_weights, smaa_area, smaa_search;
+    uint64_t smaa_edges, smaa_weights, smaa_area, smaa_search, nxsr_w;
     uint64_t kernarg_base[2], desc_base[2];
     uint64_t label_gpu;
     volatile uint32_t* label_cpu;
@@ -51,10 +52,22 @@ typedef struct {
     int aa;                     // 1 = SMAA 1x antes del escalado / nitidez
     float sharpness_stops;      // 0 = maxima nitidez, 2 = suave (como FSR)
     uint32_t seq;               // valor que el GPU escribe en label al terminar
+    int fg;                     // 0 = solo post-proceso del fotograma real
+    int sr;                     // NXSR (reemplaza a RCAS)
+    float sr_k;                 // intensidad de NXSR, 0..1 (nunca extrapola)
+    int rcas;                   // nitidez RCAS
+    int enhance_first;          // FG sobre los reales ya procesados (misma resolucion)
+    const nx_image_t* prev_real;  // real procesado del fotograma anterior
+    int prev_real_valid;
+    int compare;                // mitad izquierda sin procesar
+    nx_osd_ctx_t* osd_ctx;      // menu / contador (NULL = nada)
+    const nx_osd_t* osd[2];
 } nx_job_t;
 
 size_t nx_pipeline_mem_size(int W, int H, int Wo, int Ho);
 // arena: memoria GPU ya mapeada de al menos nx_pipeline_mem_size() bytes
 int nx_pipeline_init(nx_pipeline_t* p, int W, int H, int Wo, int Ho, nx_arena_t arena);
+// solo OSD sobre job->cur (sin memoria de efectos: menu en modo seguro)
+int nx_pipeline_build_osd_only(nx_osd_ctx_t* o, pm4_t* c, const nx_job_t* job, uint64_t label_gpu);
 // escribe el DCB del trabajo en "c"; devuelve 0 si todo bien
 int nx_pipeline_build(nx_pipeline_t* p, pm4_t* c, const nx_job_t* job);

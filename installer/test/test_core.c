@@ -1,0 +1,58 @@
+// Test en PC de la logica del instalador: plugins.ini y param.sfo.
+//   cc -I../source test_core.c ../source/inst_core.c -o test_core && ./test_core
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+
+#include "inst_core.h"
+
+static int fails;
+#define CHECK(c, m) do { if (!(c)) { printf("FALLO: %s\n", m); ++fails; } } while (0)
+
+static void write_sfo(const char* path, const char* title)
+{
+    // param.sfo minimo con dos claves (APP_VER, TITLE)
+    unsigned char b[256] = { 0, 'P', 'S', 'F', 1, 1, 0, 0 };
+    const char keys[] = "APP_VER\0TITLE\0";
+    int nk = 2, keyoff = 20 + 16 * nk, dataoff = keyoff + (int)sizeof keys + 1;
+    b[8] = keyoff; b[12] = dataoff; b[16] = nk;
+    memcpy(b + keyoff, keys, sizeof keys);
+    unsigned char* e = b + 20;
+    e[0] = 0; e[4] = 6; e[8] = 8; e[12] = 0;                    // APP_VER
+    memcpy(b + dataoff, "01.00", 6);
+    e += 16; e[0] = 8; e[4] = (unsigned char)(strlen(title) + 1); e[8] = 128; e[12] = 8;   // TITLE
+    memcpy(b + dataoff + 8, title, strlen(title) + 1);
+    FILE* f = fopen(path, "wb"); fwrite(b, 1, sizeof b, f); fclose(f);
+}
+
+int main(void)
+{
+    const char* ini0 = "; plugins de GoldHEN\n[default]\n/data/GoldHEN/plugins/afr.prx\n\n[CUSA00207]\n/data/GoldHEN/plugins/x.prx\n";
+    char* a = inst_ini_add(ini0, "CUSA00207");
+    CHECK(a && inst_ini_has(a, "CUSA00207"), "agregar en seccion existente");
+    CHECK(strstr(a, "x.prx") && strstr(a, "afr.prx"), "no conservo lo existente");
+    CHECK(inst_ini_add(a, "CUSA00207") == NULL, "no es idempotente");
+    char* b = inst_ini_add(a, "CUSA08519");
+    CHECK(b && inst_ini_has(b, "CUSA08519") && !inst_ini_has(b, "default"), "seccion nueva");
+    char* c = inst_ini_remove(b, "CUSA00207");
+    CHECK(c && !inst_ini_has(c, "CUSA00207") && inst_ini_has(c, "CUSA08519") && strstr(c, "x.prx"), "quitar de una seccion");
+    char* d = inst_ini_remove_all(c);
+    CHECK(d && !strstr(d, "vcfg_nx.prx") && strstr(d, "afr.prx") && strstr(d, "x.prx"), "desinstalar");
+    printf("--- plugins.ini tras agregar 2 juegos ---\n%s---\n", b);
+
+    mkdir("tmp_app", 0755); mkdir("tmp_app/CUSA00207", 0755); mkdir("tmp_app/CUSA08519", 0755);
+    mkdir("tmp_app/NPXS00001", 0755);
+    mkdir("tmp_meta", 0755); mkdir("tmp_meta/CUSA00207", 0755); mkdir("tmp_meta/CUSA08519", 0755);
+    write_sfo("tmp_meta/CUSA00207/param.sfo", "Bloodborne");
+    write_sfo("tmp_meta/CUSA08519/param.sfo", "Red Dead Redemption 2");
+    inst_game_t g[8];
+    int n = inst_list_games("tmp_app", "tmp_meta", g, 8);
+    CHECK(n == 2, "lista de juegos (deberia ignorar NPXS)");
+    CHECK(n == 2 && !strcmp(g[0].title, "Bloodborne") && !strcmp(g[1].title, "Red Dead Redemption 2"), "titulos del param.sfo");
+    for (int i = 0; i < n; ++i) printf("juego: %s  %s\n", g[i].id, g[i].title);
+    free(a); free(b); free(c); free(d);
+    system("rm -rf tmp_app tmp_meta");
+    printf(fails ? "%d FALLOS\n" : "OK\n", fails);
+    return fails != 0;
+}

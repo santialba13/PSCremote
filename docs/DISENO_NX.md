@@ -1,4 +1,4 @@
-# VCFG-NX: diseño
+# VCFG-NX 2.0: diseño
 
 Rediseño del frame generator VCFG para PS4 (GoldHEN). Objetivo: 30 → 60 fps
 con menos artefactos que el block-matching puro, más un escalado/nitidez tipo
@@ -115,6 +115,88 @@ Usa las texturas precalculadas Area (160x560 RG8) y Search (64x16 R8)
 originales, y guarda bordes y pesos en 8 bits como el SMAA original. Se
 aplica sobre la imagen a resolución del juego, antes de EASU/RCAS, tanto al
 fotograma generado como al real.
+
+
+## Arquitectura del plugin (2.0)
+
+```
+main.c        hooks de GoldHEN -> llama al motor; implementa la "plataforma" con
+              las funciones reales (memoria directa, VideoOut, Gnm, archivos)
+nx_engine.c   toda la logica: estados, reservas, protecciones, menu, modos
+nx_pipeline.c arma el DCB de un fotograma (FG, SMAA, EASU, NXSR/RCAS, OSD)
+nx_osd.c      menu / contador / comparar con un contexto de pocos KiB
+nx_dispatch.c despacho PM4 comun y la UNICA copia de la tabla de shaders
+```
+
+Como el motor no llama al sistema directamente, `plugin/test/console_sim.c`
+lo ejecuta con una consola simulada (ver "Evaluación segura").
+
+### Estados
+
+| estado | qué hace |
+|---|---|
+| `WAIT_BUFFERS` | el juego todavía no registró sus framebuffers: todo pasa intacto |
+| `WARMUP` | el juego está cargando: **no se reserva nada** durante `warmup_flips` (600 ≈ 20 s) |
+| `RUN` | listo; los efectos solo si hubo memoria |
+| `DEGRADED` | la GPU no dio abasto o el juego cambió sus buffers: solo pasa los fotogramas |
+| `OFF` | formato no soportado (HDR), proceso que no es un juego: sin intervenir |
+
+### Protecciones para que el juego no se cierre
+
+1. **Arranque sin reservas.** Ni `plugin_load` ni el hook de `RegisterBuffers`
+   piden memoria: se espera a que el juego termine de cargar.
+2. **Reserva con margen.** Antes de pedir la memoria de los efectos (~125 MiB a
+   1080p) se mide el bloque libre más grande y se exige dejar `reserve_mb`
+   (192 MiB por defecto) para el juego. Si no alcanza, se reintenta 4 veces y
+   luego los efectos quedan apagados con un aviso. El menú usa una reserva
+   aparte de pocos KiB, así que sigue disponible.
+3. **Modo seguro.** Antes de activar efectos se escribe
+   `/data/vcfg_nx/guard-<TITLE>.txt` = `pending`; tras ~1 minuto estable, `ok`.
+   Si el juego se cerró con `pending`, la sesión siguiente arranca sin
+   efectos (modo seguro) y lo avisa; el usuario puede reactivarlos desde el
+   menú. Con 3 cierres seguidos queda en modo seguro hasta reactivarlo.
+4. **GPU acotada.** Se espera como mucho 4 ms a que termine el trabajo del
+   fotograma anterior; si no terminó, ese fotograma va intacto. 30 seguidos →
+   `DEGRADED`.
+5. **Datos raros → intacto.** Otro handle de VideoOut, índice fuera de rango,
+   `count` 0 o enorme, re-registro de buffers, HDR: el fotograma del juego se
+   envía tal cual, sin tocarlo.
+6. **Solo hooks, sin parches.** No se modifica memoria del juego; todo lo que
+   se escribe en disco está en `/data/vcfg_nx` (y `plugins.ini` desde la app,
+   con copia de seguridad y verificación de lo escrito).
+
+## NXSR (reescalado / realce IA)
+
+Ver `sr/net_sr.py`. Cabeza 3x3 (12→16) sobre el fotograma reordenado a media
+resolución (space-to-depth 2), una capa 3x3 (16→16) con residual y cola 1x1
+(16→12) que vuelve a resolución completa: ~1056 MAC por píxel de salida.
+
+El **limitador** acota cada canal al mínimo/máximo de los 3x3 vecinos del
+fotograma de entrada. Así el residuo puede empinar bordes y limpiar ruido,
+pero no inventar valores nuevos: no hay halos ni grano por construcción. En
+el barrido de arquitecturas, el limitador estricto rindió **mejor** que
+relajarlo o quitarlo (funciona como un buen prior).
+
+En la GPU (`shaders/nxsr.cl`) la red corre en un solo pase: cada grupo de 8x8
+calcula la cabeza para su bloque + 1 de halo en memoria local (LDS, 6,4 KiB),
+y el cuerpo, la cola y el limitador en registros. No hay buffers intermedios
+a pantalla completa (GNMScale advierte que su versión no fusionada pedía
+47 MiB). `tools/gcn_pack.py` escribe el tamaño de LDS en `COMPUTE_PGM_RSRC2`,
+que en GNM lo programa el plugin y no el paquete de despacho.
+
+Con FG activo y misma resolución de salida, NXSR (y SMAA) se aplican **una
+vez** al fotograma real y la generación de fotogramas interpola entre reales
+ya procesados: el intermedio hereda la calidad sin duplicar el coste. El
+modelo de FG no cambió.
+
+## Evaluación segura (sin consola)
+
+| prueba | qué valida |
+|---|---|
+| `plugin/test/console_sim` (ASan + UBSan) | 10 escenarios: arranque, poca memoria, GPU trabada, cierre → modo seguro → reactivar, menú, HDR, juego a 60 fps, re-registro, ForWorkload + 2000 llamadas aleatorias, proceso que no es juego |
+| `plugin/test/host_test` | offsets de argumentos de los 25 kernels vs compilador; DCB bien formado en 6 configuraciones |
+| `test_gpu_path.py`, `test_smaa_path.py`, `test_sr_path.py` | el DCB ejecutado (kernels compilados para x86) coincide con las referencias: FG, SMAA y NXSR con LDS y barreras |
+| `installer/test/test_core.c` (ASan) | edición de `plugins.ini` (conserva lo existente, idempotente, desinstalar) y lectura de `param.sfo` |
 
 ## Qué falta validar en una consola
 

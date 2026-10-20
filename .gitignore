@@ -10,3 +10,9 @@ plugin/test/gpu_emu
 plugin/test/*.o
 installer/build/
 !dist/*.pkg
+plugin/test/console_sim
+*.bin.tmp
+menu_grid.bin
+installer/test/test_core
+installer/test/preview
+*.ppm

@@ -10,16 +10,33 @@
 
 #define NX_WG 8
 #ifdef NX_HOST
-// compilacion para x86 (plugin/test/gpu_emu.c): el emulador recorre la grilla
+// compilacion para x86 (plugin/test/gpu_emu.c): el emulador recorre la grilla.
+// Los kernels "wg_*" se llaman una vez por grupo y recorren sus 64 hilos con
+// WG_BEGIN/WG_END en cada fase (entre fases va WG_BARRIER).
 int nx_host_gid_x(void);
 int nx_host_gid_y(void);
+int nx_host_group_x(void);
+int nx_host_group_y(void);
 #define NX_KERNEL __kernel
 #define GID_X nx_host_gid_x()
 #define GID_Y nx_host_gid_y()
+#define GROUP_X nx_host_group_x()
+#define GROUP_Y nx_host_group_y()
+#define WG_BEGIN for (int lid_ = 0; lid_ < NX_WG * NX_WG; ++lid_) {
+#define WG_END }
+#define LID lid_
+#define WG_BARRIER
 #else
 #define NX_KERNEL __kernel __attribute__((reqd_work_group_size(NX_WG, NX_WG, 1)))
 #define GID_X ((int)(__builtin_amdgcn_workgroup_id_x() * NX_WG + __builtin_amdgcn_workitem_id_x()))
 #define GID_Y ((int)(__builtin_amdgcn_workgroup_id_y() * NX_WG + __builtin_amdgcn_workitem_id_y()))
+#define GROUP_X ((int)__builtin_amdgcn_workgroup_id_x())
+#define GROUP_Y ((int)__builtin_amdgcn_workgroup_id_y())
+#define WG_BEGIN {
+#define WG_END }
+#define LID ((int)(__builtin_amdgcn_workitem_id_y() * NX_WG + __builtin_amdgcn_workitem_id_x()))
+#define WG_BARRIER { __builtin_amdgcn_fence(__ATOMIC_RELEASE, "workgroup"); __builtin_amdgcn_s_barrier(); \
+                     __builtin_amdgcn_fence(__ATOMIC_ACQUIRE, "workgroup"); }
 #endif
 
 typedef __constant const uint* tdesc_t;   // T# (8 dwords) o S# (4 dwords)

@@ -48,6 +48,11 @@ def kernels(path):
             code, code_addr = read(syms[kname])
             assert kd_addr + entry_off == code_addr, kname
             assert private == 0, f"{kname} usa scratch ({private} B): no soportado por el plugin"
+            # En HSA el tamano de LDS lo pone el paquete de despacho; con GNM el plugin
+            # escribe COMPUTE_PGM_RSRC2 tal cual, asi que LDS_SIZE (bits 15-23, en
+            # bloques de 128 dwords = 512 B en GCN 1.1) tiene que ir en el registro.
+            if group:
+                rsrc2 = (rsrc2 & ~(0x1FF << 15)) | (((group + 511) // 512) << 15)
             yield dict(name=kname, code=code, rsrc1=rsrc1, rsrc2=rsrc2, props=props,
                        kernarg_size=kernarg_size, lds=group)
 
@@ -89,6 +94,11 @@ def main():
     for bit, name, _ in PROPS:
         L.append(f"#define NX_PROP_{name} (1u << {bit})")
     L.append("")
+    L.append(f"#define NX_NUM_SHADERS {len(ks)}")
+    L.append("// una sola copia de la tabla en todo el binario: la define nx_dispatch.c")
+    L.append("#ifndef NX_SHADERS_IMPL")
+    L.append("extern const nx_shader_t nx_shaders[NX_NUM_SHADERS];")
+    L.append("#else")
     for k in ks:
         code = k["code"] + b"\0" * (-len(k["code"]) % 4)
         dw = struct.unpack(f"<{len(code) // 4}I", code)
@@ -100,8 +110,7 @@ def main():
         offs = ", ".join(str(x[".offset"]) for x in args) or "0"
         L.append(f"static const uint8_t nx_args_{k['name']}[] = {{ {offs} }};")
     L.append("")
-    L.append(f"#define NX_NUM_SHADERS {len(ks)}")
-    L.append("static const nx_shader_t nx_shaders[NX_NUM_SHADERS] = {")
+    L.append("const nx_shader_t nx_shaders[NX_NUM_SHADERS] = {")
     for k in ks:
         user = (k["rsrc2"] >> 1) & 0x1F
         code_dw = (len(k["code"]) + 3) // 4
@@ -111,6 +120,7 @@ def main():
                  f"nx_args_{k['name']}, {len(md.get('.args', []))}, "
                  f"{md.get('.vgpr_count', 0)}, {md.get('.sgpr_count', 0)} }},")
     L.append("};")
+    L.append("#endif")
     with open(a.out, "w") as f:
         f.write("\n".join(L) + "\n")
     for k in ks:

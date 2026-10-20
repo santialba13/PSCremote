@@ -9,56 +9,77 @@
 void nx_config_defaults(nx_config_t* c)
 {
     c->framegen = 1;
-    c->post = 1;
+    c->sr = 2;
     c->aa = 1;
-    c->sharpness = 0.25f;
+    c->rcas = 0;
+    c->fps_counter = 0;
+    c->compare = 0;
     c->out_w = 1920;
     c->out_h = 1080;
     c->max_game_fps = 48;
-    c->toggle_hold_ms = 1500;
+    c->menu_hold_ms = 1500;
+    c->warmup_flips = 600;     // ~20 s a 30 fps: el juego termina de cargar antes de que reservemos nada
+    c->reserve_mb = 192;
 }
 
-static char* trim(char* s)
-{
-    while (*s == ' ' || *s == '\t') ++s;
-    char* e = s + strlen(s);
-    while (e > s && (e[-1] == ' ' || e[-1] == '\t' || e[-1] == '\r' || e[-1] == '\n')) *--e = 0;
-    return s;
-}
+static int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
-static void parse(nx_config_t* c, const char* path)
+void nx_config_parse(nx_config_t* c, const char* text)
 {
-    FILE* f = fopen(path, "r");
-    if (!f) return;
-    char line[256];
-    while (fgets(line, sizeof line, f)) {
-        char* s = trim(line);
+    char line[160];
+    while (text && *text) {
+        int n = 0;
+        while (*text && *text != '\n' && n < (int)sizeof line - 1) line[n++] = *text++;
+        while (*text && *text != '\n') ++text;
+        if (*text == '\n') ++text;
+        line[n] = 0;
+        char* s = line;
+        while (*s == ' ' || *s == '\t') ++s;
         if (!*s || *s == ';' || *s == '#' || *s == '[') continue;
         char* eq = strchr(s, '=');
         if (!eq) continue;
         *eq = 0;
-        char* k = trim(s);
-        char* v = trim(eq + 1);
-        if (!strcmp(k, "framegen")) c->framegen = atoi(v);
-        else if (!strcmp(k, "post")) c->post = atoi(v);
-        else if (!strcmp(k, "aa")) c->aa = atoi(v) != 0;
-        else if (!strcmp(k, "sharpness")) c->sharpness = (float)atof(v);
-        else if (!strcmp(k, "out_w")) c->out_w = atoi(v);
-        else if (!strcmp(k, "out_h")) c->out_h = atoi(v);
-        else if (!strcmp(k, "max_game_fps")) c->max_game_fps = atoi(v);
-        else if (!strcmp(k, "toggle_hold_ms")) c->toggle_hold_ms = atoi(v);
+        char* k = s;
+        char* v = eq + 1;
+        char* e = eq;
+        while (e > k && (e[-1] == ' ' || e[-1] == '\t')) *--e = 0;
+        while (*v == ' ' || *v == '\t') ++v;
+        int iv = atoi(v);
+        if (!strcmp(k, "framegen")) c->framegen = iv != 0;
+        else if (!strcmp(k, "sr")) c->sr = clampi(iv, 0, 3);
+        else if (!strcmp(k, "aa")) c->aa = iv != 0;
+        else if (!strcmp(k, "rcas")) c->rcas = clampi(iv, 0, 3);
+        else if (!strcmp(k, "fps_counter")) c->fps_counter = iv != 0;
+        else if (!strcmp(k, "compare")) c->compare = iv != 0;
+        else if (!strcmp(k, "out_w")) c->out_w = clampi(iv, 640, 3840);
+        else if (!strcmp(k, "out_h")) c->out_h = clampi(iv, 360, 2160);
+        else if (!strcmp(k, "max_game_fps")) c->max_game_fps = clampi(iv, 20, 120);
+        else if (!strcmp(k, "menu_hold_ms")) c->menu_hold_ms = clampi(iv, 300, 10000);
+        else if (!strcmp(k, "warmup_flips")) c->warmup_flips = clampi(iv, 60, 100000);
+        else if (!strcmp(k, "reserve_mb")) c->reserve_mb = clampi(iv, 64, 4096);
     }
-    fclose(f);
 }
 
-void nx_config_load(nx_config_t* c, const char* title_id)
+void nx_config_load(nx_config_t* c, const char* title_id, nx_read_fn rd)
 {
-    char path[128];
+    static char buf[4096];
+    char path[96];
     nx_config_defaults(c);
-    parse(c, CONFIG_DIR "/config.ini");
+    if (!rd) return;
+    int n = rd(CONFIG_DIR "/config.ini", buf, sizeof buf - 1);
+    if (n > 0) { buf[n] = 0; nx_config_parse(c, buf); }
     snprintf(path, sizeof path, CONFIG_DIR "/%s.ini", title_id);
-    parse(c, path);
-    if (c->post < 0 || c->post > 2) c->post = 1;
-    if (c->sharpness < 0) c->sharpness = 0;
-    if (c->sharpness > 2) c->sharpness = 2;
+    n = rd(path, buf, sizeof buf - 1);
+    if (n > 0) { buf[n] = 0; nx_config_parse(c, buf); }
+}
+
+int nx_config_save(const nx_config_t* c, const char* title_id, nx_write_fn wr)
+{
+    char path[96], text[512];
+    snprintf(path, sizeof path, CONFIG_DIR "/%s.ini", title_id);
+    int n = snprintf(text, sizeof text,
+                     "; guardado desde el menu de VCFG-NX\n"
+                     "framegen = %d\nsr = %d\naa = %d\nrcas = %d\nfps_counter = %d\ncompare = %d\n",
+                     c->framegen, c->sr, c->aa, c->rcas, c->fps_counter, c->compare);
+    return wr ? wr(path, text, n) : -1;
 }

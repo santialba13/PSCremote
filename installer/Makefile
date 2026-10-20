@@ -1,8 +1,8 @@
 # Instalador de VCFG-NX y su PKG (fPKG para PS4 con GoldHEN).
 #   make OO_PS4_TOOLCHAIN=/ruta/OpenOrbis/PS4Toolchain GOLDHEN_SDK=/ruta/GoldHEN_Plugins_SDK
 # Compila tambien el plugin (../plugin) y lo mete en el PKG en /app0/plugins/.
-TITLE       := VCFG-NX Installer
-VERSION     := 1.00
+TITLE       := VCFG-NX
+VERSION     := 2.00
 TITLE_ID    := VCNX00001
 CONTENT_ID  := IV0000-VCNX00001_00-VCFGNXINSTALL000
 
@@ -15,22 +15,23 @@ OUT       := build
 STAGE     := $(OUT)/stage
 
 CFLAGS  := --target=x86_64-pc-freebsd12-elf -fPIC -funwind-tables -O2 -Wall \
-           -isysroot $(TOOLCHAIN) -isystem $(TOOLCHAIN)/include
-LDFLAGS := -m elf_x86_64 -pie --script $(TOOLCHAIN)/link.x --eh-frame-hdr -L$(TOOLCHAIN)/lib \
-           -lc -lkernel -lSceSystemService $(TOOLCHAIN)/lib/crt1.o
+           -isysroot $(TOOLCHAIN) -isystem $(TOOLCHAIN)/include -I$(GOLDHEN_SDK)/include
+LDFLAGS := -m elf_x86_64 -pie --script $(TOOLCHAIN)/link.x --eh-frame-hdr -L$(TOOLCHAIN)/lib -L$(GOLDHEN_SDK) \
+           -lGoldHEN_Hook -lc -lkernel -lSceSystemService -lSceVideoOut -lScePad -lSceUserService -lSceSysmodule \
+           $(TOOLCHAIN)/lib/crt1.o
 
 all: $(OUT)/$(CONTENT_ID).pkg
 
 ../plugin/build/vcfg_nx.prx: FORCE
 	$(MAKE) -C ../plugin
 
-$(OUT)/installer.o: source/main.c
+$(OUT)/%.o: source/%.c source/inst_core.h ../plugin/include/nx_font.h
 	@mkdir -p $(OUT)
 	clang $(CFLAGS) -c -o $@ $<
 
-$(STAGE)/eboot.bin: $(OUT)/installer.o
+$(STAGE)/eboot.bin: $(OUT)/main.o $(OUT)/inst_core.o
 	@mkdir -p $(STAGE)
-	ld.lld $< -o $(OUT)/installer.elf $(LDFLAGS)
+	ld.lld $(OUT)/main.o $(OUT)/inst_core.o -o $(OUT)/installer.elf $(LDFLAGS)
 	$(BIN)/create-fself -in=$(OUT)/installer.elf -out=$(OUT)/installer.oelf --eboot $@ --paid 0x3800000000000011
 
 $(STAGE)/sce_sys/param.sfo: Makefile

@@ -5,6 +5,7 @@
 
 #include "../include/nx_shaders.h"
 #include "../include/nxflow_weights.h"
+#include "../include/nxsr_weights.h"
 #include "../../third_party/smaa/AreaTex.h"
 #include "../../third_party/smaa/SearchTex.h"
 
@@ -12,14 +13,14 @@ enum {
     K_CONV_14_32, K_CONV_17_32, K_CONV_32_32, K_CONV_32_5, K_CONV_17_16, K_CONV_16_16, K_CONV_16_5,
     K_AVGPOOL, K_RESIZE, K_UPSAMPLE5, K_BUILD_INPUT, K_BM_TO_FLOW, K_LUMA_FULL, K_LUMA_DOWN2,
     K_BM_SEARCH, K_BM_MEDIAN3, K_WARP_BLEND, K_EASU, K_RCAS,
-    K_SMAA_EDGES, K_SMAA_WEIGHTS, K_SMAA_BLEND, K_COUNT
+    K_SMAA_EDGES, K_SMAA_WEIGHTS, K_SMAA_BLEND, K_NXSR, K_COUNT
 };
 static const char* const k_names[K_COUNT] = {
     "conv3x3_14_32", "conv3x3_17_32", "conv3x3_32_32", "conv3x3_32_5",
     "conv3x3_17_16", "conv3x3_16_16", "conv3x3_16_5",
     "avgpool_rgb", "resize_bilinear", "upsample5", "build_level_input", "bm_to_flow", "luma_full",
     "luma_down2", "bm_search", "bm_median3", "warp_blend", "easu", "rcas",
-    "smaa_edges", "smaa_weights", "smaa_blend",
+    "smaa_edges", "smaa_weights", "smaa_blend", "wg_nxsr",
 };
 
 // primera capa y numero de capas de cada bloque en nx_layers[] (model/export.py)
@@ -50,6 +51,7 @@ typedef struct { uint64_t src, dst; int32_t W, H; float sharp; int32_t denoise; 
 typedef struct { uint64_t src; int32_t W, H; uint64_t edges; } ka_smaa_edges_t;
 typedef struct { uint64_t edges; int32_t W, H; uint64_t area, search, weights; } ka_smaa_weights_t;
 typedef struct { uint64_t src, samp, weights; int32_t W, H; uint64_t dst; } ka_smaa_blend_t;
+typedef struct { uint64_t src; int32_t W, H; uint64_t w; uint64_t dst; float k; } ka_nxsr_t;
 
 static size_t align_up(size_t v, size_t a) { return (v + a - 1) / a * a; }
 
@@ -85,6 +87,7 @@ size_t nx_pipeline_mem_size(int W, int H, int Wo, int Ho)
     s += tensor_bytes(H, (int)align_up(W, 64), 1) + 64 * 1024;               // imagen tras SMAA
     s += align_up((size_t)W * H * 6, 256) + align_up(sizeof areaTexBytes + sizeof searchTexBytes, 4096);
     s += 2 * (KERNARG_BYTES + DESC_BYTES) + 4096;
+    s += align_up(sizeof nxsr_weights, 4096);
     return s + 64 * 1024;
 }
 
@@ -144,7 +147,9 @@ int nx_pipeline_init(nx_pipeline_t* p, int W, int H, int Wo, int Ho, nx_arena_t 
     p->smaa_weights = arena_alloc(a, (size_t)W * H * 4, 256);
     p->smaa_area = arena_alloc(a, sizeof areaTexBytes, 256);
     p->smaa_search = arena_alloc(a, sizeof searchTexBytes, 256);
-    if (!p->smaa_search) return -5;
+    p->nxsr_w = arena_alloc(a, sizeof nxsr_weights, 256);
+    if (!p->smaa_search || !p->nxsr_w) return -5;
+    memcpy(arena_cpu(a, p->nxsr_w), nxsr_weights, sizeof nxsr_weights);
     memcpy(arena_cpu(a, p->smaa_area), areaTexBytes, sizeof areaTexBytes);
     memcpy(arena_cpu(a, p->smaa_search), searchTexBytes, sizeof searchTexBytes);
     for (int s = 0; s < 2; ++s) {
@@ -297,46 +302,65 @@ static void smaa(ctx_t* x, const nx_image_t* src, const nx_image_t* dst)
 }
 
 // post-proceso de "src" (resolucion del juego) hacia "dst" (salida):
-//   [SMAA] -> [EASU si la salida es mas grande] -> [RCAS]; el ultimo pase escribe en dst
+//   [SMAA] -> [EASU si la salida es mas grande] -> [NXSR o RCAS]; el ultimo pase escribe en dst
 static void post(ctx_t* x, const nx_job_t* job, const nx_image_t* src, const nx_image_t* dst)
 {
     nx_pipeline_t* p = x->p;
-    const nx_image_t* cur = src;
+    enum { ST_SMAA, ST_EASU, ST_NXSR, ST_RCAS };
+    int st[4], n = 0;
+    if (job->aa) st[n++] = ST_SMAA;
+    if (job->post == NX_POST_EASU) st[n++] = ST_EASU;
+    if (job->sr) st[n++] = ST_NXSR;
+    else if (job->rcas || job->post == NX_POST_RCAS) st[n++] = ST_RCAS;
+    if (n == 0) { x->err = 3; return; }
     nx_image_t taa = linear_img(p->tmp_aa, p->W, p->H);
     nx_image_t t2 = linear_img(p->tmp_img2, p->Wo, p->Ho);
-    if (job->aa) {
-        const nx_image_t* o = job->post == NX_POST_NONE ? dst : &taa;
-        smaa(x, cur, o);
+    const nx_image_t* cur = src;
+    for (int i = 0; i < n; ++i) {
+        // cada tamano tiene su intermedio: W x H solo lo usa SMAA, Wo x Ho solo EASU
+        const nx_image_t* o = i == n - 1 ? dst : (st[i] == ST_EASU ? &t2 : &taa);
+        int w = (int)o->width, h = (int)o->height;
+        if (st[i] == ST_SMAA) {
+            smaa(x, cur, o);
+        } else if (st[i] == ST_EASU) {
+            ka_easu_t e = { tsharp(x, cur), p->H, p->W, tsharp(x, o), p->Ho, p->Wo };
+            run(x, K_EASU, &e, sizeof e, p->Wo, p->Ho);
+        } else if (st[i] == ST_NXSR) {
+            ka_nxsr_t r = { tsharp(x, cur), w, h, p->nxsr_w, tsharp(x, o), job->sr_k };
+            run(x, K_NXSR, &r, sizeof r, w / 2, h / 2);
+        } else {
+            ka_rcas_t r = { tsharp(x, cur), tsharp(x, o), w, h, exp2f(-job->sharpness_stops), 0 };
+            run(x, K_RCAS, &r, sizeof r, w, h);
+        }
         cur = o;
-    }
-    if (job->post == NX_POST_EASU) {
-        ka_easu_t e = { tsharp(x, cur), p->H, p->W, tsharp(x, &t2), p->Ho, p->Wo };
-        run(x, K_EASU, &e, sizeof e, p->Wo, p->Ho);
-        cur = &t2;
-    }
-    if (job->post != NX_POST_NONE) {
-        ka_rcas_t r = { tsharp(x, cur), tsharp(x, dst), p->Wo, p->Ho, exp2f(-job->sharpness_stops), 0 };
-        run(x, K_RCAS, &r, sizeof r, p->Wo, p->Ho);
     }
 }
 
-int nx_pipeline_build(nx_pipeline_t* p, pm4_t* c, const nx_job_t* job)
+static void draw_osd(ctx_t* x, const nx_job_t* job, const nx_image_t* img)
 {
-    ctx_t x = { p, c, p->kernarg_base[job->slot], p->kernarg_base[job->slot] + KERNARG_BYTES,
-                p->desc_base[job->slot], p->desc_base[job->slot] + DESC_BYTES, 0 };
-    int sc = job->slot, sp = job->slot ^ 1;
+    if (!job->osd_ctx) return;
+    if (nx_osd_draw(job->osd_ctx, x->c, job->slot, img, job->osd, 2) != 0) x->err = 4;
+}
 
-    // pase de inicializacion de caches (instrucciones y escalares) por si el
-    // juego dejo datos viejos de una ejecucion anterior del mismo rango
-    pm4_set_sh1(c, R_COMPUTE_TMPRING_SIZE, 0);
-    uint32_t mgmt[2] = { 0xFFFFFFFFu, 0xFFFFFFFFu };
-    pm4_set_sh(c, R_COMPUTE_STATIC_THREAD_MGMT_SE0, mgmt, 2);
-    pm4_set_sh1(c, R_COMPUTE_RESOURCE_LIMITS, 0);
+int nx_pipeline_build_osd_only(nx_osd_ctx_t* o, pm4_t* c, const nx_job_t* job, uint64_t label_gpu)
+{
+    nx_osd_begin(o, job->slot);
+    if (nx_osd_draw(o, c, job->slot, job->cur, job->osd, 2) != 0) return -14;
+    pm4_end_of_job(c, label_gpu, job->seq);
+    pm4_nop_pad(c, 8);
+    return c->overflow ? -20 : 0;
+}
+
+static void frame_generation(ctx_t* x, const nx_job_t* job, const nx_image_t* prev, const nx_image_t* cur,
+                             const nx_image_t* warp_dst)
+{
+    nx_pipeline_t* p = x->p;
+    int sc = job->slot, sp = job->slot ^ 1;
 
     // 1. luma (piramide) y RGB a 1/8: el del fotograma previo se reutiliza
     if (!p->luma_valid[sp])
-        luma_pyramid(&x, job->prev, sp);
-    luma_pyramid(&x, job->cur, sc);
+        luma_pyramid(x, prev, sp);
+    luma_pyramid(x, cur, sc);
     p->luma_valid[sc] = 1;
 
     // 2. block-matching simetrico de grueso a fino (prev -> cur)
@@ -345,46 +369,77 @@ int nx_pipeline_build(nx_pipeline_t* p, pm4_t* c, const nx_job_t* job)
         ka_bm_t b = { p->luma[sp][lv], p->luma[sc][lv], p->Hp >> lv, p->Wp >> lv,
                       lv == 2 ? 0 : p->vec[lv + 1], p->h8 >> (lv + 1), p->w8 >> (lv + 1),
                       p->vtmp, By, Bx, 3 };
-        run(&x, K_BM_SEARCH, &b, sizeof b, Bx, By);
+        run(x, K_BM_SEARCH, &b, sizeof b, Bx, By);
         ka_median_t m = { p->vtmp, p->vec[lv], By, Bx };
-        run(&x, K_BM_MEDIAN3, &m, sizeof m, Bx, By);
+        run(x, K_BM_MEDIAN3, &m, sizeof m, Bx, By);
     }
 
     // 3. NXFlow: niveles A y B a 1/8, nivel C a 1/4
     ka_bm2flow_t f = { p->vec[0], p->h8, p->w8, p->flow5 };
-    run(&x, K_BM_TO_FLOW, &f, sizeof f, p->w8, p->h8);
+    run(x, K_BM_TO_FLOW, &f, sizeof f, p->w8, p->h8);
     ka_build_t bi = { p->a8[sp], p->a8[sc], p->flow5, 0, p->h8, p->w8, 0, 0, p->lvl_in };
-    run(&x, K_BUILD_INPUT, &bi, sizeof bi, p->w8, p->h8);
-    nx_block(&x, BLOCK_A, p->h8, p->w8, p->delta5);
+    run(x, K_BUILD_INPUT, &bi, sizeof bi, p->w8, p->h8);
+    nx_block(x, BLOCK_A, p->h8, p->w8, p->delta5);
     bi.delta5 = p->delta5; bi.level = 1;                 // flow5 += A; entrada de B
-    run(&x, K_BUILD_INPUT, &bi, sizeof bi, p->w8, p->h8);
-    nx_block(&x, BLOCK_B, p->h8, p->w8, p->delta5);
+    run(x, K_BUILD_INPUT, &bi, sizeof bi, p->w8, p->h8);
+    nx_block(x, BLOCK_B, p->h8, p->w8, p->delta5);
     bi.level = -1;                                       // flow5 += B
-    run(&x, K_BUILD_INPUT, &bi, sizeof bi, p->w8, p->h8);
+    run(x, K_BUILD_INPUT, &bi, sizeof bi, p->w8, p->h8);
     ka_up5_t u = { p->flow5, p->h8, p->w8, p->flow4 };
-    run(&x, K_UPSAMPLE5, &u, sizeof u, p->w4, p->h4);
+    run(x, K_UPSAMPLE5, &u, sizeof u, p->w4, p->h4);
     ka_build_t bc = { p->a4[sp], p->a4[sc], p->flow4, 0, p->h4, p->w4, 1, 0, p->lvl_in };
-    run(&x, K_BUILD_INPUT, &bc, sizeof bc, p->w4, p->h4);
-    nx_block(&x, BLOCK_C, p->h4, p->w4, p->delta4);
+    run(x, K_BUILD_INPUT, &bc, sizeof bc, p->w4, p->h4);
+    nx_block(x, BLOCK_C, p->h4, p->w4, p->delta4);
     bc.delta5 = p->delta4; bc.level = -1;                // flow4 += C
-    run(&x, K_BUILD_INPUT, &bc, sizeof bc, p->w4, p->h4);
+    run(x, K_BUILD_INPUT, &bc, sizeof bc, p->w4, p->h4);
 
     // 4. warp + mezcla a resolucion completa (con el sampler bilineal del hardware)
     uint32_t samp[4];
     nx_make_ssharp(samp, 1);
-    nx_image_t t1 = linear_img(p->tmp_img, p->W, p->H);
-    int any_post = job->post != NX_POST_NONE || job->aa;
-    const nx_image_t* warp_dst = any_post ? &t1 : job->out_mid;
-    ka_warp_t w = { tsharp(&x, job->prev), tsharp(&x, job->cur), put_desc(&x, samp, 4), p->flow4,
-                    p->h4, p->w4, tsharp(&x, warp_dst), p->H, p->W };
-    run(&x, K_WARP_BLEND, &w, sizeof w, p->W, p->H);
+    ka_warp_t w = { tsharp(x, prev), tsharp(x, cur), put_desc(x, samp, 4), p->flow4,
+                    p->h4, p->w4, tsharp(x, warp_dst), p->H, p->W };
+    run(x, K_WARP_BLEND, &w, sizeof w, p->W, p->H);
+}
 
-    // 5. SMAA / FSR1 sobre el generado y sobre el real, para que no "parpadee" la imagen
-    if (any_post) {
-        post(&x, job, &t1, job->out_mid);
-        if (job->out_real)
+int nx_pipeline_build(nx_pipeline_t* p, pm4_t* c, const nx_job_t* job)
+{
+    ctx_t x = { p, c, p->kernarg_base[job->slot], p->kernarg_base[job->slot] + KERNARG_BYTES,
+                p->desc_base[job->slot], p->desc_base[job->slot] + DESC_BYTES, 0 };
+    if (job->osd_ctx) nx_osd_begin(job->osd_ctx, job->slot);
+
+    pm4_set_sh1(c, R_COMPUTE_TMPRING_SIZE, 0);
+    uint32_t mgmt[2] = { 0xFFFFFFFFu, 0xFFFFFFFFu };
+    pm4_set_sh(c, R_COMPUTE_STATIC_THREAD_MGMT_SE0, mgmt, 2);
+    pm4_set_sh1(c, R_COMPUTE_RESOURCE_LIMITS, 0);
+
+    int any_post = job->post != NX_POST_NONE || job->aa || job->sr || job->rcas;
+    if (any_post && !job->out_real) return -15;
+    if (job->fg) {
+        if (job->enhance_first) {
+            // FG sobre fotogramas ya procesados: el post-proceso corre una sola vez por
+            // fotograma del juego y el intermedio hereda la calidad del real
+            if (!job->prev_real_valid) {
+                post(&x, job, job->prev, job->prev_real);
+                p->luma_valid[job->slot ^ 1] = 0;
+            }
             post(&x, job, job->cur, job->out_real);
+            frame_generation(&x, job, job->prev_real, job->out_real, job->out_mid);
+        } else {
+            nx_image_t t1 = linear_img(p->tmp_img, p->W, p->H);
+            frame_generation(&x, job, job->prev, job->cur, any_post ? &t1 : job->out_mid);
+            if (any_post) {
+                post(&x, job, &t1, job->out_mid);
+                post(&x, job, job->cur, job->out_real);
+            }
+        }
+    } else if (any_post) {
+        post(&x, job, job->cur, job->out_real);
     }
+    if (job->compare && job->out_real && job->osd_ctx
+        && nx_osd_copy_left(job->osd_ctx, c, job->slot, job->cur, job->out_real) != 0)
+        x.err = 5;
+    if (job->fg) draw_osd(&x, job, job->out_mid);
+    draw_osd(&x, job, job->out_real ? job->out_real : job->cur);
 
     pm4_end_of_job(c, p->label_gpu, job->seq);
     pm4_nop_pad(c, 8);

@@ -82,7 +82,7 @@ empeora porque realza el escalonado. En juegos que ya traen su propio AA
 | prueba | resultado |
 |---|---|
 | runtime NumPy vs JAX (mismos pesos) | dif. máx. ~2e-6 |
-| `host_test`: offsets de kernargs de los 19 kernels vs metadatos del compilador | todos coinciden |
+| `host_test`: offsets de kernargs de los 25 kernels vs metadatos del compilador | todos coinciden |
 | `host_test`: DCB 1080p / 900p→1080p / 720p→1080p | PM4 bien formado, 39-43 dispatches, 36-70 MiB |
 | `gpu_emu` (DCB ejecutado con los kernels compilados para x86) vs runtime NumPy, 1280x720 | dif. máx. 1/255 (≈88 dB) |
 | RCAS del camino GPU vs `upscale/fsr1.py` | ≈59 dB |
@@ -91,6 +91,12 @@ empeora porque realza el escalonado. En juegos que ya traen su propio AA
 | plugin compilado con OpenOrbis + GoldHEN SDK | `vcfg_nx.prx`, exporta `plugin_load`/`plugin_unload` |
 | PKG (`PkgTool.Core`) descifrado con `tools/pkg/pfs_extract.py` | eboot y prx idénticos a los compilados |
 | edición de `plugins.ini` del instalador (test en PC) | respeta lo existente, idempotente |
+
+| NXSR del camino GPU (`wg_nxsr`, un pase con LDS) vs modelo JAX | dif. máx. 1/255 |
+| FG + NXSR (mejora primero, FG interpola los reales ya mejorados) en el emulador | correcto |
+| menú en pantalla (`osd_draw`) renderizado en el emulador | legible, fila seleccionada resaltada |
+| `console_sim`: 11 escenarios con ASan + UBSan (ver abajo) | todos pasan, sin errores de memoria |
+| test del instalador (`installer/test/test_core.c`, ASan) | lista de juegos, `plugins.ini` idempotente, desinstalar |
 
 Lo que **no** está verificado: ejecución en la GPU real de la PS4 (tiling de
 los backbuffers, coherencia de caches, orden de los flips, rendimiento).
@@ -103,3 +109,25 @@ Los tres recortes sintéticos donde NXFlow más mejora al block-matching
 ambos métodos: ahí está el margen que queda por ganar con más entrenamiento.
 
 ![comparación](img/comparacion_sintetico.png)
+
+## 6. Simulador de consola (evaluación segura)
+
+`plugin/test/console_sim.c` compila el **mismo motor** del plugin
+(`nx_engine.c`, `nx_pipeline.c`, menú) contra una consola simulada: memoria
+directa limitada, GPU que puede atrasarse, archivos en `/data`, mando y flips.
+Así se prueban en el PC, con AddressSanitizer y UndefinedBehaviorSanitizer,
+los casos que en una PS4 terminarían en un juego cerrado.
+
+| escenario | qué se comprueba | resultado |
+|---|---|---|
+| 1. 30 fps, memoria de sobra | no reserva nada en el arranque (600 flips); después FG activo | activo |
+| 2. memoria insuficiente | nunca baja de la reserva del juego; efectos apagados, menú vivo | efectos apagados, 0 trabajos propios |
+| 3. GPU trabada | cada flip atrasado pasa intacto; a los 30 seguidos se desactiva | degradado, juego sigue |
+| 4. sesión tras un cierre | arranca en modo seguro; se puede reactivar desde el menú | modo seguro → activo |
+| 5. menú y guardado | L3+R3, navegación, el juego no recibe botones, `.ini` por juego | correcto |
+| 6. juego HDR | no se toca nada | inactivo, todo pasa |
+| 7. juego a 60 fps | FG apagado solo, mejora de imagen sigue | activo |
+| 8. re-registro de buffers | el plugin se aparta | degradado, juego sigue |
+| 9. ForWorkload + 2000 llamadas aleatorias | índices/handles inválidos, argumentos basura | sin fallos de memoria |
+| 10. proceso que no es un juego | ni hooks | inactivo |
+| 11. juego con flips de CPU | `sceVideoOutSubmitFlip` | activo |
