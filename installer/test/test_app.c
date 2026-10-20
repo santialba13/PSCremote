@@ -48,8 +48,9 @@ static void make_fs(void)
     }
     // un juego sin appmeta: nombre e icono salen de su app.pkg (aca, el PKG de VCFG-NX)
     mkdir("tfs/user/app/CUSA00009", 0755);
-    system("cp ../../dist/VCFG-NX_v2.47.pkg tfs/user/app/CUSA00009/app.pkg");
-    put("tfs/data/GoldHEN/plugins.ini", "[default]\n/data/GoldHEN/plugins/otro.prx\n\n[CUSA00003]\n" PLUGIN_LINE "\n");
+    system("cp ../../dist/VCFG-NX_v2.48.pkg tfs/user/app/CUSA00009/app.pkg");
+    put("tfs/data/GoldHEN/plugins.ini", "[default]\n/data/GoldHEN/plugins/otro.prx\n/data/GoldHEN/plugins/vcfg16.prx\n\n"
+        "[CUSA00003]\n" PLUGIN_LINE "\n/data/GoldHEN/plugins/gnmscale_plugin.prx\n");
     put("tfs/data/vcfg_nx/CUSA00003.ini", "sr = 1\n");
     put("tfs/app0/plugins/vcfg_nx.prx", "PRX de prueba");
     put("tfs/app0/plugins/vcfg_nx_probe.prx", "sonda de prueba");
@@ -119,6 +120,7 @@ int main(void)
     CHECK(inst_ini_has(ini, "CUSA00001") && !inst_ini_has(ini, "CUSA00002") && inst_ini_has(ini, "CUSA00003"),
           "plugins.ini con Alpha y Gamma: %s", ini);
     CHECK(strstr(ini, "otro.prx") != NULL, "plugins.ini perdio otro plugin");
+    CHECK(!strstr(ini, "gnmscale") && !strstr(ini, "vcfg16"), "no se quitaron los plugins que chocan: %s", ini);
     free(ini);
     CHECK(system("ls tfs/data/GoldHEN/plugins.ini.vcfg_nx_backup_* >/dev/null 2>&1") == 0, "sin copia de seguridad");
     char* cfg = get(CFG_DIR "/config.ini");

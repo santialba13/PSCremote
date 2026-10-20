@@ -57,3 +57,9 @@ int inst_ini_section_plugins(const char* ini, const char* section, char* others,
 // prefix o terminan en suffix. Devuelven cuantas cosas borraron
 int inst_rm_tree(const char* path);
 int inst_rm_matching(const char* dir, const char* prefix, const char* suffix);
+
+// conflictos: otros plugins que tocan lo mismo que VCFG-NX (GNMScale, VCFG
+// viejos, framerate, escalado). inst_ini_strip_conflicts los quita de [section];
+// NULL si no habia ninguno. Los nombres quitados se agregan a `removed`
+int inst_is_conflict(const char* prx_name);
+char* inst_ini_strip_conflicts(const char* ini, const char* section, char* removed, size_t n);

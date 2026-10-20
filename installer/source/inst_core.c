@@ -358,3 +358,61 @@ int inst_rm_matching(const char* dir, const char* prefix, const char* suffix)
     closedir(d);
     return n;
 }
+
+// plugins que tocan lo mismo que VCFG-NX (presentacion de fotogramas, escalado,
+// framerate) o versiones viejas de VCFG: en un juego con VCFG-NX se quitan
+static const char* const CONFLICTS[] = {
+    "gnmscale", "vcfg", "bb_probe", "fliprate_remover", "force_30_fps", "force_1080p_display", "frame_logger",
+    "fsr", "upscal", "framegen", "frame_gen", "60fps", NULL,
+};
+
+int inst_is_conflict(const char* name)
+{
+    if (!strcmp(name, "vcfg_nx.prx") || !strcmp(name, "vcfg_nx_probe.prx")) return 0;
+    char low[128];
+    size_t i = 0;
+    for (; name[i] && i < sizeof low - 1; ++i) low[i] = (char)(name[i] >= 'A' && name[i] <= 'Z' ? name[i] + 32 : name[i]);
+    low[i] = 0;
+    for (int k = 0; CONFLICTS[k]; ++k)
+        if (strstr(low, CONFLICTS[k])) return 1;
+    return 0;
+}
+
+char* inst_ini_strip_conflicts(const char* ini, const char* section, char* removed, size_t n)
+{
+    const char* s = find_section(ini, section);
+    if (!s) return NULL;
+    const char* end = section_end(s);
+    size_t len = strlen(ini), o = 0, ro = removed && n ? strlen(removed) : 0;
+    char* out = malloc(len + 1);
+    int changed = 0;
+    for (const char* p = ini; *p;) {
+        const char* eol = strchr(p, '\n');
+        size_t l = eol ? (size_t)(eol - p) + 1 : strlen(p);
+        int drop = 0;
+        if (p > s && p < end) {
+            const char* q = p;
+            while (q < p + l && (*q == ' ' || *q == '\t')) ++q;
+            if (*q == '/') {
+                const char* base = q, *e = p + l;
+                while (e > q && (e[-1] == '\n' || e[-1] == '\r' || e[-1] == ' ')) --e;
+                for (const char* t = q; t < e; ++t) if (*t == '/') base = t + 1;
+                char nm[128];
+                snprintf(nm, sizeof nm, "%.*s", (int)(e - base), base);
+                if (inst_is_conflict(nm)) {
+                    drop = 1;
+                    if (removed && n > ro + 1) {
+                        int k = snprintf(removed + ro, n - ro, "%s%s", ro ? ", " : "", nm);
+                        if (k > 0) ro += (size_t)k;
+                        if (ro >= n) ro = n - 1;
+                    }
+                }
+            }
+        }
+        if (!drop) { memcpy(out + o, p, l); o += l; } else changed = 1;
+        p += l;
+    }
+    out[o] = 0;
+    if (!changed) { free(out); return NULL; }
+    return out;
+}

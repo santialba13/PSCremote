@@ -75,9 +75,9 @@ int main(void)
           "con .ini: por defecto + lo propio");
     // entradas de un PKG real (el de VCFG-NX): icon0.png y param.sfo sin cifrar
     size_t ilen = 0, slen = 0;
-    unsigned char* icon = inst_pkg_entry("../../dist/VCFG-NX_v2.47.pkg", PKG_ENTRY_ICON0, &ilen);
+    unsigned char* icon = inst_pkg_entry("../../dist/VCFG-NX_v2.48.pkg", PKG_ENTRY_ICON0, &ilen);
     CHECK(icon && ilen > 1000 && !memcmp(icon, "\x89PNG", 4), "icon0.png del PKG");
-    unsigned char* sfo = inst_pkg_entry("../../dist/VCFG-NX_v2.47.pkg", PKG_ENTRY_PARAM_SFO, &slen);
+    unsigned char* sfo = inst_pkg_entry("../../dist/VCFG-NX_v2.48.pkg", PKG_ENTRY_PARAM_SFO, &slen);
     char ptitle[64] = "";
     CHECK(sfo && inst_sfo_title(sfo, slen, ptitle, sizeof ptitle) == 0 && !strcmp(ptitle, "VCFG-NX"), "param.sfo del PKG");
     free(icon); free(sfo);
@@ -96,6 +96,22 @@ int main(void)
     CHECK(inst_ini_section_plugins(ini2, "CUSA00411", oth, sizeof oth) == 1 && !strcmp(oth, "gnmscale_plugin.prx"),
           "plugins de una seccion (CRLF, comentarios, otros plugins)");
     CHECK(inst_ini_section_plugins(ini2, "CUSA1", oth, sizeof oth) == 0 && !oth[0], "seccion sin plugins");
+    {   // conflictos: GNMScale, VCFG viejos y plugins de framerate salen; los demas quedan
+        const char* ini3 = "[default]\n/data/GoldHEN/plugins/vcfg16.prx\n/data/GoldHEN/plugins/game_patch.prx\n"
+                           "[CUSA00411]\n/data/GoldHEN/plugins/vcfg_nx_probe.prx\n/data/GoldHEN/plugins/vcfg_nx.prx\n"
+                           "/data/GoldHEN/plugins/gnmscale_plugin.prx\r\n/data/GoldHEN/plugins/afr.prx\n"
+                           "/data/GoldHEN/plugins/vcfg_classic42.prx\n[CUSA00880]\n/data/GoldHEN/plugins/gnmscale_plugin.prx\n";
+        char rm[200] = "";
+        char* a3 = inst_ini_strip_conflicts(ini3, "CUSA00411", rm, sizeof rm);
+        CHECK(a3 && !strcmp(rm, "gnmscale_plugin.prx, vcfg_classic42.prx"), "conflictos quitados");
+        CHECK(a3 && strstr(a3, "vcfg_nx.prx") && strstr(a3, "vcfg_nx_probe.prx") && strstr(a3, "afr.prx")
+              && strstr(a3, "[CUSA00880]\n/data/GoldHEN/plugins/gnmscale_plugin.prx"), "quito de mas");
+        char* b3 = a3 ? inst_ini_strip_conflicts(a3, "default", rm, sizeof rm) : NULL;
+        CHECK(b3 && !strstr(b3, "vcfg16") && strstr(b3, "game_patch.prx"), "[default]");
+        CHECK(inst_ini_strip_conflicts(b3, "CUSA00411", rm, sizeof rm) == NULL, "sin conflictos deberia ser NULL");
+        printf("conflictos quitados: %s\n", rm);
+        free(a3); free(b3);
+    }
     char sum[200];
     CHECK(inst_log_summary(NULL, sum, sizeof sum) == 0, "registro: sin archivo");
     CHECK(inst_log_summary("[      0] [engine] plugin_load\n[      0] [vo] formato 0xc1060000 1920x1080 no soportado: x\n",

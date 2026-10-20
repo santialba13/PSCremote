@@ -59,7 +59,7 @@
 #define CFG_DIR ROOT "/data/vcfg_nx"
 #define TITLE_ID "VCNX00001"
 #define CONTENT_ID "IV0000-VCNX00001_00-VCFGNXINSTALL000"
-#define VERSION "2.4.7"
+#define VERSION "2.4.8"
 
 #define W 1920
 #define H 1080
@@ -383,6 +383,8 @@ static const char* save_error_text(int r)
     }
 }
 
+static char conflicts_removed[400];   // lo que save_all quito de plugins.ini por chocar con VCFG-NX
+
 static int save_all(int uninstall)
 {
     // sin el plugin no se toca nada: plugins.ini no puede quedar apuntando a un .prx que no esta
@@ -404,9 +406,29 @@ static int save_all(int uninstall)
         char* n = inst_ini_remove_all(cur);
         if (n) { free(cur); cur = n; }
     } else {
+        int any = 0;
         for (int i = 0; i < ngames; ++i) {
             char* n = games[i].enabled ? inst_ini_add(cur, games[i].id) : inst_ini_remove(cur, games[i].id);
             if (n) { free(cur); cur = n; }
+            if (!games[i].enabled) continue;
+            any = 1;
+            // lo que choca con VCFG-NX en este juego (GNMScale, VCFG viejos...) se quita solo
+            char rm[200] = "";
+            n = inst_ini_strip_conflicts(cur, games[i].id, rm, sizeof rm);
+            if (n) {
+                free(cur); cur = n;
+                snprintf(conflicts_removed + strlen(conflicts_removed), sizeof conflicts_removed - strlen(conflicts_removed),
+                         "%s%.24s: %s", conflicts_removed[0] ? " \xb7 " : "", games[i].title, rm);
+            }
+        }
+        if (any) {   // [default] se carga en todos los juegos: tampoco puede haber conflictos ahi
+            char rm[200] = "";
+            char* n = inst_ini_strip_conflicts(cur, "default", rm, sizeof rm);
+            if (n) {
+                free(cur); cur = n;
+                snprintf(conflicts_removed + strlen(conflicts_removed), sizeof conflicts_removed - strlen(conflicts_removed),
+                         "%s[default]: %s", conflicts_removed[0] ? " \xb7 " : "", rm);
+            }
         }
     }
     int r = write_text_verified(PLUGINS_INI, cur);
@@ -1283,10 +1305,14 @@ static void diag_collect(void)
     else if (g) snprintf(L[3], 300, "plugins.ini [%s]: %s", g->id,
                          ours ? "incluye VCFG-NX" : "NO incluye VCFG-NX - activalo con X y guard\xe1");
     diag.line_color[3] = ours ? C_OK : C_DANGER;
-    snprintf(L[4], 300, "Otros plugins en este juego: %s", others[0] ? others : "ninguno");
-    if (others[0]) {
-        strncat(L[4], " - pueden chocar con VCFG-NX (quitalos para probar)", 299 - strlen(L[4]));
-        diag.line_color[4] = C_WARN;
+    {
+        int clash = 0;   // queda alguno que choca? (se quitan solos al guardar)
+        char tmp[200];
+        snprintf(tmp, sizeof tmp, "%s", others);
+        for (char* t = strtok(tmp, ", "); t; t = strtok(NULL, ", ")) clash |= inst_is_conflict(t);
+        snprintf(L[4], 300, "Otros plugins en este juego: %s%s", others[0] ? others : "ninguno (los que chocaban se quitaron solos)",
+                 !others[0] ? "" : clash ? " - CHOCAN: se quitan al guardar" : " (no chocan con VCFG-NX)");
+        diag.line_color[4] = clash ? C_WARN : C_OK;
     }
     char* loads = read_text(CFG_DIR "/logs/cargas.txt");
     int nload = 0;
@@ -1826,7 +1852,12 @@ static void autosave(int quiet)
     if (e == 0) {
         dirty_cfg = 0;
         diag.save_error[0] = 0;
-        if (!quiet) set_msg(C_OK, "Guardado: listo para jugar (L3+R3 en el juego abre el men\xfa).");
+        if (conflicts_removed[0]) {
+            set_msg(C_WARN, "Quitado por chocar con VCFG-NX: %s", conflicts_removed);
+            conflicts_removed[0] = 0;
+        } else if (!quiet) {
+            set_msg(C_OK, "Guardado: listo para jugar (L3+R3 en el juego abre el men\xfa).");
+        }
     } else {
         dirty_cfg = 1;
         snprintf(diag.save_error, sizeof diag.save_error, "%s (c\xf3" "digo %d%s%s)", save_error_text(e), e,
