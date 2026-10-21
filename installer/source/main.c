@@ -59,7 +59,7 @@
 #define CFG_DIR ROOT "/data/vcfg_nx"
 #define TITLE_ID "VCNX00001"
 #define CONTENT_ID "IV0000-VCNX00001_00-VCFGNXINSTALL000"
-#define VERSION "2.5.3"
+#define VERSION "2.5.4"
 
 #define W 1920
 #define H 1080
@@ -1341,6 +1341,17 @@ static void diag_collect(void)
                      what ? what + 2 : "");
             diag.line_color[5] = ok ? C_OK : C_WARN;
         }
+        char bp[160];   // nivel de arranque actual y tope de este juego
+        snprintf(bp, sizeof bp, CFG_DIR "/boot-%s.txt", g->id);
+        char* bt = read_text(bp);
+        const char* lv = strstr(bt, "level="), *mx = strstr(bt, "max=");
+        if (lv && mx) {
+            int l = atoi(lv + 6), m = atoi(mx + 4);
+            if (strstr(bt, "state=pending")) m = l = l - 1;          // se cerro en ese nivel
+            else if (strstr(bt, "state=ok") && l < m) l++;           // salio bien: suma una parte
+            snprintf(L[5] + strlen(L[5]), 300 - strlen(L[5]), " \xb7 pr\xf3ximo arranque: nivel %d (tope %d de 4)", l, m);
+        }
+        free(bt);
     }
     char sum[160] = "";
     char* log = NULL;

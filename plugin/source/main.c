@@ -39,7 +39,7 @@ static int hook_one(nx_hook_t* h, void* fn, void* hk, const char* name);
 attr_public const char* g_pluginName = "vcfg_nx";
 attr_public const char* g_pluginDesc = "Frame generation + reescalado IA (NXSR) + SMAA/FSR1, menu L3+R3";
 attr_public const char* g_pluginAuth = "VCFG-NX";
-attr_public u32 g_pluginVersion = 0x00000253; // 2.53
+attr_public u32 g_pluginVersion = 0x00000254; // 2.54
 
 // prototipos de las variantes ForWorkload (OpenOrbis las declara sin argumentos)
 typedef s32 (*submit_wl_t)(u64, u32, void**, u32*, void**, u32*);
@@ -373,7 +373,7 @@ static void* pad_thread(void* arg)
 {
     (void)arg;
     s32 handle = -1;
-    int fails = 0, ok_logged = 0, boot_ok = 0, valve_seen = 0, seen = 0;
+    int fails = 0, ok_logged = 0, valve_seen = 0, seen = 0;
     uint64_t next_tick = 0, next_try = 0;
     while (g_pad_run) {
         uint64_t t = sceKernelGetProcessTime();
@@ -384,11 +384,7 @@ static void* pad_thread(void* arg)
             if (inf->state >= NX_ST_WARMUP && !(seen & 2)) { seen |= 2; boot_stage(g_title_s, "pantalla del juego registrada"); }
             if (inf->state == NX_ST_RUN && !(seen & 4)) { seen |= 4; boot_stage(g_title_s, "menu listo"); }
             if (inf->full_ready && !(seen & 8)) { seen |= 8; boot_stage(g_title_s, "efectos activos"); }
-            if (!boot_ok && nx_engine_info()->flips > 900) {
-                boot_ok = 1;
-                boot_level_ok();
-                boot_stage(g_title_s, "jugando: arranque correcto");
-            }
+
             if (g_valve_count != valve_seen) {
                 valve_seen = g_valve_count;
                 nx_engine_note("[mem] el juego necesito memoria: se le devolvio la reserva de trabajo");
@@ -420,18 +416,23 @@ static void* pad_thread(void* arg)
     return NULL;
 }
 
-// Arranque por niveles (como el "crash guard" de VCFG v2.23). Si un arranque
-// no llega a jugarse (~30 s de fotogramas), el siguiente usa un nivel mas
-// prudente; el nivel que funciono queda guardado para ese juego:
-//   0  4 MiB tempranos para el menu; los efectos piden memoria tarde (si hay)
-//   1  sin reserva temprana: todo se pide tarde
-//   2  pasivo: sin hooks; el juego corre como si el plugin no estuviera
-// (la reserva de efectos de 112 MiB al arrancar hacia cerrar GTA V: quedo
-// apagada; WORK_POOL_MB y la valvula siguen para probar en otros juegos)
-#define BOOT_LEVELS 3
+// Arranque ASCENDENTE por niveles. Cada juego empieza sin que el plugin toque
+// nada y, por cada arranque que llega a jugarse, se suma una parte. Si un
+// nivel hace cerrar el juego, el siguiente arranque vuelve al ultimo que
+// funciono y ese queda como tope: a lo sumo un cierre, y el nivel en el que
+// paso dice que parte es la culpable.
+//  -1  apagado (hasta el nivel 0 cerro el juego)
+//   0  solo el aviso
+//   1  + configuracion y motor
+//   2  + engancha el registro de pantalla (RegisterBuffers, SetFlipRate)
+//   3  + engancha la presentacion (flips): menu L3+R3 y efectos
+//   4  + 4 MiB tempranos para el menu
+#define BOOT_TOP 4
 #define EARLY_WORK 0
-static int g_level;
-static const char* const LEVEL_NAME[BOOT_LEVELS] = { "normal", "sin reserva temprana", "pasivo (sin efectos)" };
+static const char* const LEVEL_NAME[BOOT_TOP + 2] = { "apagado", "solo aviso", "configuracion", "registro de pantalla",
+                                                     "menu y efectos", "completo" };
+#define LVNAME(l) LEVEL_NAME[(l) + 1]
+static int g_level_max = BOOT_TOP;
 
 static void boot_stage(const char* title, const char* what)
 {
@@ -440,33 +441,62 @@ static void boot_stage(const char* title, const char* what)
     if (n > 0) append_sync("/data/vcfg_nx/logs/cargas.txt", m, n);
 }
 
+static void boot_write(const char* state)
+{
+    char t[96];
+    int k = snprintf(t, sizeof t, "ver=%x level=%d max=%d state=%s\n", (unsigned)g_pluginVersion, g_level, g_level_max, state);
+    write_sync(g_boot_path, t, k);
+}
+
 static void boot_level_pick(const char* title)
 {
     snprintf(g_boot_path, sizeof g_boot_path, "/data/vcfg_nx/boot-%.12s.txt", title);
-    char prev[64] = { 0 };
+    char prev[96] = { 0 };
     int n = pf_read_file(g_boot_path, prev, sizeof prev - 1);
-    int lv = 0, pending = 0;
+    int lv = 0, mx = BOOT_TOP, pending = 0, ok = 0;
     char ver[16];
     snprintf(ver, sizeof ver, "ver=%x ", (unsigned)g_pluginVersion);
     if (n > 0 && !strncmp(prev, ver, strlen(ver))) {   // de otra version: se vuelve a empezar desde 0
         const char* l = strstr(prev, "level=");
+        const char* m = strstr(prev, "max=");
         lv = l ? atoi(l + 6) : 0;
-        pending = l && strstr(prev, "state=pending") != NULL;
+        mx = m ? atoi(m + 4) : BOOT_TOP;
+        pending = strstr(prev, "state=pending") != NULL;
+        ok = strstr(prev, "state=ok") != NULL;
     }
-    if (lv < 0 || lv >= BOOT_LEVELS) lv = 0;
-    if (pending && lv < BOOT_LEVELS - 1) lv++;   // el anterior se cerro antes de jugar: mas prudente
-
+    if (pending) {          // el arranque anterior se cerro en este nivel: el tope queda abajo
+        mx = lv - 1;
+        lv = mx;
+    } else if (ok && lv < mx) {
+        lv++;               // salio bien: se suma una parte
+    }
+    if (mx > BOOT_TOP) mx = BOOT_TOP;
+    if (mx < -1) mx = -1;
+    if (lv > mx) lv = mx;
+    if (lv < -1) lv = -1;
     g_level = lv;
-    char t[64];
-    int k = snprintf(t, sizeof t, "ver=%x level=%d state=pending\n", (unsigned)g_pluginVersion, lv);
-    write_sync(g_boot_path, t, k);
+    g_level_max = mx;
+    boot_write("pending");
 }
 
-static void boot_level_ok(void)
+static void boot_level_ok(void) { boot_write("ok"); }
+
+// hilo minimo: solo espera y marca "arranque correcto" (no toca mando ni
+// usuario: eso lo hace el hilo del mando, que arranca con el juego andando)
+static OrbisPthread g_boot_thread;
+static void* boot_thread(void* arg)
 {
-    char t[64];
-    int k = snprintf(t, sizeof t, "ver=%x level=%d state=ok\n", (unsigned)g_pluginVersion, g_level);
-    write_sync(g_boot_path, t, k);
+    (void)arg;
+    for (int s = 0;; ++s) {
+        sceKernelUsleep(1000000);
+        uint64_t f = nx_engine_info()->flips;
+        if ((g_level < 3 && s >= 40) || f > 900) {
+            boot_level_ok();
+            boot_stage(g_title_s, g_level < g_level_max ? "jugando: arranque correcto (el proximo suma una parte)"
+                                                        : "jugando: arranque correcto");
+            return NULL;
+        }
+    }
 }
 
 // engancha y anota el resultado; si no se puede de forma segura, la funcion
@@ -483,7 +513,6 @@ static int hook_one(nx_hook_t* h, void* fn, void* hk, const char* name)
 
 static void early_reserve(const char* title)
 {
-    if (g_level >= 1) return;
     pool_init(&g_base, BASE_POOL);
     if (EARLY_WORK) {
         pool_init(&g_work, (size_t)WORK_POOL_MB << 20);
@@ -519,47 +548,41 @@ s32 attr_public plugin_load(s32 argc, const char* argv[])
     // lo primero de todo: la marca de arranque "pendiente". Si el juego se
     // cierra en cualquier punto de aca en adelante, el proximo arranque usa un
     // nivel mas prudente
-    if (is_game) boot_level_pick(title);
+    if (!is_game) return 0;
+    boot_level_pick(title);
     boot_mark("plugin_load", title);
-    {   // aviso visible lo antes posible: si no aparece al abrir el juego, GoldHEN no cargo el plugin
+    if (g_level < 0) {   // hasta el nivel 0 cerro este juego: el plugin no hace nada
+        boot_stage(title, "apagado para este juego (Limpiar todo en la app lo vuelve a probar)");
+        return 0;
+    }
+    {   // aviso visible: si no aparece al abrir el juego, GoldHEN no cargo el plugin
         char n[128];
-        snprintf(n, sizeof n, "VCFG-NX %x.%02x en %s (nivel %d: %s). Mantener L3+R3: menu", g_pluginVersion >> 8,
-                 g_pluginVersion & 0xFF, title, g_level, LEVEL_NAME[g_level]);
+        snprintf(n, sizeof n, "VCFG-NX %x.%02x en %s - nivel %d de %d: %s", g_pluginVersion >> 8,
+                 g_pluginVersion & 0xFF, title, g_level, g_level_max, LVNAME(g_level));
         pf_notify(n);
     }
-    if (is_game) boot_stage(title, "inicio");
+    boot_stage(title, "inicio");
+    scePthreadCreate(&g_boot_thread, NULL, boot_thread, NULL, "vcfg_nx_boot");
+    if (g_level < 1) return 0;
     nx_engine_init(&g_pf, title);
-    if (nx_engine_info()->state == NX_ST_OFF) {
-        final_printf("proceso '%s': sin hooks (%s)\n", title, nx_engine_info()->status);
-        return 0;
-    }
     boot_stage(title, "configuracion leida");
-    if (g_level >= 2) {   // pasivo: solo se deja constancia; si el juego igual se cierra, no es el plugin
-        boot_stage(title, "pasivo: sin hooks");
-        boot_level_ok();   // en pasivo el plugin no toca nada: no hay nada mas prudente
-        return 0;
+    if (nx_engine_info()->state == NX_ST_OFF || g_level < 2) return 0;
+    if (g_level >= 4) {
+        early_reserve(title);
+        boot_stage(title, "memoria temprana lista");
     }
-    early_reserve(title);
-    boot_stage(title, "memoria lista");
     HOOK32(sceVideoOutRegisterBuffers);
     HOOK32(sceVideoOutSetFlipRate);
+    g_hooked = 1;
+    boot_stage(title, "registro de pantalla enganchado");
+    if (g_level < 3) return 0;
+    // el mando NO se engancha (como VCFG v2.23): lo lee el hilo propio, que
+    // arranca recien con el juego presentando imagen (after_game_flip)
     HOOK32(sceGnmSubmitAndFlipCommandBuffers);
     HOOK32(sceGnmSubmitAndFlipCommandBuffersForWorkload);
     HOOK32(sceVideoOutSubmitFlip);
-    boot_stage(title, "hooks de video listos");
-    // el mando NO se engancha (como VCFG v2.23: "pad entry hooks disabled"):
-    // solo lo lee el hilo propio. El juego sigue recibiendo los botones con el
-    // menu abierto, pero no se toca nada de su lectura del mando.
-    g_hooked = 1;
-    int tr = 0;   // el hilo se crea despues (after_game_flip)
-    char m[160];
-    snprintf(m, sizeof m, "[main] plugin %x.%02x cargado en %s; hooks listos; hilo del mando rc=0x%08x; temperatura %s\n",
-             g_pluginVersion >> 8, g_pluginVersion & 0xFF, title, (unsigned)tr,
-             g_temp ? "disponible" : "no disponible");
-    pf_log(m);
-    pf_append_file("/data/vcfg_nx/logs/cargas.txt", m, (int)strlen(m));
     nx_engine_flush_log();
-    boot_stage(title, "plugin_load terminado");
+    boot_stage(title, "presentacion enganchada: plugin_load terminado");
     return 0;
 }
 
