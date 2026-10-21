@@ -18,12 +18,28 @@
 #include <string.h>
 
 #include "nx_engine.h"
+#include "nx_hook.h"
 #include "nx_sys.h"
+
+// Enganches con nx_hook (puente cerca de la funcion, instrucciones relativas
+// corregidas) en vez del HOOK32 del SDK, cuyo puente en memoria de malloc puede
+// quedar a mas de 2 GB y hacer saltar al juego a cualquier lado al arrancar.
+// Mismos nombres de macro que el SDK para no cambiar el resto del archivo.
+#undef HOOK_INIT
+#undef HOOK32
+#undef HOOK
+#undef HOOK_CONTINUE
+#undef UNHOOK
+#define HOOK_INIT(name) static nx_hook_t NXH_##name
+#define HOOK32(name) hook_one(&NXH_##name, (void*)name, (void*)&name##_hook, #name)
+#define HOOK_CONTINUE(name, type, ...) (((type)(NXH_##name.stub ? NXH_##name.stub : (void*)name))(__VA_ARGS__))
+#define UNHOOK(name) nx_hook_remove(&NXH_##name)
+static int hook_one(nx_hook_t* h, void* fn, void* hk, const char* name);
 
 attr_public const char* g_pluginName = "vcfg_nx";
 attr_public const char* g_pluginDesc = "Frame generation + reescalado IA (NXSR) + SMAA/FSR1, menu L3+R3";
 attr_public const char* g_pluginAuth = "VCFG-NX";
-attr_public u32 g_pluginVersion = 0x00000252; // 2.52
+attr_public u32 g_pluginVersion = 0x00000253; // 2.53
 
 // prototipos de las variantes ForWorkload (OpenOrbis las declara sin argumentos)
 typedef s32 (*submit_wl_t)(u64, u32, void**, u32*, void**, u32*);
@@ -36,11 +52,6 @@ HOOK_INIT(sceVideoOutSetFlipRate);
 HOOK_INIT(sceGnmSubmitAndFlipCommandBuffers);
 HOOK_INIT(sceGnmSubmitAndFlipCommandBuffersForWorkload);
 HOOK_INIT(sceVideoOutSubmitFlip);
-HOOK_INIT(scePadReadState);
-HOOK_INIT(scePadRead);
-// las variantes Ext se enganchan solo si el sistema las tiene (sin importarlas)
-HOOK_INIT(scePadReadStateExt);
-HOOK_INIT(scePadReadExt);
 
 static int g_hooked, g_hooked_dm;
 static char g_boot_path[64];
@@ -142,6 +153,25 @@ static int give_back_work(void)
     g_valve_count++;
     return 1;
 }
+
+// --- plataforma de nx_hook: memoria ejecutable cerca de la funcion
+void* nx_hook_map_near(void* near, size_t len)
+{
+    uintptr_t base = (uintptr_t)near & ~(uintptr_t)0xFFFF;
+    for (int i = 1; i < 96; ++i) {
+        // alterna abajo / arriba de la funcion, de a 16 MiB
+        uintptr_t step = (uintptr_t)((i + 1) / 2) * (16u << 20);
+        uintptr_t hint = (i & 1) ? base - step : base + step;
+        void* p = NULL;
+        if (sceKernelMmap((void*)hint, len, 7 /* VM_PROT_ALL */, 0x1000 | 0x2, -1, 0, &p) < 0 || !p) continue;
+        int64_t d = (int64_t)(uintptr_t)p - (int64_t)(uintptr_t)near;
+        if (d < 0x7FF00000LL && d > -0x7FF00000LL) return p;
+        sceKernelMunmap(p, len);
+    }
+    return NULL;
+}
+void nx_hook_unmap(void* p, size_t len) { sceKernelMunmap(p, len); }
+int nx_hook_make_writable(void* p, size_t len) { return sceKernelMprotect(p, len, 7) < 0 ? -1 : 0; }
 
 // el juego pide memoria directa: si no hay y nuestra reserva de trabajo sigue
 // sin usar, se la devolvemos y se repite su pedido
@@ -334,47 +364,7 @@ s32 sceGnmSubmitAndFlipCommandBuffersForWorkload_hook(u64 workload, u32 count, v
     return r;
 }
 
-static void pad_filter(OrbisPadData* d)
-{
-    uint8_t sticks[4] = { d->leftStick.x, d->leftStick.y, d->rightStick.x, d->rightStick.y };
-    uint8_t trig[2] = { d->analogButtons.l2, d->analogButtons.r2 };
-    nx_engine_on_pad(&d->buttons, sticks, trig);
-    d->leftStick.x = sticks[0]; d->leftStick.y = sticks[1];
-    d->rightStick.x = sticks[2]; d->rightStick.y = sticks[3];
-    d->analogButtons.l2 = trig[0]; d->analogButtons.r2 = trig[1];
-}
-
 typedef s32 (*pad_state_fn)(s32, OrbisPadData*);
-typedef s32 (*pad_read_fn)(s32, OrbisPadData*, s32);
-
-s32 scePadReadState_hook(s32 handle, OrbisPadData* data)
-{
-    s32 r = HOOK_CONTINUE(scePadReadState, pad_state_fn, handle, data);
-    if (r == 0 && data) pad_filter(data);
-    return r;
-}
-
-s32 scePadRead_hook(s32 handle, OrbisPadData* data, s32 count)
-{
-    s32 r = HOOK_CONTINUE(scePadRead, pad_read_fn, handle, data, count);
-    for (s32 i = 0; data && i < r && i < count; ++i) pad_filter(&data[i]);
-    return r;
-}
-
-// variantes Ext (las usan muchos juegos grandes): mismo formato de datos al principio
-s32 scePadReadStateExt_hook(s32 handle, OrbisPadData* data)
-{
-    s32 r = HOOK_CONTINUE(scePadReadStateExt, pad_state_fn, handle, data);
-    if (r == 0 && data) pad_filter(data);
-    return r;
-}
-
-s32 scePadReadExt_hook(s32 handle, OrbisPadData* data, s32 count)
-{
-    s32 r = HOOK_CONTINUE(scePadReadExt, pad_read_fn, handle, data, count);
-    for (s32 i = 0; data && i < r && i < count; ++i) pad_filter(&data[i]);
-    return r;
-}
 
 // hilo propio: lee el mando del usuario cada ~16 ms con la funcion original
 // (sin pasar por nuestros hooks), asi L3+R3 funciona aunque el juego lea el
@@ -477,6 +467,18 @@ static void boot_level_ok(void)
     char t[64];
     int k = snprintf(t, sizeof t, "ver=%x level=%d state=ok\n", (unsigned)g_pluginVersion, g_level);
     write_sync(g_boot_path, t, k);
+}
+
+// engancha y anota el resultado; si no se puede de forma segura, la funcion
+// queda intacta (el plugin sigue sin esa parte, el juego no se toca)
+static int hook_one(nx_hook_t* h, void* fn, void* hk, const char* name)
+{
+    int r = nx_hook_install(h, fn, hk);
+    char m[200];
+    int n = snprintf(m, sizeof m, "[hook] %s: %s%s%s (fn %p puente %p)\n", name, r == 0 ? "ok" : "NO enganchada: ",
+                     r == 0 ? "" : h->why, "", h->target, (void*)h->mem);
+    if (n > 0) append_sync("/data/vcfg_nx/logs/cargas.txt", m, n);
+    return r;
 }
 
 static void early_reserve(const char* title)

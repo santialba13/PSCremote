@@ -1,4 +1,4 @@
-# VCFG-NX 2.52: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
+# VCFG-NX 2.53: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
 
 Rediseño del **VCFG v2.14** (generador de fotogramas en beta de la comunidad
 de GoldHEN) que además incorpora un **modelo de reescalado/realce propio,
@@ -6,7 +6,7 @@ NXSR**, como alternativa a GNMScale pero sin el granulado que este agrega.
 Todo con la interfaz de VCFG: app instaladora con lista de juegos y menú en
 pantalla con **L3+R3**.
 
-**Descarga:** [`dist/VCFG-NX_v2.52.pkg`](dist/VCFG-NX_v2.52.pkg) (fPKG, app) ·
+**Descarga:** [`dist/VCFG-NX_v2.53.pkg`](dist/VCFG-NX_v2.53.pkg) (fPKG, app) ·
 [`dist/vcfg_nx.prx`](dist/vcfg_nx.prx) (plugin suelto) · [`dist/SHA256SUMS.txt`](dist/SHA256SUMS.txt)
 
 | servicio | qué hace |
@@ -64,6 +64,27 @@ botones mientras está abierto):
   RCAS, contador de FPS (con temperatura) y comparar.
 * Arriba se ven los FPS, la temperatura y el estado (activo, calidad dinámica,
   calor). **Guardar** deja todo para ese juego; **O** cierra.
+
+## Novedades de la 2.53
+
+**Enganche propio en lugar de `HOOK32` del SDK de GoldHEN.** `HOOK32` pone el
+puente hacia el plugin en memoria de `malloc` y salta ahí con un `jmp` de 32
+bits (±2 GB): si esa memoria queda lejos de la función enganchada, el salto
+cae en cualquier lado y el juego se cierra la primera vez que llama a la
+función (al arrancar). Que funcione depende de cómo quede la memoria de cada
+plugin en cada juego. `nx_hook` (plugin/source/nx_hook.c):
+
+- pide la memoria del puente **ejecutable y cerca** de la función y verifica
+  la distancia antes de usarla;
+- decodifica (HDE64) las instrucciones que copia y **corrige** las relativas
+  (RIP-relativas, `call`/`jmp` rel32); si hay una que no se puede corregir,
+  **no engancha** esa función (queda intacta) en vez de dejar un salto roto;
+- sigue los thunks (`jmp` rel32/corto/`[rip]`) hasta la función real;
+- anota el resultado de cada enganche en `logs/cargas.txt`.
+
+Probado en el PC con funciones x86-64 reales (`make -C plugin/test hook`):
+prólogo común, lectura RIP-relativa, `call` al principio, thunk y rechazo de
+un salto condicional.
 
 ## Novedades de la 2.52
 
@@ -352,7 +373,7 @@ compartir para arreglar un juego puntual.
 ## Instalar y usar
 
 1. Requiere **GoldHEN** con soporte de plugins.
-2. Instalar `VCFG-NX_v2.52.pkg` y abrir **VCFG-NX**.
+2. Instalar `VCFG-NX_v2.53.pkg` y abrir **VCFG-NX**.
 3. En la cuadrícula: **X** activa o desactiva VCFG-NX en el juego,
    **CUADRADO** abre los ajustes de ese juego, **TRIÁNGULO** los ajustes por
    defecto, **L1/R1** cambia el filtro, **OPTIONS** abre el menú (activar o

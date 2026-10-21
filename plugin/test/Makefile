@@ -54,3 +54,11 @@ emu: gpu_emu
 
 clean:
 	rm -f host_test gpu_emu console_sim *.o
+
+# enganche propio (nx_hook) sobre funciones reales x86-64; necesita el SDK de GoldHEN (HDE64)
+hook_test: hook_test.c ../source/nx_hook.c ../source/nx_hook.h
+	gcc -O1 -g -fsanitize=address,undefined -fno-sanitize=alignment -Wall -Wextra -I$(GOLDHEN_SDK)/include \
+	    -o $@ hook_test.c ../source/nx_hook.c $(GOLDHEN_SDK)/source/HDE64.c
+
+hook: hook_test
+	./hook_test

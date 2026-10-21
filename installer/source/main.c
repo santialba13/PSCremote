@@ -59,7 +59,7 @@
 #define CFG_DIR ROOT "/data/vcfg_nx"
 #define TITLE_ID "VCNX00001"
 #define CONTENT_ID "IV0000-VCNX00001_00-VCFGNXINSTALL000"
-#define VERSION "2.5.2"
+#define VERSION "2.5.3"
 
 #define W 1920
 #define H 1080
