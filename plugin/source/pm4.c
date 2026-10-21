@@ -95,6 +95,11 @@ void pm4_end_of_job(pm4_t* c, uint64_t label_gpu_addr, uint32_t value)
     emit(c, (uint32_t)((label_gpu_addr >> 32) & 0xFFFF) | (1u << 29)); // DATA_SEL = 1 (32 bits)
     emit(c, value);
     emit(c, 0);
+    // y el CP espera a que llegue antes de seguir (como VCFG): si no, el flip que
+    // viene detras mostraba la imagen con nuestro trabajo a medio hacer (en GTA V
+    // se veia solo la parte de arriba del menu)
+    pm4_wait_label(c, label_gpu_addr, value);
+    pm4_acquire_mem(c, 0x80C40000u, 1, 0);
 }
 
 void pm4_nop_pad(pm4_t* c, unsigned align_dwords)

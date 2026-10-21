@@ -565,12 +565,13 @@ static void build_menu_text(void)
     // estado
     osd_clear(t, a, 1);
     int warn = E.info.safe_mode || E.info.hot || E.info.level > 0 || E.info.state == NX_ST_DEGRADED || !E.info.full_ready;
-    if (!E.cfg.effects) snprintf(l, sizeof l, "efectos apagados");
+    if (E.effects_blocked) snprintf(l, sizeof l, "solo men\xfa (efectos: pr\xf3x. arranque)");
+    else if (!E.cfg.effects) snprintf(l, sizeof l, "efectos apagados");
     else if (E.info.hot) snprintf(l, sizeof l, "%s: consola caliente (-%d)", E.info.hot == 2 ? "pausa" : "ahorro", E.info.level);
     else if (E.info.level > 0) snprintf(l, sizeof l, "%.26s (carga -%d)", E.info.status, E.info.level);
     else snprintf(l, sizeof l, "%.36s", E.info.status);
-    osd_put(t, a, 1, 1, !E.cfg.effects ? A_OFF : (warn ? A_WARN : A_ACCENT), l);
-    int dim = !E.cfg.effects;
+    osd_put(t, a, 1, 1, !E.cfg.effects ? A_OFF : (warn || E.effects_blocked ? A_WARN : A_ACCENT), l);
+    int dim = !E.cfg.effects || E.effects_blocked;
     // interruptor general
     osd_item(t, a, 2 + ROW_ALL, "Todos los efectos", E.cfg.effects ? "ON" : "OFF", E.cfg.effects ? A_ON : A_ERROR, 0);
     osd_switch(t, a, 2 + ROW_FG, "Generaci\xf3n de fotogramas", E.cfg.framegen, dim);
