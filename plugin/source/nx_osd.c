@@ -89,3 +89,19 @@ int nx_osd_copy(nx_osd_ctx_t* o, pm4_t* c, int slot, const nx_image_t* src, cons
     ka_copy_t a = { ts, td, 0, 0, w, h };
     return nx_dispatch(c, &o->ring[slot], o->sh_copy, o->code_copy, &a, sizeof a, w, h);
 }
+
+int nx_osd_copy_rect(nx_osd_ctx_t* o, pm4_t* c, int slot, const nx_image_t* src, const nx_image_t* dst, int x0, int y0,
+                     int w, int h)
+{
+    int mw = (int)(src->width < dst->width ? src->width : dst->width);
+    int mh = (int)(src->height < dst->height ? src->height : dst->height);
+    if (x0 < 0) { w += x0; x0 = 0; }
+    if (y0 < 0) { h += y0; y0 = 0; }
+    if (x0 + w > mw) w = mw - x0;
+    if (y0 + h > mh) h = mh - y0;
+    if (w <= 0 || h <= 0) return 0;
+    uint64_t ts = tsharp(&o->ring[slot], src), td = tsharp(&o->ring[slot], dst);
+    if (!ts || !td) return -1;
+    ka_copy_t a = { ts, td, x0, y0, w, h };
+    return nx_dispatch(c, &o->ring[slot], o->sh_copy, o->code_copy, &a, sizeof a, w, h);
+}

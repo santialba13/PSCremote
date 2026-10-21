@@ -1,4 +1,4 @@
-# VCFG-NX 2.69: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
+# VCFG-NX 2.70: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
 
 Rediseño del **VCFG v2.14** (generador de fotogramas en beta de la comunidad
 de GoldHEN) que además incorpora un **modelo de reescalado/realce propio,
@@ -64,6 +64,24 @@ botones mientras está abierto):
   RCAS, contador de FPS (con temperatura) y comparar.
 * Arriba se ven los FPS, la temperatura y el estado (activo, calidad dinámica,
   calor). **Guardar** deja todo para ese juego; **O** cierra.
+
+## Novedades de la 2.70
+
+Con la 2.69 en GTA V (PS4 Slim) la generación Rápida funcionó con la salida a
+60 Hz, pero costaba **61,8 ms de GPU** por fotograma (el juego bajó a 12 fps) y
+los valores del menú parpadeaban.
+
+- **Generación Rápida ~4 veces más liviana.** El block-matching comparaba cada
+  bloque de 8x8 con 49 posiciones en las tres escalas (incluida la de 1080p):
+  ~200 millones de lecturas por fotograma. Ahora, en Rápida, busca con radio 4
+  solo en la escala chica y refina ±1 en las otras dos (rango ±19 px), y no
+  calcula los promedios RGB que solo usa la red. La generación con IA no cambia
+  (radio 3: es con lo que se entrenó). En el emulador, con desplazamientos de
+  8 a 32 px en diagonal, Rápida queda a la par de IA.
+- **Sin parpadeo del menú con la generación.** El intermedio sale de deformar
+  fotogramas que traen el menú del anterior grabado; ahora bajo cada panel del
+  intermedio se copia la imagen real limpia antes de dibujarlo.
+- Cambiar entre Rápida e IA rehace la pirámide de luma.
 
 ## Novedades de la 2.69
 

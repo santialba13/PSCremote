@@ -1110,7 +1110,7 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
         E.info.menu_x = menu.x0; E.info.menu_y = menu.y0; E.info.menu_w = pw; E.info.menu_h = ph;
         osds[no++] = &menu;
     }
-    int fg_mode = want_fg ? 1 : 0;
+    int fg_mode = want_fg ? (E.cfg.framegen == 2 ? 2 : 1) : 0;   // cambiar de rapida a IA rehace la piramide
     if (fg_mode != E.last_fg) { E.prev_real_valid = 0; E.pipe.luma_valid[0] = E.pipe.luma_valid[1] = 0; }
     E.last_fg = fg_mode;
     int enhance_first = want_fg && want_post && E.Wo == E.W;

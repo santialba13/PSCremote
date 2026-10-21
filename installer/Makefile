@@ -2,7 +2,7 @@
 #   make OO_PS4_TOOLCHAIN=/ruta/OpenOrbis/PS4Toolchain GOLDHEN_SDK=/ruta/GoldHEN_Plugins_SDK
 # Compila tambien el plugin (../plugin) y lo mete en el PKG en /app0/plugins/.
 TITLE       := VCFG-NX
-VERSION     := 2.69
+VERSION     := 2.70
 TITLE_ID    := VCNX00001
 CONTENT_ID  := IV0000-VCNX00001_00-VCFGNXINSTALL000
 

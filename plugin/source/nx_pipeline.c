@@ -307,7 +307,7 @@ static void nx_block(ctx_t* x, int first, int n_layers, int H, int W, uint64_t d
     conv(x, first + n_layers - 1, p->up, H, W, delta, 0);
 }
 
-static void luma_pyramid(ctx_t* x, const nx_image_t* img, int s)
+static void luma_pyramid(ctx_t* x, const nx_image_t* img, int s, int fast)
 {
     nx_pipeline_t* p = x->p;
     ka_luma_t l = { tsharp(x, img), p->H, p->W, p->luma[s][0], p->Hp, p->Wp };
@@ -316,6 +316,7 @@ static void luma_pyramid(ctx_t* x, const nx_image_t* img, int s)
         ka_down2_t d = { p->luma[s][lv - 1], p->Hp >> (lv - 1), p->Wp >> (lv - 1), p->luma[s][lv] };
         run(x, K_LUMA_DOWN2, &d, sizeof d, p->Wp >> lv, p->Hp >> lv);
     }
+    if (fast) return;   // los promedios RGB solo los usa la red NXFlow
     ka_avgpool_t a = { tsharp(x, img), p->H, p->W, p->a8[s], p->h8, p->w8, 8 };
     run(x, K_AVGPOOL, &a, sizeof a, p->w8, p->h8);
     ka_avgpool_t q = { tsharp(x, img), p->H, p->W, p->a4[s], p->h4, p->w4, 4 };
@@ -401,16 +402,20 @@ static void frame_generation(ctx_t* x, const nx_job_t* job, const nx_image_t* pr
 
     // 1. luma (piramide) y RGB a 1/8: el del fotograma previo se reutiliza
     if (!p->luma_valid[sp])
-        luma_pyramid(x, prev, sp);
-    luma_pyramid(x, cur, sc);
+        luma_pyramid(x, prev, sp, job->fg_fast);
+    luma_pyramid(x, cur, sc, job->fg_fast);
     p->luma_valid[sc] = 1;
 
-    // 2. block-matching simetrico de grueso a fino (prev -> cur)
+    // 2. block-matching simetrico de grueso a fino (prev -> cur). En la generacion
+    // rapida: busqueda amplia solo en la escala chica (radio 4) y en las otras dos
+    // solo +-1 alrededor de la anterior (~4 veces menos comparaciones; rango +-19 px).
+    // Con la red (IA) se deja el radio 3 en todas: es con lo que se entreno.
     for (int lv = 2; lv >= 0; --lv) {
+        int radius = !job->fg_fast ? 3 : lv == 2 ? 4 : 1;
         int By = p->h8 >> lv, Bx = p->w8 >> lv;
         ka_bm_t b = { p->luma[sp][lv], p->luma[sc][lv], p->Hp >> lv, p->Wp >> lv,
                       lv == 2 ? 0 : p->vec[lv + 1], p->h8 >> (lv + 1), p->w8 >> (lv + 1),
-                      p->vtmp, By, Bx, 3 };
+                      p->vtmp, By, Bx, radius };
         run(x, K_BM_SEARCH, &b, sizeof b, Bx, By);
         ka_median_t m = { p->vtmp, p->vec[lv], By, Bx };
         run(x, K_BM_MEDIAN3, &m, sizeof m, Bx, By);
@@ -487,7 +492,20 @@ int nx_pipeline_build(nx_pipeline_t* p, pm4_t* c, const nx_job_t* job)
     if (job->compare && job->out_real && job->osd_ctx
         && nx_osd_copy_left(job->osd_ctx, c, job->slot, job->cur, job->out_real) != 0)
         x.err = 5;
-    if (job->fg) draw_osd(&x, job, job->out_mid);
+    if (job->fg) {
+        // el intermedio sale de deformar fotogramas que pueden traer el menu del
+        // anterior grabado: bajo cada panel va la imagen real limpia, asi el panel se
+        // ve igual en el intermedio y en el real (si no, parpadeaba)
+        const nx_image_t* clean = job->out_real ? job->out_real : job->cur;
+        for (int i = 0; i < 2 && job->osd_ctx; ++i) {
+            const nx_osd_t* d = job->osd[i];
+            if (!d) continue;
+            int pw, ph;
+            nx_osd_panel_size(d->cols, d->rows, d->scale, &pw, &ph);
+            if (nx_osd_copy_rect(job->osd_ctx, c, job->slot, clean, job->out_mid, d->x0, d->y0, pw, ph) != 0) x.err = 7;
+        }
+        draw_osd(&x, job, job->out_mid);
+    }
     draw_osd(&x, job, job->out_real ? job->out_real : job->cur);
     // el real procesado vuelve al buffer del juego, que es el que se presenta: el
     // juego sigue viendo sus propios buffers en pantalla (como VCFG)
