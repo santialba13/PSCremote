@@ -15,13 +15,15 @@ void nx_osd_panel_size(int cols, int rows, int scale, int* w, int* h)
     *h = rows * NX_OSD_CH * scale + 36 * scale;
 }
 typedef struct { uint64_t src, dst; int32_t x0, y0, w, h; } ka_copy_t;
+typedef struct { uint64_t dst; int32_t x0, y0, w, h; float r, g, b; } ka_fill_t;
 
 size_t nx_osd_mem_size(void)
 {
     const nx_shader_t* a = nx_find_shader("osd_draw");
     const nx_shader_t* b = nx_find_shader("copy_rect");
-    size_t code = (a ? a->code_dwords * 4 : 0) + (b ? b->code_dwords * 4 : 0);
-    return (code + 512 + 255) / 256 * 256 + NX_OSD_RINGS * RING_BYTES;
+    const nx_shader_t* f = nx_find_shader("fill_rect");
+    size_t code = (a ? a->code_dwords * 4 : 0) + (b ? b->code_dwords * 4 : 0) + (f ? f->code_dwords * 4 : 0);
+    return (code + 768 + 255) / 256 * 256 + NX_OSD_RINGS * RING_BYTES;
 }
 
 int nx_osd_init(nx_osd_ctx_t* o, uint8_t* cpu, uint64_t gpu)
@@ -29,7 +31,8 @@ int nx_osd_init(nx_osd_ctx_t* o, uint8_t* cpu, uint64_t gpu)
     memset(o, 0, sizeof *o);
     o->sh_draw = nx_find_shader("osd_draw");
     o->sh_copy = nx_find_shader("copy_rect");
-    if (!o->sh_draw || !o->sh_copy) return -1;
+    o->sh_fill = nx_find_shader("fill_rect");
+    if (!o->sh_draw || !o->sh_copy || !o->sh_fill) return -1;
     size_t off = 0;
     memcpy(cpu + off, o->sh_draw->code, o->sh_draw->code_dwords * 4);
     o->code_draw = gpu + off;
@@ -37,6 +40,9 @@ int nx_osd_init(nx_osd_ctx_t* o, uint8_t* cpu, uint64_t gpu)
     memcpy(cpu + off, o->sh_copy->code, o->sh_copy->code_dwords * 4);
     o->code_copy = gpu + off;
     off = (off + o->sh_copy->code_dwords * 4 + 255) / 256 * 256;
+    memcpy(cpu + off, o->sh_fill->code, o->sh_fill->code_dwords * 4);
+    o->code_fill = gpu + off;
+    off = (off + o->sh_fill->code_dwords * 4 + 255) / 256 * 256;
     for (int s = 0; s < NX_OSD_RINGS; ++s) {
         o->ring[s] = (nx_ring_t){ cpu + off, gpu + off, RING_BYTES, 0 };
         off += RING_BYTES;
@@ -104,4 +110,18 @@ int nx_osd_copy_rect(nx_osd_ctx_t* o, pm4_t* c, int slot, const nx_image_t* src,
     if (!ts || !td) return -1;
     ka_copy_t a = { ts, td, x0, y0, w, h };
     return nx_dispatch(c, &o->ring[slot], o->sh_copy, o->code_copy, &a, sizeof a, w, h);
+}
+
+int nx_osd_fill_rect(nx_osd_ctx_t* o, pm4_t* c, int slot, const nx_image_t* dst, int x0, int y0, int w, int h,
+                     float r, float g, float b)
+{
+    if (x0 < 0) { w += x0; x0 = 0; }
+    if (y0 < 0) { h += y0; y0 = 0; }
+    if (x0 + w > (int)dst->width) w = (int)dst->width - x0;
+    if (y0 + h > (int)dst->height) h = (int)dst->height - y0;
+    if (w <= 0 || h <= 0) return 0;
+    uint64_t td = tsharp(&o->ring[slot], dst);
+    if (!td) return -1;
+    ka_fill_t a = { td, x0, y0, w, h, r, g, b };
+    return nx_dispatch(c, &o->ring[slot], o->sh_fill, o->code_fill, &a, sizeof a, w, h);
 }

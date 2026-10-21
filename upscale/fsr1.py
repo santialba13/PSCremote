@@ -87,8 +87,15 @@ def easu(img, out_h, out_w):
     return np.clip(aC / aW[..., None], mn, mx).astype(np.float32)
 
 
-def rcas(img, sharpness=0.2, denoise=False):
-    """sharpness en 'stops' como en FSR: 0 = maximo, 2 = suave."""
+def _y601(c):
+    return (c[..., 0] * np.float32(0.299) + c[..., 1] * np.float32(0.587)) + c[..., 2] * np.float32(0.114)
+
+
+def rcas(img, sharpness=0.2, denoise=False, detail=0.0):
+    """sharpness en 'stops' como en FSR: 0 = maximo, 2 = suave.
+
+    detail > 0: FSR+ de VCFG-NX (ver shaders/fsr1.cl): realce de detalle de radio 2
+    sobre la luma, limitado al rango 3x3 local (+-0.01) y sin tocar el grano."""
     con = 2.0 ** (-sharpness)
     p = np.pad(img, ((1, 1), (1, 1), (0, 0)), mode="edge")
     b = p[:-2, 1:-1]; d = p[1:-1, :-2]; e = p[1:-1, 1:-1]; f = p[1:-1, 2:]; h = p[2:, 1:-1]
@@ -105,7 +112,23 @@ def rcas(img, sharpness=0.2, denoise=False):
         nz = np.clip(np.abs(nz) / np.maximum(rng, 1e-8), 0, 1)
         lobe *= -0.5 * nz + 1.0
     lobe = lobe[..., None]
-    return np.clip((lobe * (b + d + f + h) + e) / (4.0 * lobe + 1.0), 0, 1).astype(np.float32)
+    o = (lobe * (b + d + f + h) + e) / (4.0 * lobe + 1.0)
+    if detail > 0:
+        q = np.pad(img, ((2, 2), (2, 2), (0, 0)), mode="edge")
+        Y = _y601(q)
+        H, W = img.shape[:2]
+        t = lambda dy, dx: Y[2 + dy:2 + dy + H, 2 + dx:2 + dx + W]
+        ya, yb, yc, yd, ye, yf, yg, yh, yi = (t(-1, -1), t(-1, 0), t(-1, 1), t(0, -1), t(0, 0), t(0, 1),
+                                              t(1, -1), t(1, 0), t(1, 1))
+        far = (t(-2, 0) + t(0, -2)) + (t(0, 2) + t(2, 0))
+        blur = (((4.0 * ye + 2.0 * ((yb + yd) + (yf + yh))) + ((ya + yc) + (yg + yi))) + far) / 20.0
+        dt = ye - blur
+        wn = np.clip((np.abs(dt) - 0.004) / 0.016, 0, 1)
+        nb = np.stack([ya, yb, yc, yd, ye, yf, yg, yh, yi])
+        yo = _y601(o)
+        tgt = np.clip(yo + detail * dt * wn, np.minimum(nb.min(0), yo) - 0.01, np.maximum(nb.max(0), yo) + 0.01)
+        o = o + (tgt - yo)[..., None]
+    return np.clip(o, 0, 1).astype(np.float32)
 
 
 def fsr1(img, out_h, out_w, sharpness=0.2):

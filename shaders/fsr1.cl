@@ -90,14 +90,20 @@ NX_KERNEL void easu(tdesc_t src, int H, int W, tdesc_t dst, int Ho, int Wo)
 
 #define RCAS_LIMIT (0.25f - 1.0f / 16.0f)
 
-// sharp = exp2(-nitidez_en_stops); denoise = 1 activa FSR_RCAS_DENOISE
-NX_KERNEL void rcas(tdesc_t src, tdesc_t dst, int W, int H, float sharp, int denoise)
+static float y601(float4 c) { return (c.x * 0.299f + c.y * 0.587f) + c.z * 0.114f; }
+
+// sharp = exp2(-nitidez_en_stops); denoise = 1 activa FSR_RCAS_DENOISE.
+// detail > 0: "FSR+" (VCFG-NX), despues de RCAS un realce de detalle de radio 2
+// sobre la luma (recupera lo que suavizan TAA/FXAA, que RCAS con su limite no
+// alcanza), sin halos (el realce no saca la luma del rango 3x3 local +-0.01) y sin
+// subir el grano (diferencias de menos de 0.004 no se tocan). Referencia:
+// upscale/fsr1.py:rcas.
+NX_KERNEL void rcas(tdesc_t src, tdesc_t dst, int W, int H, float sharp, int denoise, float detail)
 {
     int x = GID_X, y = GID_Y;
     if (x >= W || y >= H) return;
 #define L(dx, dy) nx_load(src, nx_clampi(x + (dx), 0, W - 1), nx_clampi(y + (dy), 0, H - 1))
     float4 b = L(0, -1), d = L(-1, 0), e = L(0, 0), f = L(1, 0), h = L(0, 1);
-#undef L
     float4 mn4 = nx_min4(nx_min4(b, d), nx_min4(f, h)), mx4 = nx_max4(nx_max4(b, d), nx_max4(f, h));
     float lobe = -1.0f;
     for (int c = 0; c < 3; ++c) {
@@ -118,5 +124,22 @@ NX_KERNEL void rcas(tdesc_t src, tdesc_t dst, int W, int H, float sharp, int den
         lobe *= -0.5f * nz + 1.0f;
     }
     float4 o = (lobe * (b + d + f + h) + e) * nx_rcp(4.0f * lobe + 1.0f);
+    if (detail > 0.0f) {
+        float4 a = L(-1, -1), c = L(1, -1), g = L(-1, 1), i = L(1, 1);
+        float yb = y601(b), yd = y601(d), ye = y601(e), yf = y601(f), yh = y601(h);
+        float ya = y601(a), yc = y601(c), yg = y601(g), yi = y601(i);
+        float far = (y601(L(0, -2)) + y601(L(-2, 0))) + (y601(L(2, 0)) + y601(L(0, 2)));
+        float blur = (((4.0f * ye + 2.0f * ((yb + yd) + (yf + yh))) + ((ya + yc) + (yg + yi))) + far) * (1.0f / 20.0f);
+        float dt = ye - blur;
+        float wn = nx_clampf((nx_absf(dt) - 0.004f) * (1.0f / 0.016f), 0.0f, 1.0f);
+        float mnY = nx_minf(nx_minf(nx_minf(ya, yb), nx_minf(yc, yd)), nx_minf(nx_minf(ye, yf), nx_minf(nx_minf(yg, yh), yi)));
+        float mxY = nx_maxf(nx_maxf(nx_maxf(ya, yb), nx_maxf(yc, yd)), nx_maxf(nx_maxf(ye, yf), nx_maxf(nx_maxf(yg, yh), yi)));
+        float yo = y601(o);
+        // el limite nunca recorta lo que ya hizo RCAS: solo acota el realce extra
+        float tgt = nx_clampf(yo + detail * dt * wn, nx_minf(mnY, yo) - 0.01f, nx_maxf(mxY, yo) + 0.01f);
+        float dy = tgt - yo;
+        o = o + (float4)(dy, dy, dy, 0.0f);
+    }
+#undef L
     nx_store(dst, x, y, nx_clamp4(o, (float4)(0.0f), (float4)(1.0f)));
 }

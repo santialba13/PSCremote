@@ -15,6 +15,10 @@ import optax
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import net  # noqa: E402
+import net2  # noqa: E402
+
+NET = net
+BM_SUFFIX = "_bm.npy"
 
 
 MASK_W = 0.02
@@ -25,7 +29,7 @@ def charb(x):
 
 
 def loss_fn(params, i0, gt, i1, bm):
-    out, (F0, F1, M, w0, w1) = net.interpolate(params, i0, i1, bm)
+    out, (F0, F1, M, w0, w1) = NET.interpolate(params, i0, i1, bm)
     l_pix = charb(out - gt).mean()
     # supervision privilegiada de la mascara: donde un warp es claramente mejor
     # que el otro respecto del fotograma real, la mascara deberia elegirlo
@@ -48,13 +52,13 @@ def augment(rng, b, bm):
     """b: (N,3,H,W,3); bm: (N,h,w,2) vectores (dy,dx). Las transformaciones se aplican a ambos."""
     if rng.random() < 0.5:
         b = b[:, :, :, ::-1]
-        bm = bm[:, :, ::-1] * np.array([1, -1], np.float32)
+        bm = bm[:, :, ::-1] * np.array([1, -1, 1][:bm.shape[-1]], np.float32)
     if rng.random() < 0.3:
         b = b[:, :, ::-1]
-        bm = bm[:, ::-1] * np.array([-1, 1], np.float32)
+        bm = bm[:, ::-1] * np.array([-1, 1, 1][:bm.shape[-1]], np.float32)
     if rng.random() < 0.5:
         b = b[:, ::-1]  # invertir tiempo
-        bm = -bm
+        bm = bm * np.array([-1, -1, 1][:bm.shape[-1]], np.float32)
     if rng.random() < 0.5:
         b = b[..., rng.permutation(3)]
     return np.ascontiguousarray(b), np.ascontiguousarray(bm)
@@ -77,21 +81,25 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--init", help="checkpoint para arrancar (los bloques que coincidan)")
     ap.add_argument("--mask-weight", type=float, default=0.02)
+    ap.add_argument("--arch", default="nxflow", choices=["nxflow", "nxfg2"])
     a = ap.parse_args()
     MASK_W = a.mask_weight
+    global NET, BM_SUFFIX
+    if a.arch == "nxfg2":
+        NET, BM_SUFFIX = net2, "_bm2.npy"
 
     data = np.load(a.data)
-    data_bm = np.load(a.data.replace(".npy", "_bm.npy"))
+    data_bm = np.load(a.data.replace(".npy", BM_SUFFIX))
     val = np.load(a.val).astype(np.float32)
-    val_bm = np.load(a.val.replace(".npy", "_bm.npy"))
+    val_bm = np.load(a.val.replace(".npy", BM_SUFFIX))
     rng = np.random.default_rng(a.seed)
-    params = net.init(jax.random.PRNGKey(a.seed))
+    params = NET.init(jax.random.PRNGKey(a.seed))
     if a.init:
         with open(a.init, "rb") as f:
             old = pickle.load(f)
         params.update({k: jax.tree_util.tree_map(jnp.asarray, v) for k, v in old.items() if k in params})
         print("arranque desde", a.init, "bloques:", sorted(old), flush=True)
-    print("parametros:", net.count_params(params), "datos:", data.shape, flush=True)
+    print("parametros:", NET.count_params(params), "datos:", data.shape, flush=True)
 
     sched = optax.warmup_cosine_decay_schedule(0, a.lr, min(200, a.steps // 4), a.steps, a.lr * 0.02)
     opt = optax.chain(optax.clip_by_global_norm(1.0), optax.adamw(sched, weight_decay=1e-4))
@@ -105,7 +113,7 @@ def main():
 
     @jax.jit
     def infer(params, i0, i1, bm):
-        return net.interpolate(params, i0, i1, bm)[0]
+        return NET.interpolate(params, i0, i1, bm)[0]
 
     def evaluate(params):
         outs = [np.asarray(infer(params, val[i:i + 16, 0], val[i:i + 16, 2], val_bm[i:i + 16]))

@@ -48,6 +48,14 @@
 #define MAX_UP_FAILS 2          // espera para subir: UP_FLIPS << min(fallos, MAX_UP_FAILS)
 #define SLOW_WAIT_US 1500       // esperar mas que esto por la GPU frena al juego...
 #define SLOW_LIMIT 15           // ...y si pasa tantos fotogramas seguidos, cuenta como atraso
+#define FG8_BUDGET_MS 8.0f      // con la generacion: mas GPU que esto por fotograma le quita al juego
+// lo aplicado en el ultimo fotograma (linea de estado del menu)
+#define FX_FG_VCFG 1u
+#define FX_FG_IA 2u
+#define FX_SR 4u
+#define FX_AA 8u
+#define FX_RCAS 16u
+#define FX_EASU 32u
 #define DEGRADED_RETRY_FLIPS 5400   // ~3 min en "solo pasar" -> reintentar con lo minimo
 #define MAX_DEGRADED_RETRIES 2
 #define OSD_COLS 40
@@ -134,7 +142,10 @@ static struct {
     int fg8_mid_index[3];
     uint32_t own_mask;               // indices de VideoOut que registro el plugin
     int fx_cap;                      // tope de efectos (nx_engine_allow_effects)
-    int fx_first_job, fx_first_fg;
+    int fx_first_job, fx_first_fg, fx_post_first;
+    int have_mids;                   // intermedios propios (generacion del camino propio, flips de CPU)
+    unsigned fx_active;              // lo que se aplico en el ultimo fotograma (FX_*), para el menu
+    int mem_need_mb, mem_free_mb;    // la ultima reserva de los efectos que no alcanzo
     uint64_t level_since, last_stall, probe_until, degraded_at;
     int up_fails, degraded_gpu, degraded_retries, slow_run;
     // temperatura
@@ -480,12 +491,20 @@ static int alloc_full(void)
     size_t arena_sz = nx_pipeline_mem_size(E.W, E.H, E.Wo, E.Ho);
     size_t pitch_o = (size_t)((E.Wo + 63) / 64 * 64);
     size_t buf = (pitch_o * E.Ho * 4 + 0xFFFF) & ~(size_t)0xFFFF;
-    size_t total = arena_sz + 2 * MAX_MID * buf;
+    // buffers de salida: los intermedios propios solo los usa la generacion del camino
+    // propio (juegos con flip de CPU; los demas usan la presentacion de VCFG, con sus
+    // intermedios); el real procesado vuelve al buffer del juego, asi que basta uno
+    // sin registrar, salvo con EASU (salida mas grande: se presenta el propio)
+    int nmid = E.flips_cpu ? MAX_MID : 0;
+    int easu = E.Wo != E.W || E.Ho != E.H;
+    int nreal = easu || nmid ? MAX_MID : 1;   // con generacion propia el anterior procesado se reusa
+    int nreg = nmid + (easu ? MAX_MID : 0);
+    size_t total = arena_sz + (size_t)(nmid + nreal) * buf;
     // nuestros indices: el bloque libre mas alto (el juego suele usar los primeros)
     int extra_first = -1;
-    for (int s0 = 16 - 2 * MAX_MID; s0 >= 0 && extra_first < 0; --s0)
-        if (!(((E.game_mask | E.own_mask) >> s0) & ((1u << (2 * MAX_MID)) - 1))) extra_first = s0;
-    if (extra_first < 0) {
+    for (int s0 = 16 - nreg; nreg && s0 >= 0 && extra_first < 0; --s0)
+        if (!(((E.game_mask | E.own_mask) >> s0) & ((1u << nreg) - 1))) extra_first = s0;
+    if (nreg && extra_first < 0) {
         set_status("sin indices libres de VideoOut");
         logf_("[mem] sin indices libres (mascara del juego 0x%04x)\n", E.game_mask);
         return -1;
@@ -497,32 +516,38 @@ static int alloc_full(void)
         logf_("[mem] hacen falta %zu MiB + %d de reserva, libres %zu MiB (reserva propia %zu MiB): se reintenta mas tarde\n",
               total >> 20, E.cfg.reserve_mb, avail >> 20, pool >> 20);
         E.info.alloc_fail++;
+        E.mem_need_mb = (int)(total >> 20) + E.cfg.reserve_mb;
+        E.mem_free_mb = (int)(avail >> 20);
         return 0;
     }
     uint8_t* arena = E.pf->alloc_gpu(arena_sz, 65536);
-    uint8_t* outs = arena ? E.pf->alloc_gpu(2 * MAX_MID * buf, 65536) : NULL;
+    uint8_t* outs = arena ? E.pf->alloc_gpu((size_t)(nmid + nreal) * buf, 65536) : NULL;
     if (!arena || !outs) { E.info.alloc_fail++; logf_("[mem] la reserva fallo (arena %p, salidas %p)\n", (void*)arena, (void*)outs); return 0; }
     nx_arena_t a = { arena, (uint64_t)(uintptr_t)arena, arena_sz, 0 };
     if (nx_pipeline_init(&E.pipe, E.W, E.H, E.Wo, E.Ho, a) != 0) { set_status("error interno (pipeline)"); return -1; }
     E.pipe.label_gpu = E.label_gpu;   // el mismo label que el OSD: la secuencia nunca retrocede
     E.pipe.label_cpu = E.label_cpu;
     void* addrs[2 * MAX_MID];
-    for (int i = 0; i < 2 * MAX_MID; ++i) addrs[i] = outs + buf * i;
-    nx_vo_attr_t oa = E.attr;
-    oa.width = (uint32_t)E.Wo; oa.height = (uint32_t)E.Ho; oa.pitch = (uint32_t)pitch_o;
-    oa.tmode = 1;   // nuestros kernels escriben en lineal
-    int rc = E.pf->register_buffers(E.handle, extra_first, addrs, 2 * MAX_MID, &oa);
-    if (rc < 0) { logf_("[engine] RegisterBuffers propio = 0x%08x\n", (unsigned)rc); set_status("VideoOut rechazo los buffers"); return -1; }
-    E.own_mask |= ((1u << (2 * MAX_MID)) - 1) << extra_first;
+    for (int i = 0; i < nmid + nreal; ++i) addrs[i] = outs + buf * (size_t)i;
+    if (nreg) {
+        nx_vo_attr_t oa = E.attr;
+        oa.width = (uint32_t)E.Wo; oa.height = (uint32_t)E.Ho; oa.pitch = (uint32_t)pitch_o;
+        oa.tmode = 1;   // nuestros kernels escriben en lineal
+        int rc = E.pf->register_buffers(E.handle, extra_first, addrs, nreg, &oa);
+        if (rc < 0) { logf_("[engine] RegisterBuffers propio = 0x%08x\n", (unsigned)rc); set_status("VideoOut rechazo los buffers"); return -1; }
+        E.own_mask |= ((1u << nreg) - 1) << extra_first;
+    }
     nx_format_t fmt = E.game_img[__builtin_ctz(E.game_mask)].format;
     for (int i = 0; i < MAX_MID; ++i) {
-        nx_image_t im = { (uint64_t)(uintptr_t)addrs[i], (uint32_t)E.Wo, (uint32_t)E.Ho, (uint32_t)pitch_o, fmt,
-                          NX_TILE_DISPLAY_LINEAR_ALIGNED };
-        E.mid_img[i] = im; E.mid_index[i] = extra_first + i;
-        im.gpu_addr = (uint64_t)(uintptr_t)addrs[MAX_MID + i];
-        E.real_img[i] = im; E.real_index[i] = extra_first + MAX_MID + i;
+        nx_image_t im = { 0, (uint32_t)E.Wo, (uint32_t)E.Ho, (uint32_t)pitch_o, fmt, NX_TILE_DISPLAY_LINEAR_ALIGNED };
+        im.gpu_addr = nmid ? (uint64_t)(uintptr_t)addrs[i] : 0;
+        E.mid_img[i] = im; E.mid_index[i] = nmid ? extra_first + i : -1;
+        im.gpu_addr = (uint64_t)(uintptr_t)addrs[nmid + (nreal > 1 ? i : 0)];
+        E.real_img[i] = im; E.real_index[i] = easu ? extra_first + nmid + i : -1;
     }
+    E.have_mids = nmid > 0;
     E.info.full_ready = 1;
+    E.mem_need_mb = 0;
     logf_("[engine] listo: %dx%d -> %dx%d, %zu MiB\n", E.W, E.H, E.Wo, E.Ho, total >> 20);
     stage("efectos: memoria lista %dx%d, %zu MiB, buffers propios desde el indice %d", E.Wo, E.Ho, total >> 20, extra_first);
     return 1;
@@ -534,9 +559,8 @@ static int full_wanted(void)
 {
     if (E.hdr || E.effects_blocked || !E.cfg.effects) return 0;
     if (E.cfg.framegen == 2) return 1;
-    // con la generacion de VCFG en uso el post-proceso no se aplica: no hace falta
-    // reservar su memoria (en GTA V cada MiB cuenta); si se apaga la generacion, si
-    if (E.cfg.framegen == 1 && E.fx_cap >= 3) return 0;
+    // con la generacion de VCFG la memoria grande solo hace falta si hay post-proceso
+    // (desde la 2.73 se combina: el real se procesa antes de generar el intermedio)
     return E.cfg.sr || E.cfg.aa || E.cfg.rcas;
 }
 
@@ -683,12 +707,25 @@ static void build_menu_text(void)
         snprintf(l, sizeof l, "%.20s \xb7 parte %d de 3", E.info.status, E.fx_cap);
     else if (!E.cfg.effects) snprintf(l, sizeof l, "efectos apagados");
     else if (E.info.hot) snprintf(l, sizeof l, "%s: consola caliente (-%d)", E.info.hot == 2 ? "pausa" : "ahorro", E.info.level);
+    else if ((E.cfg.sr || E.cfg.aa || E.cfg.rcas) && !E.info.full_ready && E.mem_need_mb)
+        snprintf(l, sizeof l, "efectos: falta memoria (%d de %d MiB)", E.mem_free_mb, E.mem_need_mb);
+    else if (E.info.state == NX_ST_RUN && E.fx_active) {
+        unsigned f = E.fx_active;
+        int n = snprintf(l, sizeof l, "%s", E.info.level > 0 ? "carga: " : "activo: ");
+        const char* sep = "";
+        if (f & (FX_FG_VCFG | FX_FG_IA)) { n += snprintf(l + n, sizeof l - (size_t)n, "%s", f & FX_FG_IA ? "IA" : "VCFG"); sep = "+"; }
+        if (f & FX_EASU) { n += snprintf(l + n, sizeof l - (size_t)n, "%sEASU", sep); sep = "+"; }
+        if (f & FX_SR) { n += snprintf(l + n, sizeof l - (size_t)n, "%sNXSR%s", sep, E.info.hq ? "-C" : ""); sep = "+"; }
+        if (f & FX_AA) { n += snprintf(l + n, sizeof l - (size_t)n, "%sSMAA", sep); sep = "+"; }
+        if (f & FX_RCAS) { n += snprintf(l + n, sizeof l - (size_t)n, "%sFSR", sep); sep = "+"; }
+        if (E.info.level > 0 && n < (int)sizeof l - 6) snprintf(l + n, sizeof l - (size_t)n, " (-%d)", E.info.level);
+    }
     else if (E.info.level > 0) snprintf(l, sizeof l, "%.26s (carga -%d)", E.info.status, E.info.level);
     else snprintf(l, sizeof l, "%.36s", E.info.status);
     osd_put(t, a, 1, 1, !E.cfg.effects ? A_OFF : (warn || E.effects_blocked ? A_WARN : A_ACCENT), l);
     int dim = !E.cfg.effects || E.effects_blocked;
-    // con la generacion de VCFG el post-proceso no se combina (como en VCFG)
-    int pdim = dim || (E.cfg.framegen >= 1 && E.fx_cap >= 3);
+    // desde la 2.73 el post-proceso tambien se combina con la generacion
+    int pdim = dim;
     // interruptor general
     osd_item(t, a, 2 + ROW_ALL, "Todos los efectos", E.cfg.effects ? "ON" : "OFF", E.cfg.effects ? A_ON : A_ERROR, 0);
     osd_item(t, a, 2 + ROW_FG, "Generaci\xf3n de fotogramas",
@@ -703,7 +740,7 @@ static void build_menu_text(void)
     osd_item(t, a, 2 + ROW_MODEL, "Modelo IA", mv, A_ACCENT, pdim || !E.cfg.sr);
     osd_switch(t, a, 2 + ROW_ECO, "Modo ahorro (menos calor)", E.cfg.eco, dim);
     osd_switch(t, a, 2 + ROW_AA, "Antialiasing SMAA", E.cfg.aa, pdim || E.cfg.eco);
-    osd_item(t, a, 2 + ROW_RCAS, "Nitidez FSR1 (RCAS)", rc_names[E.cfg.rcas & 3], E.cfg.rcas ? A_ACCENT : A_OFF,
+    osd_item(t, a, 2 + ROW_RCAS, "Nitidez FSR+ (RCAS)", rc_names[E.cfg.rcas & 3], E.cfg.rcas ? A_ACCENT : A_OFF,
              pdim);
     osd_switch(t, a, 2 + ROW_FPS, "Contador de FPS", E.cfg.fps_counter, 0);
     osd_switch(t, a, 2 + ROW_CMP, "Comparar (izq. original)", E.cfg.compare, dim);
@@ -1105,6 +1142,47 @@ static void pace30(void)
 
 static void gpu_time_read_ts(volatile uint64_t* ts);
 
+// nitidez FSR+ (2.73): RCAS al maximo de FSR desde "Media" y ademas el realce de
+// detalle sin halos (Baja/Media/Alta = 0.3/0.6/1.0), que se nota en imagenes con TAA/FXAA
+static float sharp_stops(void) { return E.cfg.rcas == 1 ? 0.5f : E.cfg.rcas == 2 ? 0.2f : E.cfg.rcas ? 0.0f : 2.0f; }
+static float sharp_detail(void) { return E.cfg.rcas == 1 ? 0.3f : E.cfg.rcas == 2 ? 0.6f : E.cfg.rcas ? 1.0f : 0.0f; }
+// NXSR a la resolucion nativa es realce de detalle (no hay escalado que hacer): con
+// k = 1 cambia ~0.7/255 en promedio y no se notaba. El limitador 3x3 del shader
+// impide halos, asi que se puede subir (Suave/Normal/Fuerte = 1/2/3)
+static float sr_gain(void) { return E.cfg.sr == 1 ? 1.0f : E.cfg.sr == 2 ? 2.0f : 3.0f; }
+
+// post-proceso del real de la generacion: en un buffer propio y de vuelta al del
+// juego, ANTES de generar el intermedio (que asi hereda la misma calidad y no hace
+// falta procesarlo aparte: una sola vez por fotograma del juego). Slots 6-9 del
+// pipeline y del OSD (los de la generacion son 0-3 y 2-5).
+static int fg8_post(pm4_t* c, int k, const nx_image_t* C, int sr, int hq, int aa, int rcas, uint32_t seq)
+{
+    nx_job_t pj;
+    memset(&pj, 0, sizeof pj);
+    pj.cur = C;
+    pj.out_real = &E.real_img[k & 1];
+    pj.slot = 6 + k;
+    pj.post = NX_POST_NONE;
+    pj.aa = aa;
+    pj.sharpness_stops = sharp_stops();
+    pj.sharp_detail = rcas ? sharp_detail() : 0.0f;
+    pj.seq = seq;
+    pj.sr = sr;
+    pj.sr_k = sr ? sr_gain() : 0.0f;
+    pj.sr_hq = hq;
+    pj.rcas = rcas;
+    pj.copy_back = C;
+    pj.osd_ctx = &E.osd;
+    pj.no_end = 1;
+    int r = nx_pipeline_build(&E.pipe, c, &pj);
+    if (!r && !E.fx_post_first) {
+        E.fx_post_first = 1;
+        stage("efectos: primer post-proceso con generacion (nxsr %d%s, smaa %d, nitidez %d)", sr, hq ? " calidad" : "",
+              aa, rcas);
+    }
+    return r;
+}
+
 // un fotograma con la generacion de VCFG
 static int fg8_frame(const nx_submit_t* s, int gi)
 {
@@ -1132,11 +1210,30 @@ static int fg8_frame(const nx_submit_t* s, int gi)
     }
     E.stall_run = 0;
     gpu_time_read_ts(nx_fg8_ts(&E.fg8, k));
+    // calidad dinamica por tiempo de GPU: los 4 slots casi nunca esperan, asi que el
+    // atraso no se ve en la espera sino en lo que tarda nuestro trabajo
+    if (E.info.gpu_ms > FG8_BUDGET_MS) {
+        if (++E.slow_run >= SLOW_LIMIT) { E.slow_run = 0; on_stall(); }
+    } else {
+        E.slow_run = 0;
+        if (E.info.gpu_ms < 0.6f * FG8_BUDGET_MS) maybe_level_up();
+    }
     pace30();
     set_rate_forced(1);
     uint32_t seq = ++E.fg8_seq;
     int m = E.fg8_midk;
-    int ia = E.cfg.framegen == 2;   // generacion propia (NXFlow) con la presentacion de VCFG
+    int ia = E.cfg.framegen == 2;   // generacion propia (NXFG-2) con la presentacion de VCFG
+    // post-proceso del real (reescalado, SMAA, nitidez), con la calidad dinamica
+    int sr = 0, hq = 0, aa = 0, rcas = 0, fgk = 1;
+    if (E.info.full_ready && E.Wo == E.W && E.Ho == E.H) {
+        sr = E.cfg.sr > 0;
+        hq = sr && !E.cfg.eco && (E.cfg.sr_model == 2 || (E.cfg.sr_model == 0 && E.pro));
+        aa = E.cfg.aa && !E.cfg.eco;
+        rcas = E.cfg.rcas > 0;
+        quality_ladder(&fgk, &sr, &hq, &aa, &rcas);
+    }
+    E.info.hq = hq;
+    int post_on = sr || aa || rcas;
     int tag = ia ? 4 : 3;
     int repeat = E.prev_idx < 0 || E.prev_idx == gi || E.prev_idx >= 16 || !((E.game_mask >> E.prev_idx) & 1)
                  || E.last_fg != tag;
@@ -1152,18 +1249,33 @@ static int fg8_frame(const nx_submit_t* s, int gi)
     pm4_init(&c, nx_fg8_dcb(&E.fg8, k), NX_FG8_DCB_DWORDS - NX_FG8_TAIL_DWORDS);
     nx_fg8_job_t j = { P, C, &E.fg8_mid[m], (uint32_t)E.fg8_mid_index[m], E.handle, seq, 0x8000, repeat,
                        rect[0], rect[1], rect[2], rect[3], E.pf->wait_flip_done,
-                       (uint64_t)(uintptr_t)nx_fg8_ts(&E.fg8, k) };
+                       (uint64_t)(uintptr_t)nx_fg8_ts(&E.fg8, k), 0 };
     nx_osd_begin(&E.osd, 2 + k);   // una sola vez: la copia y el OSD comparten el anillo del slot
-    int br;
+    // prologo de VCFG (espera a que el juego termine el fotograma); despues el
+    // post-proceso del real y recien ahi la generacion, sobre los reales ya procesados
+    nx_fg8_prologue(&E.fg8, &c, k, seq, C, j.ts0);
+    j.no_prologue = 1;
+    int br = post_on ? fg8_post(&c, k, C, sr, hq, aa, rcas, seq) : 0;
+    if (br) {
+        logf_("[fg8] post = %d: post-proceso apagado\n", br);
+        E.cfg.sr = E.cfg.aa = E.cfg.rcas = 0;
+        post_on = sr = aa = rcas = 0;
+        br = 0;
+        pm4_init(&c, nx_fg8_dcb(&E.fg8, k), NX_FG8_DCB_DWORDS - NX_FG8_TAIL_DWORDS);
+        nx_osd_begin(&E.osd, 2 + k);
+        nx_fg8_prologue(&E.fg8, &c, k, seq, C, j.ts0);
+    }
     if (!ia) {
         br = nx_fg8_build(&E.fg8, &c, k, &j);
     } else {
-        // prologo y espera de pantalla de VCFG; en el medio, la cadena propia: piramides +
-        // block-matching (LDS) + NXFlow + warp, escribiendo directo en el intermedio
-        nx_fg8_prologue(&E.fg8, &c, k, seq, C, j.ts0);
+        // espera de pantalla de VCFG y la cadena propia: piramides + block-matching (LDS)
+        // + NXFG-2 + warp, escribiendo directo en el intermedio
         nx_fg8_wait_mid(&c, &j);
         if (repeat) {   // sin fotograma anterior: el intermedio repite el actual
             br = nx_osd_copy(&E.osd, &c, 2 + k, C, &E.fg8_mid[m]) != 0 ? -4 : 0;
+            // la piramide de esta paridad no es la de C: que el proximo la rehaga (si no,
+            // el siguiente intermedio saldria del movimiento contra un fotograma viejo)
+            E.pipe.luma_valid[k & 1] = 0;
         } else {
             nx_job_t pj;
             memset(&pj, 0, sizeof pj);
@@ -1232,6 +1344,7 @@ static int fg8_frame(const nx_submit_t* s, int gi)
     E.fg8_midk = (m + 1) % 3;
     E.prev_idx = gi;
     E.info.our_jobs++;
+    E.fx_active = (ia ? FX_FG_IA : FX_FG_VCFG) | (sr ? FX_SR : 0) | (aa ? FX_AA : 0) | (rcas ? FX_RCAS : 0);
     // proteccion anti-cierre, igual que en el otro camino
     if (!E.guard_marked) { guard_write("pending"); E.guard_marked = 1; E.stable_flips = 0; }
     if (++E.stable_flips == STABLE_FLIPS) { E.crashes = 0; guard_write("ok"); }
@@ -1313,10 +1426,13 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
     E.info.hq = hq;
     int want_post = effects && (sr || aa || rcas || E.post == NX_POST_EASU);
     int osd_menu = E.info.menu_open, osd_fps = E.cfg.fps_counter;
-    // generacion de VCFG: su propio camino (mismo envio que el juego, flip al intermedio
-    // y flip del real al buffer del juego). El post-proceso no se combina con ella.
+    // generacion (VCFG o IA) con la presentacion de VCFG: su propio camino (mismo envio
+    // que el juego, flip al intermedio y flip del real al buffer del juego); el
+    // post-proceso del real va dentro de ese trabajo, antes de generar
     if (want_fg && !s->cpu_flip) return fg8_frame(s, gi);
+    if (want_fg && !E.have_mids) want_fg = 0;   // flips de CPU vistos recien despues de reservar
     if (!want_fg && !want_post && !osd_menu && !osd_fps) {
+        E.fx_active = 0;
         E.prev_idx = -1;
         rate_idle();
         // con todo bajado por la calidad dinamica no hay trabajo propio: se mira
@@ -1399,9 +1515,9 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
         .out_mid = want_fg ? &E.mid_img[m] : NULL,
         .out_real = want_post ? &E.real_img[m] : NULL,
         .slot = sl, .post = want_post ? E.post : NX_POST_NONE, .aa = aa,
-        .sharpness_stops = E.cfg.rcas ? 0.75f - 0.25f * (float)E.cfg.rcas : 2.0f,
+        .sharpness_stops = sharp_stops(), .sharp_detail = rcas ? sharp_detail() : 0.0f,
         .seq = E.seq + 1,
-        .fg = want_fg, .fg_fast = E.cfg.framegen != 2, .sr = sr, .sr_k = sr ? (E.cfg.sr == 1 ? 0.75f : E.cfg.sr == 2 ? 1.1f : 1.5f) : 0.0f, .sr_hq = hq,
+        .fg = want_fg, .fg_fast = E.cfg.framegen != 2, .sr = sr, .sr_k = sr ? sr_gain() : 0.0f, .sr_hq = hq,
         .rcas = rcas,
         .enhance_first = enhance_first,
         .prev_real = enhance_first ? &E.real_img[m ^ 1] : NULL,
@@ -1486,6 +1602,8 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
     E.prev_idx = gi;
     E.prev_real_valid = job.out_real != NULL;
     E.slot ^= 1;
+    E.fx_active = (job.fg ? (job.fg_fast ? FX_FG_VCFG : FX_FG_IA) : 0) | (job.sr ? FX_SR : 0) | (job.aa ? FX_AA : 0)
+                  | (job.rcas ? FX_RCAS : 0) | (job.post == NX_POST_EASU ? FX_EASU : 0);
 
     // proteccion anti-cierre: sesion "pendiente" mientras no lleve un rato estable
     if (effects && (job.fg || job.out_real)) {

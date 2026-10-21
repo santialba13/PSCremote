@@ -23,23 +23,26 @@ static float nx_exp2(float x)
 }
 
 enum {
-    K_CONV_14_32, K_CONV_17_32, K_CONV_32_32, K_CONV_32_5, K_CONV_17_16, K_CONV_16_16, K_CONV_16_5,
-    K_AVGPOOL, K_RESIZE, K_UPSAMPLE5, K_BUILD_INPUT, K_BM_TO_FLOW, K_LUMA_FULL, K_LUMA_DOWN2,
-    K_BM_SEARCH, K_BM_MEDIAN3, K_WARP_BLEND, K_EASU, K_RCAS,
+    K_CONV_15_32, K_CONV_32_32, K_CONV_32_5, K_CONV_17_24, K_CONV_24_24, K_CONV_24_5,
+    K_AVGPOOL, K_POOL2, K_RESIZE, K_UPSAMPLE5, K_INPUT_A, K_BUILD_INPUT, K_BM_TO_FLOW, K_LUMA_HALF,
+    K_LUMA_DOWN2, K_BM_SEARCH, K_BM_MEDIAN3, K_SCENE, K_SMASK, K_DILATE, K_WARP_BLEND, K_EASU, K_RCAS,
     K_SMAA_EDGES, K_SMAA_WEIGHTS, K_SMAA_BLEND, K_NXSR, K_NXSR_HQ, K_COUNT
 };
 static const char* const k_names[K_COUNT] = {
-    "conv3x3_14_32", "conv3x3_17_32", "conv3x3_32_32", "conv3x3_32_5",
-    "conv3x3_17_16", "conv3x3_16_16", "conv3x3_16_5",
-    "avgpool_rgb", "resize_bilinear", "upsample5", "build_level_input", "bm_to_flow", "luma_full",
-    "luma_down2", "wg_bm_search", "bm_median3", "warp_blend", "easu", "rcas",
-    "smaa_edges", "smaa_weights", "smaa_blend", "wg_nxsr", "wg_nxsr_hq",
+    "conv3x3_15_32", "conv3x3_32_32", "conv3x3_32_5", "conv3x3_17_24", "conv3x3_24_24", "conv3x3_24_5",
+    "avgpool_rgb", "pool2_rgb", "resize_bilinear", "upsample5", "nxfg_input_a", "build_level_input",
+    "bm_to_flow", "luma_half", "luma_down2", "wg_bm_search", "bm_median3", "wg_nxfg_scene", "static_mask", "mask_dilate", "warp_blend",
+    "easu", "rcas", "smaa_edges", "smaa_weights", "smaa_blend", "wg_nxsr", "wg_nxsr_hq",
 };
 
+#ifndef NX_NET_NXFG2
+#error "plugin/include/nxflow_weights.h no es de NXFG-2: exportar con model/export.py"
+#endif
 // primera capa y numero de capas de cada bloque en nx_layers[] (model/export.py)
-#define BLOCK_A 0, 6
-#define BLOCK_B 6, 6
-#define BLOCK_C 12, 5
+#define BLOCK_A NX_BLOCK_A
+#define BLOCK_B NX_BLOCK_B
+// radios del block-matching por nivel (L1 fino .. L4 grueso), como model/bm2.py
+static const int bm_radius[4] = { 2, 3, 3, 4 };
 
 #define KERNARG_BYTES (16 * 1024)
 #define DESC_BYTES 4096
@@ -51,16 +54,21 @@ typedef struct { uint64_t in; int32_t H, W; uint64_t out; int32_t Ho, Wo; uint64
 typedef struct { uint64_t src; int32_t H, W; uint64_t out; int32_t Ho, Wo, f; } ka_avgpool_t;
 typedef struct { uint64_t in; int32_t H, W, C, _pad; uint64_t out; int32_t Ho, Wo; } ka_resize_t;
 typedef struct { uint64_t a0, a1, flow5, delta5; int32_t H, W, level, _pad; uint64_t out; } ka_build_t;
+typedef struct { uint64_t a0, a1, vec; int32_t H, W; uint64_t flow5, out; } ka_input_a_t;
+typedef struct { uint64_t in; int32_t H, W; uint64_t out; } ka_pool2_t;
+typedef struct { uint64_t vec; int32_t n, _pad; uint64_t flag; } ka_scene_t;
 typedef struct { uint64_t vec; int32_t H, W; uint64_t flow5; } ka_bm2flow_t;
 typedef struct { uint64_t in; int32_t H, W; uint64_t out; } ka_up5_t;
 typedef struct { uint64_t src; int32_t Hs, Ws; uint64_t out; int32_t H, W; } ka_luma_t;
 typedef struct { uint64_t in; int32_t H, W; uint64_t out; } ka_down2_t;
 typedef struct { uint64_t l0, l1; int32_t H, W; uint64_t coarse; int32_t cBy, cBx;
-                 uint64_t vec; int32_t By, Bx, radius; } ka_bm_t;
+                 uint64_t vec; int32_t By, Bx, radius, finest; } ka_bm_t;
 typedef struct { uint64_t in, out; int32_t By, Bx; } ka_median_t;
-typedef struct { uint64_t f0, f1, samp, low5; int32_t h4, w4; uint64_t dst; int32_t H, W; } ka_warp_t;
+typedef struct { uint64_t f0, f1, samp, low5; int32_t hl, wl; float scale; int32_t _pad; uint64_t flag, smask, dst;
+                 int32_t H, W; } ka_warp_t;
+typedef struct { uint64_t l0, l1; int32_t H, W; uint64_t out; } ka_smask_t;
 typedef struct { uint64_t src; int32_t H, W; uint64_t dst; int32_t Ho, Wo; } ka_easu_t;
-typedef struct { uint64_t src, dst; int32_t W, H; float sharp; int32_t denoise; } ka_rcas_t;
+typedef struct { uint64_t src, dst; int32_t W, H; float sharp; int32_t denoise; float detail; } ka_rcas_t;
 typedef struct { uint64_t src; int32_t W, H; uint64_t edges; } ka_smaa_edges_t;
 typedef struct { uint64_t edges; int32_t W, H; uint64_t area, search, weights; } ka_smaa_weights_t;
 typedef struct { uint64_t src, samp, weights; int32_t W, H; uint64_t dst; } ka_smaa_blend_t;
@@ -91,19 +99,22 @@ static size_t max_sz(size_t a, size_t b) { return a > b ? a : b; }
 // que lee el post-proceso despues del FG) va aparte.
 static void alloc_fg_scratch(nx_pipeline_t* p, nx_arena_t* a)
 {
-    for (int lv = 0; lv < 3; ++lv)
-        p->vec[lv] = arena_alloc(a, tensor_bytes(p->h8 >> lv, p->w8 >> lv, 2), 256);
-    p->vtmp = arena_alloc(a, tensor_bytes(p->h8, p->w8, 2), 256);
-    p->flow5 = arena_alloc(a, tensor_bytes(p->h8, p->w8, 5), 256);
-    p->delta5 = arena_alloc(a, tensor_bytes(p->h8, p->w8, 5), 256);
-    p->flow4 = arena_alloc(a, tensor_bytes(p->h4, p->w4, 5), 256);
-    p->delta4 = arena_alloc(a, tensor_bytes(p->h4, p->w4, 5), 256);
-    p->lvl_in = arena_alloc(a, tensor_bytes(p->h4, p->w4, 17), 256);
-    size_t hid = max_sz(tensor_bytes(p->h16, p->w16, 32), tensor_bytes(p->h8, p->w8, 16));
+    for (int lv = 0; lv < 4; ++lv)
+        p->vec[lv] = arena_alloc(a, tensor_bytes(p->bm_h[lv], p->bm_w[lv], 3), 256);
+    p->vtmp = arena_alloc(a, tensor_bytes(p->h16, p->w16, 3), 256);
+    p->flowG = arena_alloc(a, tensor_bytes(p->h16, p->w16, 5), 256);
+    p->deltaG = arena_alloc(a, tensor_bytes(p->h16, p->w16, 5), 256);
+    p->flow8 = arena_alloc(a, tensor_bytes(p->h8, p->w8, 5), 256);
+    p->delta8 = arena_alloc(a, tensor_bytes(p->h8, p->w8, 5), 256);
+    p->lvl_in = arena_alloc(a, max_sz(tensor_bytes(p->h16, p->w16, 15), tensor_bytes(p->h8, p->w8, 17)), 256);
+    size_t hid = max_sz(tensor_bytes(p->h16 / 2, p->w16 / 2, 32), tensor_bytes(p->h16, p->w16, 24));
     p->hA = arena_alloc(a, hid, 256);
     p->hB = arena_alloc(a, hid, 256);
     p->hR = arena_alloc(a, hid, 256);
-    p->up = arena_alloc(a, max_sz(tensor_bytes(p->h8, p->w8, 32), tensor_bytes(p->h4, p->w4, 16)), 256);
+    p->up = arena_alloc(a, max_sz(tensor_bytes(p->h16, p->w16, 32), tensor_bytes(p->h8, p->w8, 24)), 256);
+    p->scene = arena_alloc(a, 256, 256);
+    p->smask = arena_alloc(a, tensor_bytes(p->lum_h[0], p->lum_w[0], 1), 256);
+    p->smask_e = arena_alloc(a, tensor_bytes(p->lum_h[0], p->lum_w[0], 1), 256);
 }
 
 static void alloc_post_scratch(nx_pipeline_t* p, nx_arena_t* a)
@@ -122,6 +133,10 @@ static int layout(nx_pipeline_t* p, int W, int H, int Wo, int Ho, nx_arena_t are
     p->Wp = (int)align_up(W, 32); p->Hp = (int)align_up(H, 32);
     p->w4 = p->Wp / 4; p->h4 = p->Hp / 4;
     p->w8 = p->Wp / 8; p->h8 = p->Hp / 8; p->w16 = p->w8 / 2; p->h16 = p->h8 / 2;
+    for (int lv = 0; lv < 4; ++lv) {   // block-matching: bloques de 8 sobre la luma L1..L4 (media resolucion)
+        p->lum_h[lv] = (p->Hp / 2) >> lv; p->lum_w[lv] = (p->Wp / 2) >> lv;
+        p->bm_h[lv] = (p->lum_h[lv] + 7) / 8; p->bm_w[lv] = (p->lum_w[lv] + 7) / 8;
+    }
     p->arena = arena;
     nx_arena_t* a = &p->arena;
 
@@ -147,11 +162,11 @@ static int layout(nx_pipeline_t* p, int W, int H, int Wo, int Ho, nx_arena_t are
         }
     }
     for (int s = 0; s < 2; ++s)
-        for (int lv = 0; lv < 3; ++lv)
-            p->luma[s][lv] = arena_alloc(a, tensor_bytes(p->Hp >> lv, p->Wp >> lv, 1), 256);
+        for (int lv = 0; lv < 4; ++lv)
+            p->luma[s][lv] = arena_alloc(a, tensor_bytes(p->lum_h[lv], p->lum_w[lv], 1), 256);
     for (int s = 0; s < 2; ++s) {
         p->a8[s] = arena_alloc(a, tensor_bytes(p->h8, p->w8, 3), 256);
-        p->a4[s] = arena_alloc(a, tensor_bytes(p->h4, p->w4, 3), 256);
+        p->a16[s] = arena_alloc(a, tensor_bytes(p->h16, p->w16, 3), 256);
     }
     p->tmp_img = arena_alloc(a, tensor_bytes(H, (int)align_up(W, 64), 1), 64 * 1024);
 
@@ -268,11 +283,11 @@ static void same_pads(int n, int stride, int* before)
     *before = total / 2;
 }
 
-static int conv_kernel(int cin, int cout)
+static int conv_kernel(const nx_layer_t* L)
 {
-    if (cout == 32) return cin == 14 ? K_CONV_14_32 : cin == 17 ? K_CONV_17_32 : K_CONV_32_32;
-    if (cout == 16) return cin == 17 ? K_CONV_17_16 : K_CONV_16_16;
-    return cin == 32 ? K_CONV_32_5 : K_CONV_16_5;
+    for (int k = K_CONV_15_32; k <= K_CONV_24_5; ++k)
+        if (!strcmp(k_names[k], L->kernel)) return k;
+    return -1;
 }
 
 static void conv(ctx_t* x, int layer, uint64_t in, int H, int W, uint64_t out, uint64_t residual)
@@ -283,7 +298,9 @@ static void conv(ctx_t* x, int layer, uint64_t in, int H, int W, uint64_t out, u
     same_pads(H, s, &pt);
     same_pads(W, s, &pl);
     ka_conv_t a = { in, H, W, out, Ho, Wo, p->w_gpu[layer], p->b_gpu[layer], s, pt, pl, L->act, residual };
-    run(x, conv_kernel(L->cin, L->cout), &a, sizeof a, Wo, Ho);
+    int k = conv_kernel(L);
+    if (k < 0) { x->err = 9; return; }
+    run(x, k, &a, sizeof a, Wo, Ho);
 }
 
 // Bloque de NXFlow (ver model/net.py: block): c0 s2, c1, capas medias (la ultima
@@ -307,20 +324,22 @@ static void nx_block(ctx_t* x, int first, int n_layers, int H, int W, uint64_t d
     conv(x, first + n_layers - 1, p->up, H, W, delta, 0);
 }
 
+// piramide de un fotograma: luma a media resolucion y 3 mitades (block-matching) y,
+// para la red, RGB a 1/8 y 1/16
 static void luma_pyramid(ctx_t* x, const nx_image_t* img, int s, int fast)
 {
     nx_pipeline_t* p = x->p;
-    ka_luma_t l = { tsharp(x, img), p->H, p->W, p->luma[s][0], p->Hp, p->Wp };
-    run(x, K_LUMA_FULL, &l, sizeof l, p->Wp, p->Hp);
-    for (int lv = 1; lv < 3; ++lv) {
-        ka_down2_t d = { p->luma[s][lv - 1], p->Hp >> (lv - 1), p->Wp >> (lv - 1), p->luma[s][lv] };
-        run(x, K_LUMA_DOWN2, &d, sizeof d, p->Wp >> lv, p->Hp >> lv);
+    ka_luma_t l = { tsharp(x, img), p->H, p->W, p->luma[s][0], p->lum_h[0], p->lum_w[0] };
+    run(x, K_LUMA_HALF, &l, sizeof l, p->lum_w[0], p->lum_h[0]);
+    for (int lv = 1; lv < 4; ++lv) {
+        ka_down2_t d = { p->luma[s][lv - 1], p->lum_h[lv - 1], p->lum_w[lv - 1], p->luma[s][lv] };
+        run(x, K_LUMA_DOWN2, &d, sizeof d, p->lum_w[lv], p->lum_h[lv]);
     }
-    if (fast) return;   // los promedios RGB solo los usa la red NXFlow
+    if (fast) return;   // los promedios RGB solo los usa la red
     ka_avgpool_t a = { tsharp(x, img), p->H, p->W, p->a8[s], p->h8, p->w8, 8 };
     run(x, K_AVGPOOL, &a, sizeof a, p->w8, p->h8);
-    ka_avgpool_t q = { tsharp(x, img), p->H, p->W, p->a4[s], p->h4, p->w4, 4 };
-    run(x, K_AVGPOOL, &q, sizeof q, p->w4, p->h4);
+    ka_pool2_t q = { p->a8[s], p->h8, p->w8, p->a16[s] };
+    run(x, K_POOL2, &q, sizeof q, p->w16, p->h16);
 }
 
 static nx_image_t linear_img(uint64_t gpu, int w, int h)
@@ -390,7 +409,7 @@ static void post(ctx_t* x, const nx_job_t* job, const nx_image_t* src, const nx_
             ka_nxsr_t r = { tsharp(x, cur), w, h, job->sr_hq ? p->nxsr_hq_w : p->nxsr_w, tsharp(x, o), job->sr_k };
             run(x, job->sr_hq ? K_NXSR_HQ : K_NXSR, &r, sizeof r, w / 2, h / 2);
         } else {
-            ka_rcas_t r = { tsharp(x, cur), tsharp(x, o), w, h, nx_exp2(-job->sharpness_stops), 0 };
+            ka_rcas_t r = { tsharp(x, cur), tsharp(x, o), w, h, nx_exp2(-job->sharpness_stops), 0, job->sharp_detail };
             run(x, K_RCAS, &r, sizeof r, w, h);
         }
         cur = o;
@@ -412,63 +431,69 @@ int nx_pipeline_build_osd_only(nx_osd_ctx_t* o, pm4_t* c, const nx_job_t* job, u
     return c->overflow ? -20 : 0;
 }
 
+// NXFG-2 (model/net2.py + model/bm2.py)
 static void frame_generation(ctx_t* x, const nx_job_t* job, const nx_image_t* prev, const nx_image_t* cur,
                              const nx_image_t* warp_dst)
 {
     nx_pipeline_t* p = x->p;
     int sc = job->slot & 1, sp = sc ^ 1;   // piramides por paridad (los slots consecutivos alternan)
+    // la rapida no calcula los promedios RGB: al pasar a la IA hay que rehacer el anterior
+    if (!job->fg_fast && p->luma_valid[sp] == 2) p->luma_valid[sp] = 0;
 
-    // 1. luma (piramide) y RGB a 1/8: el del fotograma previo se reutiliza
+    // 1. piramides: la del fotograma previo se reutiliza
     if (!p->luma_valid[sp])
         luma_pyramid(x, prev, sp, job->fg_fast);
     luma_pyramid(x, cur, sc, job->fg_fast);
-    p->luma_valid[sc] = 1;
+    p->luma_valid[sc] = job->fg_fast ? 2 : 1;
 
-    // 2. block-matching simetrico de grueso a fino (prev -> cur). En la generacion
-    // rapida: busqueda amplia solo en la escala chica (radio 4) y en las otras dos
-    // solo +-1 alrededor de la anterior (~4 veces menos comparaciones; rango +-19 px).
-    // Con la red (IA) se deja el radio 3 en todas: es con lo que se entreno.
-    for (int lv = 2; lv >= 0; --lv) {
-        int radius = !job->fg_fast ? 3 : lv == 2 ? 4 : 1;
-        int By = p->h8 >> lv, Bx = p->w8 >> lv;
-        ka_bm_t b = { p->luma[sp][lv], p->luma[sc][lv], p->Hp >> lv, p->Wp >> lv,
-                      lv == 2 ? 0 : p->vec[lv + 1], p->h8 >> (lv + 1), p->w8 >> (lv + 1),
-                      p->vtmp, By, Bx, radius };
-        run(x, K_BM_SEARCH, &b, sizeof b, Bx * 8, By * 8);   // wg_bm_search: un grupo por bloque
-        ka_median_t m = { p->vtmp, p->vec[lv], By, Bx };
-        run(x, K_BM_MEDIAN3, &m, sizeof m, Bx, By);
+    // 2. block-matching simetrico de grueso (L4, 1/16) a fino (L1, media resolucion)
+    for (int lv = 3; lv >= 0; --lv) {
+        ka_bm_t b = { p->luma[sp][lv], p->luma[sc][lv], p->lum_h[lv], p->lum_w[lv],
+                      lv == 3 ? 0 : p->vec[lv + 1], lv == 3 ? 0 : p->bm_h[lv + 1], lv == 3 ? 0 : p->bm_w[lv + 1],
+                      p->vtmp, p->bm_h[lv], p->bm_w[lv], bm_radius[lv], lv == 0 };
+        run(x, K_BM_SEARCH, &b, sizeof b, p->bm_w[lv] * 8, p->bm_h[lv] * 8);   // un grupo por bloque
+        ka_median_t m = { p->vtmp, p->vec[lv], p->bm_h[lv], p->bm_w[lv] };
+        run(x, K_BM_MEDIAN3, &m, sizeof m, p->bm_w[lv], p->bm_h[lv]);
+    }
+    ka_scene_t sn = { p->vec[0], p->h16 * p->w16, 0, p->scene };
+    run(x, K_SCENE, &sn, sizeof sn, WG, WG);
+    // pixeles quietos (HUD, textos) para que el warp no los copie a otro lado
+    ka_smask_t sm = { p->luma[sp][0], p->luma[sc][0], p->lum_h[0], p->lum_w[0], p->smask_e };
+    run(x, K_SMASK, &sm, sizeof sm, p->lum_w[0], p->lum_h[0]);
+    ka_down2_t dl = { p->smask_e, p->lum_h[0], p->lum_w[0], p->smask };
+    run(x, K_DILATE, &dl, sizeof dl, p->lum_w[0], p->lum_h[0]);
+
+    uint64_t low = p->flowG;
+    int hl = p->h16, wl = p->w16;
+    float scale = 16.0f;
+    if (job->fg_fast) {   // generacion rapida: sin la red, el flujo del block-matching
+        ka_bm2flow_t f = { p->vec[0], p->h16, p->w16, p->flowG };
+        run(x, K_BM_TO_FLOW, &f, sizeof f, p->w16, p->h16);
+    } else {
+        // 3. nivel A (1/16): corrige los flujos y estima la oclusion
+        ka_input_a_t ia = { p->a16[sp], p->a16[sc], p->vec[0], p->h16, p->w16, p->flowG, p->lvl_in };
+        run(x, K_INPUT_A, &ia, sizeof ia, p->w16, p->h16);
+        nx_block(x, BLOCK_A, p->h16, p->w16, p->deltaG);
+        ka_build_t acc = { p->a16[sp], p->a16[sc], p->flowG, p->deltaG, p->h16, p->w16, -1, 0, 0 };
+        run(x, K_BUILD_INPUT, &acc, sizeof acc, p->w16, p->h16);      // flowG += A
+        // 4. nivel B (1/8): detalle de bordes
+        ka_up5_t u = { p->flowG, p->h16, p->w16, p->flow8 };
+        run(x, K_UPSAMPLE5, &u, sizeof u, p->w8, p->h8);
+        ka_build_t bi = { p->a8[sp], p->a8[sc], p->flow8, 0, p->h8, p->w8, 1, 0, p->lvl_in };
+        run(x, K_BUILD_INPUT, &bi, sizeof bi, p->w8, p->h8);
+        nx_block(x, BLOCK_B, p->h8, p->w8, p->delta8);
+        bi.delta5 = p->delta8; bi.level = -1;                          // flow8 += B
+        run(x, K_BUILD_INPUT, &bi, sizeof bi, p->w8, p->h8);
+        low = p->flow8; hl = p->h8; wl = p->w8; scale = 8.0f;
     }
 
-    // 3. NXFlow: niveles A y B a 1/8, nivel C a 1/4
-    ka_bm2flow_t f = { p->vec[0], p->h8, p->w8, p->flow5 };
-    run(x, K_BM_TO_FLOW, &f, sizeof f, p->w8, p->h8);
-    if (job->fg_fast) {   // generacion rapida: sin las capas de la red, el flujo del block-matching
-        ka_up5_t uf = { p->flow5, p->h8, p->w8, p->flow4 };
-        run(x, K_UPSAMPLE5, &uf, sizeof uf, p->w4, p->h4);
-        goto warp;
-    }
-    ka_build_t bi = { p->a8[sp], p->a8[sc], p->flow5, 0, p->h8, p->w8, 0, 0, p->lvl_in };
-    run(x, K_BUILD_INPUT, &bi, sizeof bi, p->w8, p->h8);
-    nx_block(x, BLOCK_A, p->h8, p->w8, p->delta5);
-    bi.delta5 = p->delta5; bi.level = 1;                 // flow5 += A; entrada de B
-    run(x, K_BUILD_INPUT, &bi, sizeof bi, p->w8, p->h8);
-    nx_block(x, BLOCK_B, p->h8, p->w8, p->delta5);
-    bi.level = -1;                                       // flow5 += B
-    run(x, K_BUILD_INPUT, &bi, sizeof bi, p->w8, p->h8);
-    ka_up5_t u = { p->flow5, p->h8, p->w8, p->flow4 };
-    run(x, K_UPSAMPLE5, &u, sizeof u, p->w4, p->h4);
-    ka_build_t bc = { p->a4[sp], p->a4[sc], p->flow4, 0, p->h4, p->w4, 1, 0, p->lvl_in };
-    run(x, K_BUILD_INPUT, &bc, sizeof bc, p->w4, p->h4);
-    nx_block(x, BLOCK_C, p->h4, p->w4, p->delta4);
-    bc.delta5 = p->delta4; bc.level = -1;                // flow4 += C
-    run(x, K_BUILD_INPUT, &bc, sizeof bc, p->w4, p->h4);
-
-    // 4. warp + mezcla a resolucion completa (con el sampler bilineal del hardware)
-warp:;
+    // 5. warp por bloques superpuestos con eleccion por pixel, a resolucion completa
+    // (sampler bilineal del hardware), con las protecciones anti-fantasmas, de pixel
+    // quieto y de corte de escena
     uint32_t samp[4];
     nx_make_ssharp(samp, 1);
-    ka_warp_t w = { tsharp(x, prev), tsharp(x, cur), put_desc(x, samp, 4), p->flow4,
-                    p->h4, p->w4, tsharp(x, warp_dst), p->H, p->W };
+    ka_warp_t w = { tsharp(x, prev), tsharp(x, cur), put_desc(x, samp, 4), low, hl, wl, scale, 0, p->scene,
+                    p->smask, tsharp(x, warp_dst), p->H, p->W };
     run(x, K_WARP_BLEND, &w, sizeof w, p->W, p->H);
 }
 
@@ -507,8 +532,11 @@ int nx_pipeline_build(nx_pipeline_t* p, pm4_t* c, const nx_job_t* job)
     } else if (any_post) {
         post(&x, job, job->cur, job->out_real);
     }
+    // comparar: mitad izquierda sin procesar y una linea divisoria clara en el medio
     if (job->compare && job->out_real && job->osd_ctx
-        && nx_osd_copy_left(job->osd_ctx, c, job->slot, job->cur, job->out_real) != 0)
+        && (nx_osd_copy_left(job->osd_ctx, c, job->slot, job->cur, job->out_real) != 0
+            || nx_osd_fill_rect(job->osd_ctx, c, job->slot, job->out_real, (int)job->out_real->width / 2 - 1, 0, 3,
+                                (int)job->out_real->height, 0.95f, 0.95f, 0.95f) != 0))
         x.err = 5;
     if (job->fg) {
         // el intermedio sale de deformar fotogramas que pueden traer el menu del

@@ -88,3 +88,11 @@ NX_KERNEL void copy_rect(tdesc_t src, tdesc_t dst, int x0, int y0, int w, int h)
     if (x >= w || y >= h) return;
     nx_store(dst, x0 + x, y0 + y, nx_load(src, x0 + x, y0 + y));
 }
+
+// Rellena un rectangulo con un color (la linea divisoria del modo comparar)
+NX_KERNEL void fill_rect(tdesc_t dst, int x0, int y0, int w, int h, float r, float g, float b)
+{
+    int x = GID_X, y = GID_Y;
+    if (x >= w || y >= h) return;
+    nx_store(dst, x0 + x, y0 + y, (float4)(r, g, b, 1.0f));
+}

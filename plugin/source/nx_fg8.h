@@ -46,6 +46,7 @@ typedef struct {
     // espera en la GPU a que M no este en pantalla (sceGnmInsertWaitFlipDone, 7 dwords); NULL = no
     int (*wait_flip_done)(uint32_t* cmd, uint32_t ndw, int32_t handle, uint32_t index);
     uint64_t ts0;                // si no es 0: reloj de la GPU al empezar nuestros pases (tras el prologo)
+    int no_prologue;             // 1 = el prologo ya lo emitio el que llama (post-proceso en el medio)
 } nx_fg8_job_t;
 
 // arma los pases de VCFG en c (prologo de espera al juego incluido). No escribe el

@@ -17,13 +17,14 @@ typedef struct {
 // tamano del panel en pixeles (para centrarlo)
 void nx_osd_panel_size(int cols, int rows, int scale, int* w, int* h);
 
-#define NX_OSD_RINGS 6
+#define NX_OSD_RINGS 10
 
 typedef struct {
     const nx_shader_t* sh_draw;
     const nx_shader_t* sh_copy;
-    uint64_t code_draw, code_copy;
-    nx_ring_t ring[NX_OSD_RINGS];   // kernargs + descriptores: 0-1 motor, 2-5 generacion VCFG (nx_fg8)
+    const nx_shader_t* sh_fill;
+    uint64_t code_draw, code_copy, code_fill;
+    nx_ring_t ring[NX_OSD_RINGS];   // kernargs + descriptores: 0-1 motor, 2-5 generacion VCFG (nx_fg8), 6-9 su post-proceso
 } nx_osd_ctx_t;
 
 size_t nx_osd_mem_size(void);
@@ -38,3 +39,6 @@ int nx_osd_copy_rect(nx_osd_ctx_t* o, pm4_t* c, int slot, const nx_image_t* src,
 // copia src entero sobre dst (mismo tamano o el menor)
 int nx_osd_copy(nx_osd_ctx_t* o, pm4_t* c, int slot, const nx_image_t* src, const nx_image_t* dst);
 int nx_osd_copy_left(nx_osd_ctx_t* o, pm4_t* c, int slot, const nx_image_t* src, const nx_image_t* dst);
+// rellena (x0, y0, w, h) de dst con un color (linea divisoria del modo comparar)
+int nx_osd_fill_rect(nx_osd_ctx_t* o, pm4_t* c, int slot, const nx_image_t* dst, int x0, int y0, int w, int h,
+                     float r, float g, float b);

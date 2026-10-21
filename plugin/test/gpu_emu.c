@@ -92,28 +92,33 @@ void nx_store(tdesc_t t, int x, int y, float4 v)
 // --------------------------------------- kernels (compilados de shaders/*.cl)
 typedef void* P;
 #define CONV_DECL(n) void n(P, int, int, P, int, int, P, P, int, int, int, int, P);
-CONV_DECL(conv3x3_14_32) CONV_DECL(conv3x3_17_32) CONV_DECL(conv3x3_32_32) CONV_DECL(conv3x3_32_5)
-CONV_DECL(conv3x3_17_16) CONV_DECL(conv3x3_16_16) CONV_DECL(conv3x3_16_5)
+CONV_DECL(conv3x3_15_32) CONV_DECL(conv3x3_32_32) CONV_DECL(conv3x3_32_5)
+CONV_DECL(conv3x3_17_24) CONV_DECL(conv3x3_24_24) CONV_DECL(conv3x3_24_5)
 void avgpool_rgb(P, int, int, P, int, int, int);
 void resize_bilinear(P, int, int, int, P, int, int);
 void upsample5(P, int, int, P);
 void build_level_input(P, P, P, P, int, int, int, P);
+void nxfg_input_a(P, P, P, int, int, P, P);
+void pool2_rgb(P, int, int, P);
+void wg_nxfg_scene(P, int, P);
 void bm_to_flow(P, int, int, P);
-void luma_full(P, int, int, P, int, int);
+void luma_half(P, int, int, P, int, int);
 void luma_down2(P, int, int, P);
-void bm_search(P, P, int, int, P, int, int, P, int, int, int);
 void bm_median3(P, P, int, int);
-void warp_blend(P, P, P, P, int, int, P, int, int);
+void warp_blend(P, P, P, P, int, int, float, P, P, P, int, int);
+void static_mask(P, P, int, int, P);
+void mask_dilate(P, int, int, P);
 void easu(P, int, int, P, int, int);
-void rcas(P, P, int, int, float, int);
+void rcas(P, P, int, int, float, int, float);
 void smaa_edges(P, int, int, P);
 void smaa_weights(P, int, int, P, P, P);
 void smaa_blend(P, P, P, int, int, P);
 void wg_nxsr(P, int, int, P, P, float);
-void wg_bm_search(P, P, int, int, P, int, int, P, int, int, int);
+void wg_bm_search(P, P, int, int, P, int, int, P, int, int, int, int);
 void wg_nxsr_hq(P, int, int, P, P, float);
 void osd_draw(P, int, int, P, P, int, int, P, int, int, int, int, int, int);
 void copy_rect(P, P, int, int, int, int);
+void fill_rect(P, int, int, int, int, float, float, float);
 
 static const uint8_t* ka;
 static const uint8_t* offs;
@@ -125,28 +130,31 @@ static void call(const char* n)
 {
 #define IS(s) (!strcmp(n, s))
 #define CONV(f) f(ap(0), ai(1), ai(2), ap(3), ai(4), ai(5), ap(6), ap(7), ai(8), ai(9), ai(10), ai(11), ap(12))
-    if (IS("conv3x3_14_32")) CONV(conv3x3_14_32);
-    else if (IS("conv3x3_17_32")) CONV(conv3x3_17_32);
+    if (IS("conv3x3_15_32")) CONV(conv3x3_15_32);
     else if (IS("conv3x3_32_32")) CONV(conv3x3_32_32);
     else if (IS("conv3x3_32_5")) CONV(conv3x3_32_5);
-    else if (IS("conv3x3_17_16")) CONV(conv3x3_17_16);
-    else if (IS("conv3x3_16_16")) CONV(conv3x3_16_16);
-    else if (IS("conv3x3_16_5")) CONV(conv3x3_16_5);
+    else if (IS("conv3x3_17_24")) CONV(conv3x3_17_24);
+    else if (IS("conv3x3_24_24")) CONV(conv3x3_24_24);
+    else if (IS("conv3x3_24_5")) CONV(conv3x3_24_5);
+    else if (IS("nxfg_input_a")) nxfg_input_a(ap(0), ap(1), ap(2), ai(3), ai(4), ap(5), ap(6));
+    else if (IS("pool2_rgb")) pool2_rgb(ap(0), ai(1), ai(2), ap(3));
+    else if (IS("wg_nxfg_scene")) wg_nxfg_scene(ap(0), ai(1), ap(2));
     else if (IS("avgpool_rgb")) avgpool_rgb(ap(0), ai(1), ai(2), ap(3), ai(4), ai(5), ai(6));
     else if (IS("resize_bilinear")) resize_bilinear(ap(0), ai(1), ai(2), ai(3), ap(4), ai(5), ai(6));
     else if (IS("upsample5")) upsample5(ap(0), ai(1), ai(2), ap(3));
     else if (IS("build_level_input")) build_level_input(ap(0), ap(1), ap(2), ap(3), ai(4), ai(5), ai(6), ap(7));
     else if (IS("bm_to_flow")) bm_to_flow(ap(0), ai(1), ai(2), ap(3));
-    else if (IS("luma_full")) luma_full(ap(0), ai(1), ai(2), ap(3), ai(4), ai(5));
+    else if (IS("luma_half")) luma_half(ap(0), ai(1), ai(2), ap(3), ai(4), ai(5));
     else if (IS("luma_down2")) luma_down2(ap(0), ai(1), ai(2), ap(3));
-    else if (IS("bm_search"))
-        bm_search(ap(0), ap(1), ai(2), ai(3), ap(4), ai(5), ai(6), ap(7), ai(8), ai(9), ai(10));
     else if (IS("wg_bm_search"))
-        wg_bm_search(ap(0), ap(1), ai(2), ai(3), ap(4), ai(5), ai(6), ap(7), ai(8), ai(9), ai(10));
+        wg_bm_search(ap(0), ap(1), ai(2), ai(3), ap(4), ai(5), ai(6), ap(7), ai(8), ai(9), ai(10), ai(11));
     else if (IS("bm_median3")) bm_median3(ap(0), ap(1), ai(2), ai(3));
-    else if (IS("warp_blend")) warp_blend(ap(0), ap(1), ap(2), ap(3), ai(4), ai(5), ap(6), ai(7), ai(8));
+    else if (IS("warp_blend"))
+        warp_blend(ap(0), ap(1), ap(2), ap(3), ai(4), ai(5), af(6), ap(7), ap(8), ap(9), ai(10), ai(11));
+    else if (IS("static_mask")) static_mask(ap(0), ap(1), ai(2), ai(3), ap(4));
+    else if (IS("mask_dilate")) mask_dilate(ap(0), ai(1), ai(2), ap(3));
     else if (IS("easu")) easu(ap(0), ai(1), ai(2), ap(3), ai(4), ai(5));
-    else if (IS("rcas")) rcas(ap(0), ap(1), ai(2), ai(3), af(4), ai(5));
+    else if (IS("rcas")) rcas(ap(0), ap(1), ai(2), ai(3), af(4), ai(5), af(6));
     else if (IS("smaa_edges")) smaa_edges(ap(0), ai(1), ai(2), ap(3));
     else if (IS("smaa_weights")) smaa_weights(ap(0), ai(1), ai(2), ap(3), ap(4), ap(5));
     else if (IS("smaa_blend")) smaa_blend(ap(0), ap(1), ap(2), ai(3), ai(4), ap(5));
@@ -155,6 +163,7 @@ static void call(const char* n)
     else if (IS("osd_draw"))
         osd_draw(ap(0), ai(1), ai(2), ap(3), ap(4), ai(5), ai(6), ap(7), ai(8), ai(9), ai(10), ai(11), ai(12), ai(13));
     else if (IS("copy_rect")) copy_rect(ap(0), ap(1), ai(2), ai(3), ai(4), ai(5));
+    else if (IS("fill_rect")) fill_rect(ap(0), ai(1), ai(2), ai(3), ai(4), af(5), af(6), af(7));
     else { fprintf(stderr, "kernel desconocido %s\n", n); exit(4); }
 }
 
@@ -296,13 +305,38 @@ int main(int argc, char** argv)
     pm4_t c;
     pm4_init(&c, dcb, sizeof dcb / 4);
     // modos: 0 FG, 1 FG+RCAS, 2 FG+SMAA, 3 solo NXSR (k=1), 4 FG+NXSR procesando antes de interpolar,
-    //        5 solo NXSR Calidad (k=1), 6 FG rapida (sin la red NXFlow)
-    nx_job_t job = { .prev = &img[0], .cur = &img[1], .out_mid = &img[2], .out_real = post && post != 6 ? &img[3] : NULL,
+    //        5 solo NXSR Calidad (k=1), 6 FG rapida (sin la red), 7 solo FSR+ (RCAS 0.25 + detalle 0.6)
+    nx_job_t job = { .prev = &img[0], .cur = &img[1], .out_mid = &img[2], .out_real = post && post != 6 ? &img[3] : NULL, .sharp_detail = post == 7 ? 0.6f : 0.0f, .rcas = post == 7,
                      .slot = 1, .post = post == 1 ? NX_POST_RCAS : NX_POST_NONE, .aa = post == 2,
-                     .sharpness_stops = 0.25f, .seq = 7, .fg = post != 3 && post != 5, .fg_fast = post == 6,
-                     .sr = post >= 3 && post != 6, .sr_k = 1.0f, .sr_hq = post == 5, .enhance_first = post == 4,
+                     .sharpness_stops = 0.25f, .seq = 7, .fg = post != 3 && post != 5 && post != 7, .fg_fast = post == 6,
+                     .sr = post >= 3 && post != 6 && post != 7, .sr_k = 1.0f, .sr_hq = post == 5, .enhance_first = post == 4,
                      .prev_real = &img[4], .prev_real_valid = 0 };
     if (nx_pipeline_build(&p, &c, &job) != 0) { fprintf(stderr, "build fallo\n"); return 1; }
+    // NX_DUMP=archivo: memoria "GPU" (arena + fotogramas) y DCB tal como los armo el
+    // plugin, antes de ejecutar nada (para tools/gcn_isa_emu.py: el mismo trabajo
+    // ejecutado con el codigo maquina GCN real de nx_shaders.h)
+    const char* dump = getenv("NX_DUMP");
+    if (dump) {
+        FILE* f = fopen(dump, "wb");
+        uint32_t magic = 0x4E58444Du, nr = (uint32_t)nregions;
+        fwrite(&magic, 4, 1, f);
+        fwrite(&nr, 4, 1, f);
+        for (int r = 0; r < nregions; ++r) {
+            uint64_t g = regions[r].gpu, z = regions[r].size;
+            fwrite(&g, 8, 1, f);
+            fwrite(&z, 8, 1, f);
+            fwrite(regions[r].host, 1, z, f);
+        }
+        uint32_t nd = (uint32_t)c.n;
+        fwrite(&nd, 4, 1, f);
+        fwrite(dcb, 4, c.n, f);
+        uint64_t fb = fgpu, ib = img_bytes;
+        int32_t dims[3] = { W, Hh, pitch };
+        fwrite(&fb, 8, 1, f);
+        fwrite(&ib, 8, 1, f);
+        fwrite(dims, 4, 3, f);
+        fclose(f);
+    }
     int d = run_dcb(&p, dcb, c.n);
     if (d < 0) return 1;
     printf("dispatches ejecutados: %d, label = %u\n", d, *p.label_cpu);

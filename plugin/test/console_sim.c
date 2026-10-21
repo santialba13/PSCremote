@@ -802,7 +802,8 @@ int main(int argc, char** argv)
     //     juego, un envio con el trabajo del juego + el nuestro y flip al intermedio, y
     //     despues el flip del real al buffer del juego (los dos terminan en la cola)
     {
-        sim_write("/data/vcfg_nx/config.ini", "warmup_flips = 600\nframegen = 1\nfps_counter = 1\n", 46);
+        const char* c28 = "warmup_flips = 600\nframegen = 1\nsr = 0\naa = 0\n";
+        sim_write("/data/vcfg_nx/config.ini", c28, strlen(c28));
         boot(&bb, 1);
         int rc0 = rate_calls;
         play(&bb, 2400, 0);
@@ -828,7 +829,25 @@ int main(int argc, char** argv)
         sim_write("/data/vcfg_nx/config.ini", "warmup_flips = 600\nframegen = 0\n", 32);
     }
 
-    // 29. generacion IA (NXFlow) con la presentacion de VCFG: los mismos dos flips por
+    // 30. generacion VCFG + reescalado + SMAA + nitidez (2.73): el real se procesa en
+    //     su buffer antes de generar; la memoria grande se reserva y sin intermedios propios
+    {
+        const char* c30 = "warmup_flips = 600\nframegen = 1\nsr = 2\naa = 1\nrcas = 2\n";
+        sim_write("/data/vcfg_nx/config.ini", c30, strlen(c30));
+        boot(&bb, 1);
+        uint64_t g0 = C.groups_total;
+        play(&bb, 2400, 0);
+        report("30. VCFG + NXSR + SMAA + FSR");
+        CHECK(I()->full_ready, "con post-proceso y generacion se reserva la memoria de los efectos");
+        CHECK(I()->our_jobs > 1500 && C.mid_flips > 1500 && C.pairs > 1500, "VCFG+post: faltan flips (%llu, %d, %d)",
+              (unsigned long long)I()->our_jobs, C.mid_flips, C.pairs);
+        CHECK(C.groups_total - g0 > 1000000, "VCFG+post: el post-proceso no corrio");
+        CHECK(strstr(I()->status, "activo") != NULL, "estado: %s", I()->status);
+        common_checks();
+        sim_write("/data/vcfg_nx/config.ini", "warmup_flips = 600\nframegen = 0\n", 32);
+    }
+
+    // 29. generacion IA (NXFG-2) con la presentacion de VCFG: los mismos dos flips por
     //     fotograma, la cadena propia escribe el intermedio
     {
         sim_write("/data/vcfg_nx/config.ini", "warmup_flips = 600\nframegen = 2\nfps_counter = 1\n", 46);

@@ -1,4 +1,4 @@
-# VCFG-NX 2.72: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
+# VCFG-NX 2.73: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
 
 Rediseño del **VCFG v2.14** (generador de fotogramas en beta de la comunidad
 de GoldHEN) que además incorpora un **modelo de reescalado/realce propio,
@@ -6,15 +6,15 @@ NXSR**, como alternativa a GNMScale pero sin el granulado que este agrega.
 Todo con la interfaz de VCFG: app instaladora con lista de juegos y menú en
 pantalla con **L3+R3**.
 
-**Descarga:** [`dist/VCFG-NX_v2.54.pkg`](dist/VCFG-NX_v2.54.pkg) (fPKG, app) ·
+**Descarga:** [`dist/VCFG-NX_v2.73.pkg`](dist/VCFG-NX_v2.73.pkg) (fPKG, app) ·
 [`dist/vcfg_nx.prx`](dist/vcfg_nx.prx) (plugin suelto) · [`dist/SHA256SUMS.txt`](dist/SHA256SUMS.txt)
 
 | servicio | qué hace |
 |---|---|
-| **Generación de fotogramas** (NXFlow) | 30 → 60 fps: block-matching + red que corrige vectores y oclusiones. Sin cambios respecto de la 1.0 |
+| **Generación de fotogramas** | 30 → 60 fps. **VCFG** (el motor clásico de VCFG, MIT) o **IA** (NXFG-2, propia: movimiento de 4 niveles, red chica, elección de vector por píxel y protecciones anti-parpadeo) |
 | **Reescalado IA (NXSR)** | red de 16 canales que reconstruye detalle (TAA borroso, render a menos resolución) y **nunca agrega grano ni halos**: su salida queda acotada al rango de los píxeles vecinos |
 | SMAA 1x | antialiasing de bordes |
-| FSR1 | EASU si el juego renderiza por debajo de la salida; RCAS como nitidez clásica (solo sin NXSR) |
+| FSR1 / **FSR+** | EASU si el juego renderiza por debajo de la salida; RCAS + realce de detalle sin halos como nitidez (también junto con NXSR y con la generación) |
 
 > **Estado — leer antes de instalar.** Compila con el toolchain real
 > (OpenOrbis + GoldHEN SDK), el PKG se genera y se verifica en PC, y toda la
@@ -61,9 +61,126 @@ botones mientras está abierto):
   **Auto** (muestra cuál usa: "Auto: Calidad" en PS4 Pro, "Auto: Rápido" en
   PS4 normal; con modo ahorro, "Rápido (ahorro)").
 * Generación de fotogramas, NXSR (Suave / Normal / Fuerte), modo ahorro, SMAA,
-  RCAS, contador de FPS (con temperatura) y comparar.
+  nitidez FSR+, contador de FPS (con temperatura) y comparar (con línea divisoria).
 * Arriba se ven los FPS, la temperatura y el estado (activo, calidad dinámica,
   calor). **Guardar** deja todo para ese juego; **O** cierra.
+
+## Novedades de la 2.73
+
+Con la 2.72 en GTA V la generación de VCFG anduvo perfecto; la IA llegaba a ~40
+fps y el reescalado, el SMAA y la nitidez no se notaban (o no estaban activos).
+
+**Generación IA nueva: NXFG-2** (`model/net2.py`, `model/bm2.py`, `shaders/nxflow.cl`).
+La red anterior (NXFlow) apenas le ganaba al block-matching y costaba 1,17 GMAC.
+Lo que más pesa en la calidad es el movimiento, así que ahí va la GPU:
+
+- **Movimiento de 4 niveles a media resolución** (luma 960x544 → 120x68),
+  bloques de 8x8, radios 4/3/3/2, mediana 3x3 por nivel, **ajuste sub-píxel** y
+  **confianza** por bloque. Alcance de ~200 px entre dos fotogramas reales (la
+  anterior: ~40 px; en GTA manejando rápido no alcanzaba). Malla de 1/16, como VCFG.
+- **Red 5 veces más liviana** (~0,23 GMAC a 1080p): nivel A a 1/16 (32 canales,
+  interno 1/32) que corrige los dos flujos y estima la oclusión con la confianza
+  como entrada, y nivel B a 1/8 (24 canales) para los bordes.
+- **Warp por bloques superpuestos con elección por píxel**: cada píxel mezcla
+  el warp de las 4 celdas vecinas con su peso bilineal (OBMC: sin bordes de
+  bloque) multiplicado por lo bien que cada vector hace coincidir los dos
+  fotogramas reales (softmin): en los bordes de objetos gana el vector del lado
+  correcto, sin halos. Es la idea del warp de VCFG con sus vecinos. La red se
+  entrena con este warp (JAX), no es un agregado aparte.
+- **Protecciones fijas que no dependen de la red** (anti-parpadeo):
+  - *píxel quieto*: si los dos reales coinciden en ese píxel (HUD, textos,
+    zonas sin cambio) se usa su promedio sin warp. El HUD queda firme;
+  - *fantasmas de HUD*: con el fondo moviéndose rápido, el warp copiaba el HUD
+    corrido (copias medio transparentes arriba y abajo, en VCFG y en la 2.72
+    también). Ahora una muestra que cae sobre un píxel quieto (máscara de media
+    resolución, dilatada) con un vector que se mueve no se usa: se toma la del
+    otro fotograma;
+  - *corte de escena*: si la confianza media del movimiento es mala, el
+    intermedio repite el real en vez de inventar una mezcla.
+- Un fotograma que no tenía anterior válido dejaba la pirámide de un fotograma
+  viejo para el siguiente (un intermedio malo suelto = un parpadeo): corregido.
+- Camino de GPU verificado contra la referencia NumPy en el emulador: IA y sin
+  red, ~94 dB y 1/255 de diferencia máxima.
+- **Medido en PC** (`model/eval2.py`, detalle en `docs/resultados.md` §1b):
+
+  | escenas tipo juego (HUD, oclusiones) | PSNR | SSIM | error en HUD/zonas quietas |
+  |---|---|---|---|
+  | block-matching tipo VCFG | 24,44 | 0,791 | 2,00 |
+  | NXFlow (IA de la 2.72) | 24,60 | 0,796 | 2,07 |
+  | **NXFG-2 IA (2.73)** | **24,75** | **0,815** | **0,18** |
+
+  En video real queda ~0,15 dB por debajo del block-matching (mismo SSIM). Gana
+  justo donde estaban los parpadeos y fantasmas, con 5 veces menos cálculo.
+
+**Reescalado, SMAA y nitidez funcionando, también con la generación.**
+
+- Hasta la 2.72 se apagaban con cualquier generación activa (filas grises en el
+  menú) y con VCFG ni se reservaba su memoria. Ahora el real se procesa en un
+  buffer propio y vuelve al del juego **antes** de generar: el intermedio sale de
+  reales ya procesados y hereda la misma calidad (una sola pasada por fotograma
+  del juego, sin diferencia de nitidez entre real e intermedio = sin "pulso").
+- **NXSR más visible:** a la resolución nativa es realce de detalle (no hay nada
+  que escalar) y con ganancia 1 cambiaba ~0,7/255 en promedio. Suave / Normal /
+  Fuerte = 1 / 2 / 3 (el limitador 3x3 del shader sigue impidiendo halos).
+- **FSR+** ("Nitidez FSR+"): RCAS (al máximo de FSR desde Media) y después un
+  realce de detalle de radio 2 sobre la luma que recupera lo que suavizan TAA y
+  FXAA, sin halos (no sale del rango 3x3 local) y sin subir el grano. Nitidez
+  medida (energía de gradiente) Baja/Media/Alta: ×1,43 / ×1,70 / ×2,06 contra
+  ×1,34 / ×1,52 / ×1,91 del RCAS anterior.
+- **El menú dice qué está activo**: "activo: VCFG+NXSR+SMAA+FSR" (o IA, EASU,
+  "-C" para el modelo Calidad, y "carga: ... (-n)" si la calidad dinámica bajó
+  algo). Si falta memoria lo dice con los MiB que faltan.
+- **Comparar** muestra una línea divisoria: izquierda original, derecha procesada.
+- **Calidad dinámica por tiempo de GPU** con la generación: si nuestro trabajo
+  pasa de 8 ms por fotograma (le quitaría GPU al juego), se baja primero el
+  modelo Calidad, después SMAA, después NXSR/nitidez; la generación queda.
+- **Menos memoria:** la memoria de trabajo de los efectos a 1080p baja de 62,7 a
+  42,6 MiB (pirámides a media resolución, red chica), y además no se reservan
+  intermedios propios cuando el juego no usa flips de CPU (todos usan la
+  presentación de VCFG) y queda un solo buffer para el real procesado sin EASU
+  (25 MiB menos). En total, unos 45 MiB menos que la 2.72 en GTA V.
+- Simulador: escenario 30 (VCFG + NXSR + SMAA + FSR+: memoria, flips, trabajo);
+  emulador: modo 7 (FSR+) contra `upscale/fsr1.py`.
+
+**Emulador de la GPU de la PS4 a nivel de instrucciones** (`tools/gcn_isa_emu.py`).
+Un emulador de PS4 completo (shadPS4 y similares) no sirve acá: no carga plugins
+de GoldHEN, necesita el juego y una GPU, y su GPU es una traducción a Vulkan, no
+la de la consola. En cambio se emula lo que importa: el **código máquina GCN
+gfx701** que el plugin copia a la memoria de la GPU, instrucción por instrucción
+(wavefronts de 64 lanes, EXEC/VCC/SCC, SGPR/VGPR, LDS, descriptores T#/S#/V#
+leídos de memoria, control de rango de los buffers), ejecutando el mismo DCB PM4
+que arma el plugin.
+
+- LLVM 18 no desensambla gfx7, así que los `.s` se ensamblan con `llvm-mc` y se
+  verifica que los bytes sean **idénticos** a los de `nx_shaders.h` y a los de la
+  memoria en cada `COMPUTE_PGM` (31 de 31 kernels) antes de ejecutarlos.
+- `plugin/test/test_isa_path.py` corre los 8 modos del pipeline (IA, sin red,
+  RCAS, FSR+, SMAA, NXSR Rápido y Calidad, IA sobre reales con NXSR): el código
+  máquina da lo mismo que `gpu_emu` (diferencia máxima 2/255; casi siempre 0),
+  sin accesos fuera de la memoria reservada, sin instrucciones que la PS4 no tenga
+  y sin bucles que no terminen. Lo que no modela: tiempos, el tiling de los
+  buffers del juego y la precisión de 8 bits del filtro bilineal del hardware.
+
+**Ideas de VCFG medidas** (el análisis de todas las versiones: las v2.40–v2.54 que
+había eran nuestras; de VCFG, v2.14, v2.23 y el código v2.25). Se probaron sobre
+NXFG-2 con PSNR y con el error temporal de la secuencia mostrada (real,
+intermedio, real...) contra la verdadera; ninguna mejoró, así que no se adoptan:
+
+| idea de VCFG | val | video | error temporal (menos es mejor) |
+|---|---|---|---|
+| NXFG-2 tal cual | 30,73 | 37,65 | 0,789 |
+| guard de píxel quieto 3x más estricto | 30,54 | 37,58 | 0,813 |
+| muestra fuera de pantalla → la del otro lado | 30,53 | 37,65 | 0,789 |
+| camino coherente (un solo vector si difieren ≤1 px) | 30,65 | 37,62 | 0,791 |
+| softmin más suave (τ 0,15 + piso 0,05) | 30,73 | 37,65 | 0,789 |
+| predictor temporal en el block-matching | — | 37,43–37,50 | 0,790–0,793 |
+
+De VCFG sí se tomó lo que ya estaba probado bien: la presentación (intermedios,
+colas, pacing) y la idea de elegir vector por píxel entre los vecinos. Su
+post-proceso in situ no se copió: VCFG lo documenta como fuente de parpadeo (el
+warp leía el real procesado con la pirámide del crudo, y había carrera entre
+grupos); acá el post es fuera de lugar, se copia después de una barrera y la
+pirámide se arma del real ya procesado.
 
 ## Novedades de la 2.72
 

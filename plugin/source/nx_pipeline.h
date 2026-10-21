@@ -1,10 +1,10 @@
 // Pipeline de GPU de VCFG-NX: arma el DCB que genera un fotograma intermedio
-// (block-matching + NXFlow niveles A/B a 1/8 y C a 1/4 + warp) y opcionalmente
-// lo pasa por SMAA 1x y/o FSR1.
+// (NXFG-2: block-matching de 4 niveles + red a 1/16 y 1/8 + warp con protecciones)
+// y el post-proceso (SMAA 1x, NXSR, FSR1 EASU/RCAS).
 // C portable: la parte especifica de PS4 (memoria, hooks, flips) esta en main.c.
 #pragma once
 
-#define NX_PIPE_SLOTS 4   // trabajos en vuelo (el motor usa 0-1; la generacion con presentacion VCFG, 0-3)
+#define NX_PIPE_SLOTS 10  // kernargs por trabajo: motor 0-1, generacion con presentacion VCFG 0-3, su post-proceso 6-9
 #include <stddef.h>
 #include <stdint.h>
 
@@ -28,20 +28,22 @@ typedef struct {
     int W, H;           // resolucion del juego (buffers que registra en VideoOut)
     int Wp, Hp;         // rellenada a multiplo de 32
     int w4, h4, w8, h8, w16, h16;
+    int lum_h[4], lum_w[4];   // luma L1..L4 (media resolucion y mitades)
+    int bm_h[4], bm_w[4];     // mallas de bloques de 8 de cada nivel (L1 = 1/16 de la imagen)
     int Wo, Ho;         // resolucion de salida (== W, H salvo con EASU)
     nx_arena_t arena;
     int shader[32];     // indice en nx_shaders[] por kernel usado
     uint64_t shader_gpu[32];
     uint64_t w_gpu[24], b_gpu[24];
     // tensores
-    uint64_t luma[2][3], a8[2], a4[2];
-    uint64_t vec[3], vtmp, flow5, delta5, flow4, delta4, lvl_in, hA, hB, hR, up;
+    uint64_t luma[2][4], a8[2], a16[2];
+    uint64_t vec[4], vtmp, flowG, deltaG, flow8, delta8, lvl_in, hA, hB, hR, up, scene, smask, smask_e;
     uint64_t tmp_img, tmp_img2, tmp_aa;   // imagenes intermedias para el post-proceso
     uint64_t smaa_edges, smaa_weights, smaa_area, smaa_search, nxsr_w, nxsr_hq_w;
     uint64_t kernarg_base[NX_PIPE_SLOTS], desc_base[NX_PIPE_SLOTS];   // por slot (piramides: por paridad)
     uint64_t label_gpu;
     volatile uint32_t* label_cpu;
-    int luma_valid[2];
+    int luma_valid[2];          // 1 = piramide completa, 2 = solo luma (generacion rapida)
 } nx_pipeline_t;
 
 typedef struct {
@@ -53,11 +55,12 @@ typedef struct {
     nx_post_t post;
     int aa;                     // 1 = SMAA 1x antes del escalado / nitidez
     float sharpness_stops;      // 0 = maxima nitidez, 2 = suave (como FSR)
+    float sharp_detail;         // FSR+: realce de detalle despues de RCAS (0 = RCAS puro)
     uint32_t seq;               // valor que el GPU escribe en label al terminar
     int fg;                     // 0 = solo post-proceso del fotograma real
-    int fg_fast;                // 1 = sin la red NXFlow: vectores del block-matching + warp (mucho mas liviano)
+    int fg_fast;                // 1 = sin la red: vectores del block-matching + warp (mas liviano)
     int sr;                     // NXSR (reemplaza a RCAS)
-    float sr_k;                 // intensidad de NXSR, 0..1 (nunca extrapola)
+    float sr_k;                 // intensidad de NXSR (1 = la del entrenamiento; el limitador 3x3 evita halos)
     int sr_hq;                  // 1 = modelo Calidad (wg_nxsr_hq), 0 = Rapido
     int rcas;                   // nitidez RCAS
     int enhance_first;          // FG sobre los reales ya procesados (misma resolucion)

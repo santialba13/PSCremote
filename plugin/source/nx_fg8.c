@@ -229,7 +229,7 @@ int nx_fg8_build(nx_fg8_t* f, pm4_t* c, int slot, const nx_fg8_job_t* j)
     for (int i = 0; i < 8; ++i) stats[i] = 0xFFFFFFFFu;
     fill_table(tb, j, f->work, (volatile uint32_t*)(f->slab + MON_OFF), stats);
     uint32_t W = j->cur->width, H = j->cur->height;
-    nx_fg8_prologue(f, c, slot, j->seq, j->cur, j->ts0);
+    if (!j->no_prologue) nx_fg8_prologue(f, c, slot, j->seq, j->cur, j->ts0);
     EMIT(PKT3(0x76, 4, 1)); EMIT(0x207); EMIT(64); EMIT(1); EMIT(1);
     EMIT(PKT3(0x76, 3, 1)); EMIT(0x240); EMIT((uint32_t)tbl); EMIT((uint32_t)(tbl >> 32));
 

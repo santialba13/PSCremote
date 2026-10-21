@@ -43,6 +43,45 @@ entrenar en GPU. Toda la tubería (datos → entrenamiento → export → shader
 plugin) ya está lista para reentrenar sin tocar el código de la consola,
 siempre que la arquitectura se mantenga.
 
+## 1b. Generación de fotogramas NXFG-2 (2.73)
+
+`python model/eval2.py --nxfg2 weights/nxfg2.pkl --nxflow weights/nxflow.pkl --sets val_video.npy val_synth.npy --video bbb_test.mp4`.
+"error en píxeles quietos" es el error medio (0-255) en los píxeles iguales en los
+tres fotogramas (HUD, textos, fondo fijo): donde un generador tiembla o deja fantasmas.
+"block-matching tipo VCFG" es `model/baseline_bm.py` (la idea de VCFG v2.14), no el
+warp clásico completo de VCFG.
+
+| conjunto | metodo | PSNR (dB) | SSIM | error en pixeles quietos (0-255) |
+|---|---|---|---|---|
+| val_video.npy | mezcla 50/50 | 36.61 | 0.9653 | 0.00 |
+| val_video.npy | block-matching tipo VCFG | 37.95 | 0.9754 | 0.01 |
+| val_video.npy | NXFlow (IA de la 2.72) | 37.95 | 0.9759 | 0.02 |
+| val_video.npy | NXFG-2 sin red | 37.80 | 0.9743 | 0.00 |
+| val_video.npy | NXFG-2 IA (2.73) | 37.73 | 0.9746 | 0.00 |
+| val_synth.npy | mezcla 50/50 | 21.76 | 0.6463 | 0.00 |
+| val_synth.npy | block-matching tipo VCFG | 24.44 | 0.7906 | 2.00 |
+| val_synth.npy | NXFlow (IA de la 2.72) | 24.60 | 0.7960 | 2.07 |
+| val_synth.npy | NXFG-2 sin red | 24.56 | 0.8124 | 0.18 |
+| val_synth.npy | NXFG-2 IA (2.73) | 24.75 | 0.8152 | 0.18 |
+| bbb_test.mp4 (completo) | mezcla 50/50 | 34.51 | 0.9846 | 0.00 |
+| bbb_test.mp4 (completo) | block-matching tipo VCFG | 37.03 | 0.9890 | 0.00 |
+| bbb_test.mp4 (completo) | NXFlow (IA de la 2.72) | 37.07 | 0.9893 | 0.00 |
+| bbb_test.mp4 (completo) | NXFG-2 sin red | 36.94 | 0.9888 | 0.00 |
+| bbb_test.mp4 (completo) | NXFG-2 IA (2.73) | 36.88 | 0.9890 | 0.00 |
+
+### Lectura honesta
+
+* En las escenas tipo juego (HUD sobre fondo que se mueve, oclusiones, giros) NXFG-2
+  es lo mejor: +0,3 dB y +0,025 de SSIM sobre el block-matching, y el error en el
+  HUD y las zonas quietas baja de ~2 a 0,18 (11 veces menos): eso era lo que se veía
+  como parpadeo y fantasmas.
+* En video real (Big Buck Bunny) queda ~0,15 dB por debajo en PSNR, con el mismo
+  SSIM: el movimiento va en una malla de 1/16 (como VCFG) en vez de 1/8.
+* Cuesta ~0,23 GMAC de red por fotograma (la anterior: 1,17) y la búsqueda de
+  movimiento corre a media resolución.
+* Ninguna de las ideas de VCFG que se midieron sobre NXFG-2 mejoró estos números
+  (ver la tabla en el README, 2.73).
+
 ## 2. Escalado (FSR1)
 
 Big Buck Bunny 1280x720, reducido a 960x540 y vuelto a escalar:

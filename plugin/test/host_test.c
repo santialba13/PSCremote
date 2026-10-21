@@ -23,11 +23,16 @@ typedef struct { uint64_t vec; int32_t H, W; uint64_t flow5; } ka_bm2flow_t;
 typedef struct { uint64_t src; int32_t Hs, Ws; uint64_t out; int32_t H, W; } ka_luma_t;
 typedef struct { uint64_t in; int32_t H, W; uint64_t out; } ka_down2_t;
 typedef struct { uint64_t l0, l1; int32_t H, W; uint64_t coarse; int32_t cBy, cBx;
-                 uint64_t vec; int32_t By, Bx, radius; } ka_bm_t;
+                 uint64_t vec; int32_t By, Bx, radius, finest; } ka_bm_t;
+typedef struct { uint64_t a0, a1, vec; int32_t H, W; uint64_t flow5, out; } ka_input_a_t;
+typedef struct { uint64_t in; int32_t H, W; uint64_t out; } ka_pool2_t;
+typedef struct { uint64_t vec; int32_t n, _pad; uint64_t flag; } ka_scene_t;
 typedef struct { uint64_t in, out; int32_t By, Bx; } ka_median_t;
-typedef struct { uint64_t f0, f1, samp, low5; int32_t h4, w4; uint64_t dst; int32_t H, W; } ka_warp_t;
+typedef struct { uint64_t f0, f1, samp, low5; int32_t hl, wl; float scale; int32_t _pad; uint64_t flag, smask, dst;
+                 int32_t H, W; } ka_warp_t;
+typedef struct { uint64_t l0, l1; int32_t H, W; uint64_t out; } ka_smask_t;
 typedef struct { uint64_t src; int32_t H, W; uint64_t dst; int32_t Ho, Wo; } ka_easu_t;
-typedef struct { uint64_t src, dst; int32_t W, H; float sharp; int32_t denoise; } ka_rcas_t;
+typedef struct { uint64_t src, dst; int32_t W, H; float sharp; int32_t denoise; float detail; } ka_rcas_t;
 typedef struct { uint64_t src; int32_t W, H; uint64_t edges; } ka_smaa_edges_t;
 typedef struct { uint64_t edges; int32_t W, H; uint64_t area, search, weights; } ka_smaa_weights_t;
 typedef struct { uint64_t src, samp, weights; int32_t W, H; uint64_t dst; } ka_smaa_blend_t;
@@ -35,11 +40,12 @@ typedef struct { uint64_t src; int32_t W, H; uint64_t w; uint64_t dst; float k; 
 typedef struct { uint64_t dst; int32_t W, H; uint64_t text, attr; int32_t cols, rows; uint64_t font;
                  int32_t cw, ch, x0, y0, scale, sel_row; } ka_osd_t;
 typedef struct { uint64_t src, dst; int32_t x0, y0, w, h; } ka_copy_t;
+typedef struct { uint64_t dst; int32_t x0, y0, w, h; float r, g, b; } ka_fill_t;
 
 #define O(t, f) (int)offsetof(t, f)
 typedef struct { const char* name; int n; int offs[16]; } layout_t;
 static const layout_t layouts[] = {
-    { "conv3x3_14_32", 13, { O(ka_conv_t, in), O(ka_conv_t, H), O(ka_conv_t, W), O(ka_conv_t, out), O(ka_conv_t, Ho),
+    { "conv3x3_15_32", 13, { O(ka_conv_t, in), O(ka_conv_t, H), O(ka_conv_t, W), O(ka_conv_t, out), O(ka_conv_t, Ho),
         O(ka_conv_t, Wo), O(ka_conv_t, w), O(ka_conv_t, b), O(ka_conv_t, stride), O(ka_conv_t, pad_top),
         O(ka_conv_t, pad_left), O(ka_conv_t, act), O(ka_conv_t, residual) } },
     { "avgpool_rgb", 7, { O(ka_avgpool_t, src), O(ka_avgpool_t, H), O(ka_avgpool_t, W), O(ka_avgpool_t, out),
@@ -50,18 +56,27 @@ static const layout_t layouts[] = {
     { "build_level_input", 8, { O(ka_build_t, a0), O(ka_build_t, a1), O(ka_build_t, flow5), O(ka_build_t, delta5),
         O(ka_build_t, H), O(ka_build_t, W), O(ka_build_t, level), O(ka_build_t, out) } },
     { "bm_to_flow", 4, { O(ka_bm2flow_t, vec), O(ka_bm2flow_t, H), O(ka_bm2flow_t, W), O(ka_bm2flow_t, flow5) } },
-    { "luma_full", 6, { O(ka_luma_t, src), O(ka_luma_t, Hs), O(ka_luma_t, Ws), O(ka_luma_t, out),
+    { "nxfg_input_a", 7, { O(ka_input_a_t, a0), O(ka_input_a_t, a1), O(ka_input_a_t, vec), O(ka_input_a_t, H),
+        O(ka_input_a_t, W), O(ka_input_a_t, flow5), O(ka_input_a_t, out) } },
+    { "pool2_rgb", 4, { O(ka_pool2_t, in), O(ka_pool2_t, H), O(ka_pool2_t, W), O(ka_pool2_t, out) } },
+    { "wg_nxfg_scene", 3, { O(ka_scene_t, vec), O(ka_scene_t, n), O(ka_scene_t, flag) } },
+    { "luma_half", 6, { O(ka_luma_t, src), O(ka_luma_t, Hs), O(ka_luma_t, Ws), O(ka_luma_t, out),
         O(ka_luma_t, H), O(ka_luma_t, W) } },
     { "luma_down2", 4, { O(ka_down2_t, in), O(ka_down2_t, H), O(ka_down2_t, W), O(ka_down2_t, out) } },
-    { "bm_search", 11, { O(ka_bm_t, l0), O(ka_bm_t, l1), O(ka_bm_t, H), O(ka_bm_t, W), O(ka_bm_t, coarse),
-        O(ka_bm_t, cBy), O(ka_bm_t, cBx), O(ka_bm_t, vec), O(ka_bm_t, By), O(ka_bm_t, Bx), O(ka_bm_t, radius) } },
+    { "wg_bm_search", 12, { O(ka_bm_t, l0), O(ka_bm_t, l1), O(ka_bm_t, H), O(ka_bm_t, W), O(ka_bm_t, coarse),
+        O(ka_bm_t, cBy), O(ka_bm_t, cBx), O(ka_bm_t, vec), O(ka_bm_t, By), O(ka_bm_t, Bx), O(ka_bm_t, radius),
+        O(ka_bm_t, finest) } },
     { "bm_median3", 4, { O(ka_median_t, in), O(ka_median_t, out), O(ka_median_t, By), O(ka_median_t, Bx) } },
-    { "warp_blend", 9, { O(ka_warp_t, f0), O(ka_warp_t, f1), O(ka_warp_t, samp), O(ka_warp_t, low5),
-        O(ka_warp_t, h4), O(ka_warp_t, w4), O(ka_warp_t, dst), O(ka_warp_t, H), O(ka_warp_t, W) } },
+    { "warp_blend", 12, { O(ka_warp_t, f0), O(ka_warp_t, f1), O(ka_warp_t, samp), O(ka_warp_t, low5),
+        O(ka_warp_t, hl), O(ka_warp_t, wl), O(ka_warp_t, scale), O(ka_warp_t, flag), O(ka_warp_t, smask),
+        O(ka_warp_t, dst), O(ka_warp_t, H), O(ka_warp_t, W) } },
+    { "mask_dilate", 4, { O(ka_down2_t, in), O(ka_down2_t, H), O(ka_down2_t, W), O(ka_down2_t, out) } },
+    { "static_mask", 5, { O(ka_smask_t, l0), O(ka_smask_t, l1), O(ka_smask_t, H), O(ka_smask_t, W),
+        O(ka_smask_t, out) } },
     { "easu", 6, { O(ka_easu_t, src), O(ka_easu_t, H), O(ka_easu_t, W), O(ka_easu_t, dst),
         O(ka_easu_t, Ho), O(ka_easu_t, Wo) } },
-    { "rcas", 6, { O(ka_rcas_t, src), O(ka_rcas_t, dst), O(ka_rcas_t, W), O(ka_rcas_t, H),
-        O(ka_rcas_t, sharp), O(ka_rcas_t, denoise) } },
+    { "rcas", 7, { O(ka_rcas_t, src), O(ka_rcas_t, dst), O(ka_rcas_t, W), O(ka_rcas_t, H),
+        O(ka_rcas_t, sharp), O(ka_rcas_t, denoise), O(ka_rcas_t, detail) } },
     { "smaa_edges", 4, { O(ka_smaa_edges_t, src), O(ka_smaa_edges_t, W), O(ka_smaa_edges_t, H),
         O(ka_smaa_edges_t, edges) } },
     { "smaa_weights", 6, { O(ka_smaa_weights_t, edges), O(ka_smaa_weights_t, W), O(ka_smaa_weights_t, H),
@@ -75,6 +90,8 @@ static const layout_t layouts[] = {
     { "osd_draw", 14, { O(ka_osd_t, dst), O(ka_osd_t, W), O(ka_osd_t, H), O(ka_osd_t, text), O(ka_osd_t, attr),
         O(ka_osd_t, cols), O(ka_osd_t, rows), O(ka_osd_t, font), O(ka_osd_t, cw), O(ka_osd_t, ch), O(ka_osd_t, x0),
         O(ka_osd_t, y0), O(ka_osd_t, scale), O(ka_osd_t, sel_row) } },
+    { "fill_rect", 8, { O(ka_fill_t, dst), O(ka_fill_t, x0), O(ka_fill_t, y0), O(ka_fill_t, w), O(ka_fill_t, h),
+        O(ka_fill_t, r), O(ka_fill_t, g), O(ka_fill_t, b) } },
     { "copy_rect", 6, { O(ka_copy_t, src), O(ka_copy_t, dst), O(ka_copy_t, x0), O(ka_copy_t, y0), O(ka_copy_t, w),
         O(ka_copy_t, h) } },
 };
@@ -103,8 +120,8 @@ static void check_layouts(void)
         CHECK(s->user_sgprs == 6, "%s: user_sgprs=%d", l->name, s->user_sgprs);
     }
     // las 4 variantes de conv comparten layout
-    const char* convs[] = { "conv3x3_17_32", "conv3x3_32_32", "conv3x3_32_5",
-                            "conv3x3_17_16", "conv3x3_16_16", "conv3x3_16_5" };
+    const char* convs[] = { "conv3x3_32_32", "conv3x3_32_5", "conv3x3_17_24", "conv3x3_24_24", "conv3x3_24_5",
+                            "conv3x3_15_32" };
     for (int i = 0; i < 6; ++i) {
         const nx_shader_t* s = find(convs[i]);
         CHECK(s && s->num_args == 13, "%s", convs[i]);
