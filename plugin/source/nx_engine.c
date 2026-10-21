@@ -121,6 +121,8 @@ static struct {
     // calidad dinamica
     int pro, announced, hdr;
     int effects_blocked;             // el arranque escalonado todavia no habilito los efectos
+    int fx_cap;                      // tope de efectos (nx_engine_allow_effects)
+    int fx_first_job, fx_first_fg;
     uint64_t level_since, last_stall, probe_until, degraded_at;
     int up_fails, degraded_gpu, degraded_retries, slow_run;
     // temperatura
@@ -250,6 +252,7 @@ static int map_format(int32_t fmt, nx_format_t* out)
 void nx_engine_init(const nx_platform_t* pf, const char* title_id)
 {
     memset(&E, 0, sizeof E);
+    E.fx_cap = 3;
     E.pf = pf;
     snprintf(E.title, sizeof E.title, "%s", title_id ? title_id : "");
     E.prev_idx = -1;
@@ -427,7 +430,26 @@ static int alloc_base(void)
     return 1;
 }
 
-void nx_engine_allow_effects(int on) { E.effects_blocked = !on; }
+void nx_engine_allow_effects(int cap)
+{
+    E.fx_cap = cap < 0 ? 0 : cap > 3 ? 3 : cap;
+    E.effects_blocked = E.fx_cap == 0;
+}
+
+// hito al instante en la traza del plugin (si el juego se cuelga justo despues,
+// queda dicho hasta donde se llego) y en el registro
+static void stage(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+static void stage(const char* fmt, ...)
+{
+    char m[160];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(m, sizeof m, fmt, ap);
+    va_end(ap);
+    logf_("[etapa] %s\n", m);
+    log_flush();
+    if (E.pf && E.pf->stage) E.pf->stage(m);
+}
 
 static int effects_wanted(void)
 {
@@ -487,6 +509,7 @@ static int alloc_full(void)
     }
     E.info.full_ready = 1;
     logf_("[engine] listo: %dx%d -> %dx%d, %zu MiB\n", E.W, E.H, E.Wo, E.Ho, total >> 20);
+    stage("efectos: memoria lista %dx%d, %zu MiB, buffers propios desde el indice %d", E.Wo, E.Ho, total >> 20, extra_first);
     return 1;
 }
 
@@ -566,6 +589,8 @@ static void build_menu_text(void)
     osd_clear(t, a, 1);
     int warn = E.info.safe_mode || E.info.hot || E.info.level > 0 || E.info.state == NX_ST_DEGRADED || !E.info.full_ready;
     if (E.effects_blocked) snprintf(l, sizeof l, "solo men\xfa (efectos: pr\xf3x. arranque)");
+    else if (E.fx_cap < 3 && E.cfg.effects && !E.info.hot && !E.info.level)
+        snprintf(l, sizeof l, "%.20s \xb7 parte %d de 3", E.info.status, E.fx_cap);
     else if (!E.cfg.effects) snprintf(l, sizeof l, "efectos apagados");
     else if (E.info.hot) snprintf(l, sizeof l, "%s: consola caliente (-%d)", E.info.hot == 2 ? "pausa" : "ahorro", E.info.level);
     else if (E.info.level > 0) snprintf(l, sizeof l, "%.26s (carga -%d)", E.info.status, E.info.level);
@@ -966,6 +991,9 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
     int aa = effects && E.cfg.aa && !E.cfg.eco;
     int rcas = effects && E.cfg.rcas && !sr;
     quality_ladder(&want_fg, &sr, &hq, &aa, &rcas);
+    // arranque escalonado: los efectos se habilitan por partes
+    if (E.fx_cap < 3) want_fg = 0;
+    if (E.fx_cap < 2) { sr = hq = aa = 0; rcas = effects; }
     E.info.hq = hq;
     int want_post = effects && (sr || aa || rcas || E.post == NX_POST_EASU);
     int osd_menu = E.info.menu_open, osd_fps = E.cfg.fps_counter;
@@ -1001,6 +1029,7 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
             set_rate_forced(0);
             notify("VCFG-NX: la GPU no da abasto en este juego; en pausa");
             logf_("[engine] %d fotogramas seguidos con la GPU atrasada: degradado\n", E.stall_run);
+            stage("efectos: GPU atrasada %d fotogramas seguidos: en pausa", E.stall_run);
             log_flush();
         }
         return passthrough_why(s, WHY_STALL);
@@ -1070,6 +1099,7 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
         .prev_real = enhance_first ? &E.real_img[m ^ 1] : NULL,
         .prev_real_valid = E.prev_real_valid,
         .compare = effects && E.cfg.compare && E.Wo == E.W,
+        .copy_back = want_post && E.Wo == E.W && E.Ho == E.H ? &E.game_img[gi] : NULL,
         .osd_ctx = &E.osd,
         .osd = { osds[0], osds[1] },
     };
@@ -1096,6 +1126,11 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
     E.seq++;
     E.slot_seq[sl] = E.seq;
     E.info.our_jobs++;
+    if (!E.fx_first_job && job.out_real) {
+        E.fx_first_job = 1;
+        stage("efectos: primer trabajo (nitidez %d, reescalado %d, smaa %d, generacion %d, copia al juego %d)", job.rcas,
+              job.sr, job.aa, job.fg, job.copy_back != NULL);
+    }
     // un solo envio: los DCB del juego (el ultimo sin su cola) + el nuestro con la cola
     void* d[65];
     uint32_t dsz[65];
@@ -1119,7 +1154,9 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
     cbsz[n] = 0;
     ++n;
     int has_ccb = s->ccb != NULL;
-    int real_idx = job.out_real ? E.real_index[m] : (int)s->index;
+    // el real se presenta en el buffer del juego (copiado de vuelta); solo con EASU
+    // (salida mas grande que el juego) se presenta el buffer propio
+    int real_idx = job.out_real && !job.copy_back ? E.real_index[m] : (int)s->index;
     nx_submit_t all = { n, d, dsz, has_ccb ? cb : NULL, has_ccb ? cbsz : NULL, s->handle, 0, s->mode, s->arg,
                         s->workload, s->for_workload, 0 };
     if (job.fg) {
@@ -1127,7 +1164,11 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
         all.index = (uint32_t)E.mid_index[m];
         all.mode = 1;
         rc = E.pf->submit_flip(&all);
-        flip_index(s, real_idx, 1);
+        int rc2 = flip_index(s, real_idx, 1);
+        if (!E.fx_first_fg) {
+            E.fx_first_fg = 1;
+            stage("efectos: primer fotograma generado (flips 0x%08x 0x%08x)", (unsigned)rc, (unsigned)rc2);
+        }
     } else {
         set_rate_forced(0);
         all.index = (uint32_t)real_idx;

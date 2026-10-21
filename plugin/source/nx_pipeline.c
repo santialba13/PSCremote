@@ -449,10 +449,11 @@ int nx_pipeline_build(nx_pipeline_t* p, pm4_t* c, const nx_job_t* job)
                 p->desc_base[job->slot], p->desc_base[job->slot] + DESC_BYTES, 0 };
     if (job->osd_ctx) nx_osd_begin(job->osd_ctx, job->slot);
 
-    pm4_set_sh1(c, R_COMPUTE_TMPRING_SIZE, 0);
-    uint32_t mgmt[2] = { 0xFFFFFFFFu, 0xFFFFFFFFu };
-    pm4_set_sh(c, R_COMPUTE_STATIC_THREAD_MGMT_SE0, mgmt, 2);
-    pm4_set_sh1(c, R_COMPUTE_RESOURCE_LIMITS, 0);
+    // No se tocan COMPUTE_TMPRING_SIZE / STATIC_THREAD_MGMT / RESOURCE_LIMITS: son
+    // estado del anillo y quedan puestos para lo que el juego envie despues (con
+    // TMPRING_SIZE = 0, los shaders del juego que usan scratch colgaban la GPU: GTA V
+    // aguanto la pantalla de carga y se colgo al empezar la partida). VCFG tampoco
+    // los toca; nuestros kernels no usan scratch.
 
     int any_post = job->post != NX_POST_NONE || job->aa || job->sr || job->rcas;
     if (any_post && !job->out_real) return -15;
@@ -482,6 +483,11 @@ int nx_pipeline_build(nx_pipeline_t* p, pm4_t* c, const nx_job_t* job)
         x.err = 5;
     if (job->fg) draw_osd(&x, job, job->out_mid);
     draw_osd(&x, job, job->out_real ? job->out_real : job->cur);
+    // el real procesado vuelve al buffer del juego, que es el que se presenta: el
+    // juego sigue viendo sus propios buffers en pantalla (como VCFG)
+    if (job->copy_back && job->out_real && job->osd_ctx
+        && nx_osd_copy(job->osd_ctx, c, job->slot, job->out_real, job->copy_back) != 0)
+        x.err = 6;
 
     pm4_end_of_job(c, p->label_gpu, job->seq);
     pm4_nop_pad(c, 8);

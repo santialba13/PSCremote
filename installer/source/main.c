@@ -60,7 +60,7 @@
 #define LOG_DIR ROOT "/data/GoldHEN/vcfg_nx"   // registros del plugin (desde 2.55)
 #define TITLE_ID "VCNX00001"
 #define CONTENT_ID "IV0000-VCNX00001_00-VCFGNXINSTALL000"
-#define VERSION "2.6.6"
+#define VERSION "2.6.7"
 
 #define W 1920
 #define H 1080
@@ -1407,11 +1407,10 @@ static void diag_collect(void)
             vv[k] = 0;
             const char* bv = strstr(bt, "ver=");
             int other = bv && strncmp(bv + 4, vv, (size_t)k) != 0;
-            if (other) m = 4;
-            if (other) { if (l < 3) l = 3; else l = 4; }
+            if (other) { m = 6; l = l >= 3 ? 4 : l > 0 ? 3 : 0; }
             else if (strstr(bt, "state=pending") && l > 0) m = l = l - 1;   // se cerro en ese nivel
-            else if (strstr(bt, "state=ok")) l = l < 3 ? (m < 3 ? m : 3) : m;   // salio bien: menu, despues efectos
-            snprintf(L[5] + strlen(L[5]), 300 - strlen(L[5]), " \xb7 pr\xf3ximo arranque: nivel %d (tope %d de 4)", l, m);
+            else if (strstr(bt, "state=ok") && l < m) l = l < 3 ? (m < 3 ? m : 3) : l + 1;   // salio bien: menu, despues efectos de a una parte
+            snprintf(L[5] + strlen(L[5]), 300 - strlen(L[5]), " \xb7 pr\xf3ximo arranque: nivel %d (tope %d de 6)", l, m);
         }
         free(bt);
     }

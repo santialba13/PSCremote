@@ -219,7 +219,7 @@ static int sim_append(const char* p, const char* d, int len)
 
 static const nx_platform_t PF = { sim_alloc, sim_avail, sim_register, sim_rate, sim_submit, sim_submit_flip,
                                   sim_now, sim_sleep, sim_notify, sim_log, sim_read, sim_write, sim_append,
-                                  sim_is_pro, sim_temp, sim_pool_free };
+                                  sim_is_pro, sim_temp, sim_pool_free, NULL };
 
 // ------------------------------------------------------------- juego
 typedef struct {
@@ -487,7 +487,9 @@ int main(int argc, char** argv)
     jobs_before = I()->our_jobs;
     play(&bb, 3000, 0);
     CHECK(I()->our_jobs > jobs_before + 2500, "dejo de procesar");
-    CHECK(I()->stalls - st12 <= 3 * 2, "sigue atrasandose (%llu)", (unsigned long long)(I()->stalls - st12));
+    // (cada prueba de subida que no se sostiene cuesta 2-3 fotogramas atrasados;
+    // la copia de vuelta al buffer del juego suma un pase completo por fotograma)
+    CHECK(I()->stalls - st12 <= 3 * 3, "sigue atrasandose (%llu)", (unsigned long long)(I()->stalls - st12));
     // la escena se aligera (8 ms de GPU): vuelve a subir a la calidad completa
     C.game_cost_us = 8000;
     play(&bb, 16000, 0);
@@ -764,6 +766,23 @@ int main(int argc, char** argv)
         CHECK(I()->menu_x > 0 && I()->menu_y > 0 && I()->menu_x + I()->menu_w <= bb.W && I()->menu_y + I()->menu_h <= bb.H,
               "menu fuera de pantalla: (%d,%d) %dx%d en %dx%d", I()->menu_x, I()->menu_y, I()->menu_w, I()->menu_h, bb.W, bb.H);
         common_checks();
+    }
+
+    // 27. efectos por partes (niveles 4-6) y la imagen real en el buffer del juego
+    {
+        int caps[3] = { 1, 2, 3 };
+        for (int k = 0; k < 3; ++k) {
+            boot(&bb, 0);
+            nx_engine_allow_effects(caps[k]);
+            play(&bb, 2400, 0);
+            char n[64];
+            snprintf(n, sizeof n, "27. efectos parte %d de 3", caps[k]);
+            report(n);
+            CHECK(I()->full_ready && I()->our_jobs > 1000, "parte %d: no se activaron los efectos", caps[k]);
+            CHECK(C.last_flip_index >= 0 && C.last_flip_index < bb.nbuf,
+                  "parte %d: el ultimo flip deberia ser a un buffer del juego (fue %d)", caps[k], C.last_flip_index);
+            common_checks();
+        }
     }
 
     // 10. juego que arranca en un proceso que no es un juego

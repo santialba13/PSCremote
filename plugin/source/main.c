@@ -60,7 +60,7 @@ static void trace(const char* line)
 attr_public const char* g_pluginName = "vcfg_nx";
 attr_public const char* g_pluginDesc = "Frame generation + reescalado IA (NXSR) + SMAA/FSR1, menu L3+R3";
 attr_public const char* g_pluginAuth = "VCFG-NX";
-attr_public u32 g_pluginVersion = 0x00000266; // 2.66
+attr_public u32 g_pluginVersion = 0x00000267; // 2.67
 
 // prototipos de las variantes ForWorkload (OpenOrbis las declara sin argumentos)
 typedef s32 (*submit_wl_t)(u64, u32, void**, u32*, void**, u32*);
@@ -315,10 +315,13 @@ static int pf_temp_c(void)
     return t;
 }
 
+static void boot_stage(const char* title, const char* what);
+static void pf_stage(const char* m) { boot_stage(g_title_s, m); }
+
 static const nx_platform_t g_pf = {
     pf_alloc_gpu, pf_avail_direct, pf_register, pf_set_flip_rate, pf_submit, pf_submit_flip,
     pf_now_us, pf_sleep_us, pf_notify, pf_log, pf_read_file, pf_write_file, pf_append_file, pf_is_pro, pf_temp_c,
-    pf_pool_free,
+    pf_pool_free, pf_stage,
 };
 
 // ----------------------------------------------------------------- hooks
@@ -345,7 +348,7 @@ s32 sceVideoOutSetFlipRate_hook(s32 handle, s32 rate)
 static volatile int g_pad_run;
 static OrbisPthread g_pad_thread;
 static int g_thread_tried;
-static int g_level_max = 4;   // BOOT_TOP
+static int g_level_max = 6;   // BOOT_TOP
 static int g_engine_live;        // nivel 3+: el motor procesa los flips; si no, pasan derecho
 static uint64_t g_game_flips;    // contados aca (el motor puede no estar iniciado)
 static void* pad_thread(void* arg);
@@ -502,10 +505,12 @@ static void* pad_thread(void* arg)
 //   2  + engancha el registro de pantalla (RegisterBuffers, SetFlipRate)
 //   3  + engancha la presentacion (flips): menu L3+R3 y efectos
 //   4  + 4 MiB tempranos para el menu
-#define BOOT_TOP 4
+#define BOOT_TOP 6
 #define EARLY_WORK 0
 static const char* const LEVEL_NAME[BOOT_TOP + 2] = { "apagado", "solo aviso y conteo", "configuracion", "registro de pantalla",
-                                                     "menu L3+R3", "menu y efectos" };
+                                                     "menu L3+R3", "efectos 1/3: nitidez",
+                                                     "efectos 2/3: + reescalado IA y SMAA",
+                                                     "efectos 3/3: + generacion de fotogramas" };
 #define LVNAME(l) LEVEL_NAME[(l) + 1]
 
 static void boot_stage(const char* title, const char* what)
@@ -544,8 +549,9 @@ static void boot_level_pick(const char* title)
         ok = strstr(prev, "state=ok") != NULL;
         if (pv != (unsigned)g_pluginVersion) {   // version nueva: otra oportunidad hasta arriba
             pending = 0;
-            ok = 1;
+            ok = 0;
             mx = BOOT_TOP;
+            lv = lv >= 3 ? 4 : lv > 0 ? 3 : 0;   // lo que ya se probo, sigue; los efectos, desde la primera parte
         }
     }
     if (pending && lv <= 0) {   // nivel 0 no toca nada: se cerro por otra cosa (o se salio antes)
@@ -554,8 +560,8 @@ static void boot_level_pick(const char* title)
         mx = lv - 1;
         lv = mx;
     } else if (ok && lv < mx) {
-        // salio bien: hasta el menu (3) de una; del menu, a los efectos (4)
-        lv = lv < 3 ? (mx < 3 ? mx : 3) : mx;
+        // salio bien: hasta el menu (3) de una; despues los efectos de a una parte
+        lv = lv < 3 ? (mx < 3 ? mx : 3) : lv + 1;
     }
     if (mx > BOOT_TOP) mx = BOOT_TOP;
     if (mx < -1) mx = -1;
@@ -675,7 +681,7 @@ s32 attr_public plugin_load(s32 argc, const char* argv[])
     g_engine_live = g_level >= 3;
     // nivel 3: el motor solo dibuja el menu (un shader chico); los efectos, que
     // son la mayor parte del trabajo de GPU, recien en el nivel 4
-    nx_engine_allow_effects(g_level >= 4);
+    nx_engine_allow_effects(g_level - 3);   // 4: nitidez, 5: + reescalado/SMAA, 6: + generacion
     hook_flips();
     if (!g_engine_live) {
         boot_stage(title, "conteo de fotogramas enganchado: plugin_load terminado");

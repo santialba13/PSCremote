@@ -1,4 +1,4 @@
-# VCFG-NX 2.66: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
+# VCFG-NX 2.67: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
 
 Rediseño del **VCFG v2.14** (generador de fotogramas en beta de la comunidad
 de GoldHEN) que además incorpora un **modelo de reescalado/realce propio,
@@ -64,6 +64,31 @@ botones mientras está abierto):
   RCAS, contador de FPS (con temperatura) y comparar.
 * Arriba se ven los FPS, la temperatura y el estado (activo, calidad dinámica,
   calor). **Guardar** deja todo para ese juego; **O** cierra.
+
+## Novedades de la 2.67
+
+Con la 2.66, GTA V en nivel 4: los efectos anduvieron ~600 fotogramas en la
+pantalla de carga ("efectos: arranque correcto") y el juego se colgó al empezar
+la partida.
+
+- **El motor ya no toca estado global de compute.** El pipeline escribía
+  `COMPUTE_TMPRING_SIZE = 0`, `STATIC_THREAD_MGMT_SE0/1` y `RESOURCE_LIMITS`; ese
+  estado queda en el anillo para lo que el juego envía después, y los shaders
+  del juego que usan scratch encontraban un anillo de scratch de tamaño 0. VCFG
+  no los toca y nuestros kernels no usan scratch.
+- **La imagen real se presenta en el buffer del juego**, como VCFG: el resultado
+  procesado se copia de vuelta al buffer del juego (`copy_back`) y el flip real
+  va al índice del juego; el intermedio de la generación va al buffer propio.
+  Así el juego sigue viendo sus buffers en pantalla. (Con EASU, salida más
+  grande que el juego, se sigue presentando el buffer propio.)
+- **Efectos por partes:** nivel 4 = nitidez (RCAS), 5 = + reescalado IA y SMAA,
+  6 = + generación de fotogramas. Cada arranque correcto suma una parte; si una
+  se cuelga, la próxima vez se usa la anterior. Con una versión nueva, lo que
+  llegó al menú o más arranca en la parte 1.
+- **Hitos de los efectos en la traza, al instante:** memoria lista, primer
+  trabajo (con qué efectos), primer fotograma generado, GPU atrasada.
+- Simulador: escenario 27 (las tres partes; el último flip va a un buffer del
+  juego).
 
 ## Novedades de la 2.66
 

@@ -61,6 +61,7 @@ typedef struct {
     const nx_image_t* prev_real;  // real procesado del fotograma anterior
     int prev_real_valid;
     int compare;                // mitad izquierda sin procesar
+    const nx_image_t* copy_back; // si no es NULL: out_real se copia aca al final (el buffer del juego)
     nx_osd_ctx_t* osd_ctx;      // menu / contador (NULL = nada)
     const nx_osd_t* osd[2];
 } nx_job_t;

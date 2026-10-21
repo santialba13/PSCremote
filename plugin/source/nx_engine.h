@@ -48,6 +48,7 @@ typedef struct {
     int (*is_pro)(void);                                    // 1 = el juego corre en modo PS4 Pro (puede ser NULL)
     int (*temp_c)(void);                                    // temperatura del procesador en grados C, < 0 si no se sabe (puede ser NULL)
     size_t (*pool_free)(int base);                          // bytes libres de la reserva temprana (base = 1: la del menu); puede ser NULL
+    void (*stage)(const char* msg);                         // hito anotado al instante (traza); puede ser NULL
 } nx_platform_t;
 
 typedef enum {
@@ -79,8 +80,9 @@ typedef struct {
 } nx_engine_info_t;
 
 void nx_engine_init(const nx_platform_t* pf, const char* title_id);
-// 0: solo menu/contador (sin reservar ni correr los efectos). Por defecto 1.
-void nx_engine_allow_effects(int on);
+// tope de efectos del arranque escalonado: 0 solo menu/contador, 1 nitidez
+// (RCAS), 2 + reescalado IA y SMAA, 3 + generacion de fotogramas (todo). Por defecto 3.
+void nx_engine_allow_effects(int cap);
 void nx_engine_on_register(int handle, int start, void* const* addrs, int num, const nx_vo_attr_t* a, int rc);
 int nx_engine_on_set_flip_rate(int handle, int rate);      // devuelve la tasa a aplicar
 int nx_engine_on_submit_flip(const nx_submit_t* s);         // hace las submits; devuelve el rc del juego

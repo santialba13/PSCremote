@@ -30,4 +30,6 @@ int nx_osd_init(nx_osd_ctx_t* o, uint8_t* cpu, uint64_t gpu);
 void nx_osd_begin(nx_osd_ctx_t* o, int slot);   // vacia la zona de kernargs del slot
 int nx_osd_draw(nx_osd_ctx_t* o, pm4_t* c, int slot, const nx_image_t* img, const nx_osd_t* const* osds, int n);
 // copia la mitad izquierda de src en dst (modo comparar)
+// copia src entero sobre dst (mismo tamano o el menor)
+int nx_osd_copy(nx_osd_ctx_t* o, pm4_t* c, int slot, const nx_image_t* src, const nx_image_t* dst);
 int nx_osd_copy_left(nx_osd_ctx_t* o, pm4_t* c, int slot, const nx_image_t* src, const nx_image_t* dst);
