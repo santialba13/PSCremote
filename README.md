@@ -1,4 +1,4 @@
-# VCFG-NX 2.50: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
+# VCFG-NX 2.51: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
 
 Rediseño del **VCFG v2.14** (generador de fotogramas en beta de la comunidad
 de GoldHEN) que además incorpora un **modelo de reescalado/realce propio,
@@ -6,7 +6,7 @@ NXSR**, como alternativa a GNMScale pero sin el granulado que este agrega.
 Todo con la interfaz de VCFG: app instaladora con lista de juegos y menú en
 pantalla con **L3+R3**.
 
-**Descarga:** [`dist/VCFG-NX_v2.50.pkg`](dist/VCFG-NX_v2.50.pkg) (fPKG, app) ·
+**Descarga:** [`dist/VCFG-NX_v2.51.pkg`](dist/VCFG-NX_v2.51.pkg) (fPKG, app) ·
 [`dist/vcfg_nx.prx`](dist/vcfg_nx.prx) (plugin suelto) · [`dist/SHA256SUMS.txt`](dist/SHA256SUMS.txt)
 
 | servicio | qué hace |
@@ -64,6 +64,18 @@ botones mientras está abierto):
   RCAS, contador de FPS (con temperatura) y comparar.
 * Arriba se ven los FPS, la temperatura y el estado (activo, calidad dinámica,
   calor). **Guardar** deja todo para ese juego; **O** cierra.
+
+## Novedades de la 2.51
+
+**Causa del cierre de GTA V al arrancar.** El plugin buscaba funciones del
+sistema por nombre (`sceKernelGetModuleList` + `sceKernelDlsym` sobre cada
+módulo del juego) dentro de `plugin_load`, mientras el juego todavía se
+inicializa. En la 2.48 eso corría justo después del aviso (el juego se cerraba
+apenas salía la notificación); en la 2.50 se movió antes del aviso (para
+`sceKernelFsync`) y el cierre pasó a ser antes de la notificación: el cierre
+se movió con esa función. Se quitó por completo (sin control de temperatura
+ni fsync). La marca de arranque "pendiente" ahora es lo primero que se
+escribe, así el nivel prudente se aplica pase lo que pase después.
 
 ## Novedades de la 2.50
 
@@ -327,7 +339,7 @@ compartir para arreglar un juego puntual.
 ## Instalar y usar
 
 1. Requiere **GoldHEN** con soporte de plugins.
-2. Instalar `VCFG-NX_v2.50.pkg` y abrir **VCFG-NX**.
+2. Instalar `VCFG-NX_v2.51.pkg` y abrir **VCFG-NX**.
 3. En la cuadrícula: **X** activa o desactiva VCFG-NX en el juego,
    **CUADRADO** abre los ajustes de ese juego, **TRIÁNGULO** los ajustes por
    defecto, **L1/R1** cambia el filtro, **OPTIONS** abre el menú (activar o

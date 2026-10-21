@@ -23,7 +23,7 @@
 attr_public const char* g_pluginName = "vcfg_nx";
 attr_public const char* g_pluginDesc = "Frame generation + reescalado IA (NXSR) + SMAA/FSR1, menu L3+R3";
 attr_public const char* g_pluginAuth = "VCFG-NX";
-attr_public u32 g_pluginVersion = 0x00000250; // 2.50
+attr_public u32 g_pluginVersion = 0x00000251; // 2.51
 
 // prototipos de las variantes ForWorkload (OpenOrbis las declara sin argumentos)
 typedef s32 (*submit_wl_t)(u64, u32, void**, u32*, void**, u32*);
@@ -219,8 +219,6 @@ static int pf_read_file(const char* path, char* buf, int cap)
     return n;
 }
 
-typedef int (*fsync_fn)(int);
-static fsync_fn g_fsync;
 
 static int write_flags(const char* path, const char* data, int len, int flags)
 {
@@ -236,10 +234,6 @@ static int write_flags(const char* path, const char* data, int len, int flags)
         if (r <= 0) break;
         n += r;
     }
-    // al disco ya: si la consola se cuelga y hay que apagarla a la fuerza, la
-    // marca de arranque y las etapas tienen que quedar (fsync se busca por
-    // nombre: ningun PRX que funcione lo importa)
-    if (g_fsync) g_fsync(fd);
     sceKernelClose(fd);
     return n;
 }
@@ -256,19 +250,8 @@ static int pf_is_pro(void) { return sceKernelIsNeoMode() == 1; }
 typedef int (*temp_fn)(int*);
 static temp_fn g_temp;
 
-// busca una funcion por nombre en todos los modulos cargados (NULL si no esta)
-static void* find_sym(const char* name)
-{
-    OrbisKernelModule mods[256];
-    size_t n = 0;
-    if (sceKernelGetModuleList(mods, sizeof mods / sizeof mods[0], &n) != 0) return NULL;
-    if (n > sizeof mods / sizeof mods[0]) n = sizeof mods / sizeof mods[0];
-    for (size_t i = 0; i < n; ++i) {
-        void* f = NULL;
-        if (sceKernelDlsym((int32_t)mods[i], name, &f) == 0 && f) return f;
-    }
-    return NULL;
-}
+// (No se buscan funciones por nombre recorriendo los modulos del juego: hacerlo
+// mientras el juego arranca lo cerraba. La temperatura queda sin leer.)
 
 static int pf_temp_c(void)
 {
@@ -502,35 +485,32 @@ s32 attr_public plugin_load(s32 argc, const char* argv[])
     if (sys_sdk_proc_info(&info) == 0)
         memcpy(title, info.titleid, sizeof title - 1);
     make_dirs();
-    g_fsync = (fsync_fn)find_sym("sceKernelFsync");
     memcpy(g_title_s, title, sizeof g_title_s);
+    int is_game = !strncmp(title, "CUSA", 4) || !strncmp(title, "PLAS", 4);
+    // lo primero de todo: la marca de arranque "pendiente". Si el juego se
+    // cierra en cualquier punto de aca en adelante, el proximo arranque usa un
+    // nivel mas prudente
+    if (is_game) boot_level_pick(title);
     boot_mark("plugin_load", title);
-    // aviso visible lo antes posible: si no aparece al abrir el juego, GoldHEN no cargo el plugin
-    {
-        char n[96];
-        snprintf(n, sizeof n, "VCFG-NX %x.%02x cargado en %s. Mantener L3+R3: menu", g_pluginVersion >> 8,
-                 g_pluginVersion & 0xFF, title);
+    {   // aviso visible lo antes posible: si no aparece al abrir el juego, GoldHEN no cargo el plugin
+        char n[128];
+        snprintf(n, sizeof n, "VCFG-NX %x.%02x en %s (nivel %d: %s). Mantener L3+R3: menu", g_pluginVersion >> 8,
+                 g_pluginVersion & 0xFF, title, g_level, LEVEL_NAME[g_level]);
         pf_notify(n);
     }
+    if (is_game) boot_stage(title, "inicio");
     nx_engine_init(&g_pf, title);
     if (nx_engine_info()->state == NX_ST_OFF) {
         final_printf("proceso '%s': sin hooks (%s)\n", title, nx_engine_info()->status);
         return 0;
     }
-    boot_level_pick(title);
-    {
-        char n[128];
-        snprintf(n, sizeof n, "VCFG-NX: arranque en nivel %d (%s)", g_level, LEVEL_NAME[g_level]);
-        if (g_level) pf_notify(n);
-    }
-    boot_stage(title, "inicio");
+    boot_stage(title, "configuracion leida");
     if (g_level >= 2) {   // pasivo: solo se deja constancia; si el juego igual se cierra, no es el plugin
         boot_stage(title, "pasivo: sin hooks");
         g_pad_run = 1;
         if (scePthreadCreate(&g_pad_thread, NULL, pad_thread, NULL, "vcfg_nx_pad") != 0) g_pad_run = 0;
         return 0;
     }
-    if (g_level == 0) g_temp = (temp_fn)find_sym("sceKernelGetCpuTemperature");
     early_reserve(title);
     boot_stage(title, "memoria lista");
     HOOK32(sceVideoOutRegisterBuffers);
