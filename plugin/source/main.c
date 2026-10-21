@@ -40,6 +40,7 @@ static int hook_one(nx_hook_t* h, void* fn, void* hk, const char* name);
 // Registro de respaldo con fopen de la libc del sistema (como VCFG v2.23, que
 // escribe asi sus registros desde el juego): si las llamadas del kernel no
 // pueden escribir, esta via deja constancia igual.
+static int g_trace_ok = -1;   // -1 sin probar, 0 fallo, 1 escribio
 static void trace(const char* line)
 {
     FILE* f = fopen(NX_LOGDIR "/traza.txt", "a");
@@ -47,16 +48,17 @@ static void trace(const char* line)
         mkdir("/data/GoldHEN", 0777);
         mkdir(NX_LOGDIR, 0777);
         f = fopen(NX_LOGDIR "/traza.txt", "a");
-        if (!f) return;
+        if (!f) { g_trace_ok = 0; return; }
     }
     fputs(line, f);
     fclose(f);
+    g_trace_ok = 1;
 }
 
 attr_public const char* g_pluginName = "vcfg_nx";
 attr_public const char* g_pluginDesc = "Frame generation + reescalado IA (NXSR) + SMAA/FSR1, menu L3+R3";
 attr_public const char* g_pluginAuth = "VCFG-NX";
-attr_public u32 g_pluginVersion = 0x00000255; // 2.55
+attr_public u32 g_pluginVersion = 0x00000256; // 2.56
 
 // prototipos de las variantes ForWorkload (OpenOrbis las declara sin argumentos)
 typedef s32 (*submit_wl_t)(u64, u32, void**, u32*, void**, u32*);
@@ -268,13 +270,14 @@ static int pf_read_file(const char* path, char* buf, int cap)
 }
 
 
+static int g_write_err;   // ultimo error al abrir para escribir (se muestra en el aviso)
 static int write_flags(const char* path, const char* data, int len, int flags)
 {
     int fd = sceKernelOpen(path, K_WRONLY | K_CREAT | flags, 0777);
     if (fd < 0) {
         make_dirs();
         fd = sceKernelOpen(path, K_WRONLY | K_CREAT | flags, 0777);
-        if (fd < 0) return -1;
+        if (fd < 0) { g_write_err = fd; return -1; }
     }
     int n = 0;
     while (n < len) {
@@ -554,7 +557,6 @@ static void boot_mark(const char* what, const char* title)
 
 s32 attr_public plugin_load(s32 argc, const char* argv[])
 {
-    final_printf("<%s ver 0x%08x> %s\n", g_pluginName, g_pluginVersion, __func__);
     trace("[traza] plugin_load: inicio\n");
     struct proc_info info;
     char title[16] = { 0 };
@@ -580,13 +582,22 @@ s32 attr_public plugin_load(s32 argc, const char* argv[])
     }
     {   // aviso visible: si no aparece al abrir el juego, GoldHEN no cargo el plugin
         char n[128];
-        snprintf(n, sizeof n, "VCFG-NX %x.%02x en %s - nivel %d de %d: %s", g_pluginVersion >> 8,
-                 g_pluginVersion & 0xFF, title, g_level, g_level_max, LVNAME(g_level));
+        char w[40];
+        if (g_write_err) snprintf(w, sizeof w, "registro ERROR %08X", (unsigned)g_write_err);
+        else snprintf(w, sizeof w, "registro ok");
+        snprintf(n, sizeof n, "VCFG-NX %x.%02x en %s - nivel %d de %d: %s\n%s \xc2\xb7 traza %s", g_pluginVersion >> 8,
+                 g_pluginVersion & 0xFF, title, g_level, g_level_max, LVNAME(g_level), w,
+                 g_trace_ok == 1 ? "ok" : g_trace_ok == 0 ? "ERROR" : "-");
         pf_notify(n);
     }
     boot_stage(title, "inicio");
+    // sin registro no hay escalera que subir: nivel 0 queda en solo el aviso
+    // (ni siquiera el hilo que marca el arranque correcto)
+    if (g_level < 1) {
+        if (!g_write_err) scePthreadCreate(&g_boot_thread, NULL, boot_thread, NULL, "vcfg_nx_boot");
+        return 0;
+    }
     scePthreadCreate(&g_boot_thread, NULL, boot_thread, NULL, "vcfg_nx_boot");
-    if (g_level < 1) return 0;
     nx_engine_init(&g_pf, title);
     boot_stage(title, "configuracion leida");
     if (nx_engine_info()->state == NX_ST_OFF || g_level < 2) return 0;
@@ -624,9 +635,18 @@ s32 attr_public plugin_unload(s32 argc, const char* argv[])
     return 0;
 }
 
+// la app (Diagnostico) carga el plugin con el argumento "vcfgapp" para
+// probarlo: asi la traza distingue esa carga de la del juego. En el juego,
+// el aviso sale ya aca, antes de plugin_load: si aparece, GoldHEN abrio el
+// plugin dentro del juego aunque despues algo falle.
 s32 attr_module_hidden module_start(s64 argc, const void* args)
 {
-    trace("[traza] module_start\n");
+    if (argc >= 7 && args && !memcmp(args, "vcfgapp", 7)) {
+        trace("[traza] module_start (prueba de la app)\n");
+        return 0;
+    }
+    trace("[traza] module_start (juego)\n");
+    pf_notify(g_trace_ok == 1 ? "VCFG-NX: GoldHEN abri\xc3\xb3 el plugin (traza ok)" : "VCFG-NX: GoldHEN abri\xc3\xb3 el plugin (traza ERROR)");
     return 0;
 }
 s32 attr_module_hidden module_stop(s64 argc, const void* args) { return 0; }

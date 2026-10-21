@@ -60,7 +60,7 @@
 #define LOG_DIR ROOT "/data/GoldHEN/vcfg_nx"   // registros del plugin (desde 2.55)
 #define TITLE_ID "VCNX00001"
 #define CONTENT_ID "IV0000-VCNX00001_00-VCFGNXINSTALL000"
-#define VERSION "2.5.5"
+#define VERSION "2.5.6"
 
 #define W 1920
 #define H 1080
@@ -1285,7 +1285,9 @@ static int load_test(const char* path, char* out, size_t n)
     if (!f) { snprintf(out, n, "NO INSTALADO"); return 0; }
     fclose(f);
     tried[k] = 1;
-    int32_t h = (int32_t)sceKernelLoadStartModule(path, 0, NULL, 0, NULL, NULL);
+    // a VCFG-NX se le pasa "vcfgapp": su traza anota que fue esta prueba y no un juego
+    int32_t h = k == 0 ? (int32_t)sceKernelLoadStartModule(path, 7, "vcfgapp", 0, NULL, NULL)
+                       : (int32_t)sceKernelLoadStartModule(path, 0, NULL, 0, NULL, NULL);
     void* fn = NULL;
     int r = h < 0 ? -1 : sceKernelDlsym(h, "plugin_load", &fn);
     if (h < 0) snprintf(done[k], sizeof done[k], "ERROR 0x%08X al cargar", (unsigned)h);
@@ -1349,8 +1351,14 @@ static void diag_collect(void)
     int ntrc = 0;
     {
         const char* q = trc, *lst = NULL;
-        for (; (q = strstr(q, "[traza]")); ++q) { lst = q; ++ntrc; }
-        if (lst) { const char* e = strchr(lst, '\n'); snprintf(trc_last, sizeof trc_last, "%.*s", e ? (int)(e - lst) : 150, lst + 8); }
+        for (; (q = strstr(q, "[traza]")); ++q) {
+            const char* e = strchr(q, '\n');
+            const char* app = strstr(q, "prueba de la app");
+            if (app && (!e || app < e)) continue;   // la carga de prueba de esta app no cuenta
+            lst = q;
+            ++ntrc;
+        }
+        if (lst) { const char* e = strchr(lst, '\n'); snprintf(trc_last, sizeof trc_last, "%.*s", e ? (int)(e - lst - 8) : 150, lst + 8); }
     }
     int starts = 0;
     for (const char* q = loads; (q = strstr(q, "module_start")); ++q) ++starts;
@@ -1415,7 +1423,7 @@ static void diag_collect(void)
     snprintf(L[7], 300, "Prueba de carga: plugin %s \xb7 control GNMScale %s", t2, t3);
     diag.line_color[7] = ok1 && ok2 ? C_OK : C_DANGER;
     (void)ctl;
-    snprintf(L[8], 300, "Permisos: vcfg_nx.prx %s \xb7 traza: %d l\xedneas%s%.110s", pm1, ntrc,
+    snprintf(L[8], 300, "Permisos: vcfg_nx.prx %s \xb7 traza del juego: %d l\xedneas%s%.110s", pm1, ntrc,
              trc_last[0] ? ", \xfaltima: " : "", trc_last);
     (void)pm2;
     if (diag.save_error[0]) {

@@ -1,4 +1,4 @@
-# VCFG-NX 2.55: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
+# VCFG-NX 2.56: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
 
 Rediseño del **VCFG v2.14** (generador de fotogramas en beta de la comunidad
 de GoldHEN) que además incorpora un **modelo de reescalado/realce propio,
@@ -64,6 +64,23 @@ botones mientras está abierto):
   RCAS, contador de FPS (con temperatura) y comparar.
 * Arriba se ven los FPS, la temperatura y el estado (activo, calidad dinámica,
   calor). **Guardar** deja todo para ese juego; **O** cierra.
+
+## Novedades de la 2.56
+
+**La respuesta sale en pantalla, no solo en archivos.** En GTA V la traza tenía
+una sola línea ("module_start") y no se podía saber si venía del juego o de la
+prueba de carga de la propia app. Ahora:
+
+- la app carga el plugin para probarlo con el argumento `vcfgapp`, y la traza
+  lo anota como "prueba de la app"; Diagnóstico solo cuenta las líneas del juego;
+- dentro del juego, `module_start` muestra el aviso "VCFG-NX: GoldHEN abrió el
+  plugin" apenas se abre el plugin, antes de `plugin_load`;
+- el aviso de `plugin_load` dice si se pudo escribir el registro (o el código de
+  error) y si funcionó la traza;
+- en el nivel 0 sin registro posible, el plugin no crea ni el hilo de arranque:
+  solo el aviso;
+- se corrigió la última línea de la traza en Diagnóstico (mostraba un carácter
+  de más).
 
 ## Novedades de la 2.55
 
