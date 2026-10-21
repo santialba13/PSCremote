@@ -60,7 +60,7 @@
 #define LOG_DIR ROOT "/data/GoldHEN/vcfg_nx"   // registros del plugin (desde 2.55)
 #define TITLE_ID "VCNX00001"
 #define CONTENT_ID "IV0000-VCNX00001_00-VCFGNXINSTALL000"
-#define VERSION "2.5.6"
+#define VERSION "2.5.7"
 
 #define W 1920
 #define H 1080
@@ -299,7 +299,7 @@ static char* read_log(const char* name)
     char* t = read_text(p);
     if (t[0]) return t;
     free(t);
-    snprintf(p, sizeof p, CFG_DIR "/%s%s", strncmp(name, "boot-", 5) ? "logs/" : "", name);
+    snprintf(p, sizeof p, CFG_DIR "/%s%s", strncmp(name, "boot-", 5) && strcmp(name, "traza.txt") ? "logs/" : "", name);
     return read_text(p);
 }
 
@@ -1350,15 +1350,23 @@ static void diag_collect(void)
     char trc_last[160] = "";
     int ntrc = 0;
     {
-        const char* q = trc, *lst = NULL;
-        for (; (q = strstr(q, "[traza]")); ++q) {
+        const char* lst = NULL;
+        int lstn = 0;
+        for (const char* q = trc; *q;) {
             const char* e = strchr(q, '\n');
+            int n = e ? (int)(e - q) : (int)strlen(q);
             const char* app = strstr(q, "prueba de la app");
-            if (app && (!e || app < e)) continue;   // la carga de prueba de esta app no cuenta
-            lst = q;
-            ++ntrc;
+            if (n > 0 && !(app && app < q + n)) {   // la carga de prueba de esta app no cuenta
+                lst = q;
+                lstn = n;
+                ++ntrc;
+            }
+            q += n + (e ? 1 : 0);
         }
-        if (lst) { const char* e = strchr(lst, '\n'); snprintf(trc_last, sizeof trc_last, "%.*s", e ? (int)(e - lst - 8) : 150, lst + 8); }
+        if (lst) {
+            if (!strncmp(lst, "[traza] ", 8)) { lst += 8; lstn -= 8; }
+            snprintf(trc_last, sizeof trc_last, "%.*s", lstn, lst);
+        }
     }
     int starts = 0;
     for (const char* q = loads; (q = strstr(q, "module_start")); ++q) ++starts;

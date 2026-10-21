@@ -15,7 +15,6 @@
 #include <orbis/UserService.h>
 #include <orbis/libkernel.h>
 #include <stdio.h>
-#include <sys/stat.h>
 #include <string.h>
 
 #include "nx_engine.h"
@@ -37,28 +36,31 @@
 #define UNHOOK(name) nx_hook_remove(&NXH_##name)
 static int hook_one(nx_hook_t* h, void* fn, void* hk, const char* name);
 
-// Registro de respaldo con fopen de la libc del sistema (como VCFG v2.23, que
-// escribe asi sus registros desde el juego): si las llamadas del kernel no
-// pueden escribir, esta via deja constancia igual.
+// Traza de respaldo: una linea por paso en NX_LOGDIR/traza.txt y en
+// /data/vcfg_nx/traza.txt, con llamadas del kernel como hace VCFG (abrir,
+// agregar, cerrar; 0666; nada de stdio, que falla dentro del arranque del juego)
 static int g_trace_ok = -1;   // -1 sin probar, 0 fallo, 1 escribio
+static void trace_one(const char* path, const char* line, int len)
+{
+    int fd = sceKernelOpen(path, 0x209 /* O_WRONLY|O_CREAT|O_APPEND */, 0666);
+    if (fd < 0) return;
+    if (sceKernelWrite(fd, line, (size_t)len) == len) g_trace_ok = 1;
+    sceKernelClose(fd);
+}
 static void trace(const char* line)
 {
-    FILE* f = fopen(NX_LOGDIR "/traza.txt", "a");
-    if (!f) {
-        mkdir("/data/GoldHEN", 0777);
-        mkdir(NX_LOGDIR, 0777);
-        f = fopen(NX_LOGDIR "/traza.txt", "a");
-        if (!f) { g_trace_ok = 0; return; }
-    }
-    fputs(line, f);
-    fclose(f);
-    g_trace_ok = 1;
+    int len = (int)strlen(line);
+    g_trace_ok = 0;
+    sceKernelMkdir(NX_LOGDIR, 0777);
+    sceKernelMkdir("/data/vcfg_nx", 0777);
+    trace_one(NX_LOGDIR "/traza.txt", line, len);
+    trace_one("/data/vcfg_nx/traza.txt", line, len);
 }
 
 attr_public const char* g_pluginName = "vcfg_nx";
 attr_public const char* g_pluginDesc = "Frame generation + reescalado IA (NXSR) + SMAA/FSR1, menu L3+R3";
 attr_public const char* g_pluginAuth = "VCFG-NX";
-attr_public u32 g_pluginVersion = 0x00000256; // 2.56
+attr_public u32 g_pluginVersion = 0x00000257; // 2.57
 
 // prototipos de las variantes ForWorkload (OpenOrbis las declara sin argumentos)
 typedef s32 (*submit_wl_t)(u64, u32, void**, u32*, void**, u32*);
@@ -247,7 +249,7 @@ static void pf_log(const char* msg) { final_printf("%s", msg); }
 #define K_APPEND 0x0008
 #define K_CREAT 0x0200
 #define K_TRUNC 0x0400
-#define K_FSYNC 0x0080   // escritura sincronica: sobrevive a un apagado forzado
+#define K_FSYNC 0   // sin O_FSYNC: VCFG escribe sin el y le funciona en GTA V
 
 static void make_dirs(void)
 {
@@ -273,10 +275,10 @@ static int pf_read_file(const char* path, char* buf, int cap)
 static int g_write_err;   // ultimo error al abrir para escribir (se muestra en el aviso)
 static int write_flags(const char* path, const char* data, int len, int flags)
 {
-    int fd = sceKernelOpen(path, K_WRONLY | K_CREAT | flags, 0777);
+    int fd = sceKernelOpen(path, K_WRONLY | K_CREAT | flags, 0666);
     if (fd < 0) {
         make_dirs();
-        fd = sceKernelOpen(path, K_WRONLY | K_CREAT | flags, 0777);
+        fd = sceKernelOpen(path, K_WRONLY | K_CREAT | flags, 0666);
         if (fd < 0) { g_write_err = fd; return -1; }
     }
     int n = 0;

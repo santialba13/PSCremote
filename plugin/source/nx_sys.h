@@ -18,7 +18,9 @@ typedef int64_t s64;
 #define attr_module_hidden __attribute__((weak)) __attribute__((visibility("hidden")))
 
 #define TEX_ICON_SYSTEM "cxml://psnotification/tex_icon_system"
-#define final_printf(fmt, ...) printf("[vcfg_nx] " fmt, ##__VA_ARGS__)
+// sin stdio: el plugin corre dentro del arranque de la libc del juego (GoldHEN
+// lo carga desde _init_env) y ahi stdio puede fallar (VCFG lo documenta igual)
+#define final_printf(fmt, ...) do { } while (0)
 
 static inline void Notify(const char* icon, const char* fmt, ...)
 {
