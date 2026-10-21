@@ -761,6 +761,8 @@ int main(int argc, char** argv)
         pad_buttons = 0x0002 | 0x0004; play(&bb, 60, 0); pad_buttons = 0; play(&bb, 30, 0);
         report("26. nivel 3: solo menu");
         CHECK(I()->menu_open && I()->our_jobs > 0, "el menu deberia abrir y dibujarse");
+        CHECK(I()->menu_x > 0 && I()->menu_y > 0 && I()->menu_x + I()->menu_w <= bb.W && I()->menu_y + I()->menu_h <= bb.H,
+              "menu fuera de pantalla: (%d,%d) %dx%d en %dx%d", I()->menu_x, I()->menu_y, I()->menu_w, I()->menu_h, bb.W, bb.H);
         common_checks();
     }
 

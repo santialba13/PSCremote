@@ -1022,19 +1022,24 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
     nx_osd_t menu = { 0 }, fps = { 0 };
     const nx_osd_t* osds[2] = { NULL, NULL };
     int no = 0;
+    // tamano de la imagen donde va el OSD: la de salida si hay efectos reservados,
+    // si no la del juego (en el nivel 3 Wo/Ho nunca se calculaban: valian 0 y el
+    // menu quedaba centrado en (0,0), con 3/4 fuera de la pantalla)
+    int ow = E.info.full_ready && E.Wo ? E.Wo : E.W, oh = E.info.full_ready && E.Ho ? E.Ho : E.H;
     if (osd_fps) {
         build_fps_text(want_fg);
         fps = (nx_osd_t){ (uint64_t)(uintptr_t)E.osd_text[1], (uint64_t)(uintptr_t)E.osd_attr[1],
-                          (uint64_t)(uintptr_t)E.osd_font, 16, 1, 24, 24, E.Wo >= 3000 ? 2 : 1, -1 };
+                          (uint64_t)(uintptr_t)E.osd_font, 16, 1, 24, 24, ow >= 3000 ? 2 : 1, -1 };
         osds[no++] = &fps;
     }
     if (osd_menu) {
         build_menu_text();
-        int scale = E.Wo >= 3000 ? 2 : 1, pw, ph;   // la fuente ya es de 15x30: x2 solo en 4K
+        int scale = ow >= 3000 ? 2 : 1, pw, ph;   // la fuente ya es de 15x30: x2 solo en 4K
         nx_osd_panel_size(OSD_COLS, ROW_COUNT + 3, scale, &pw, &ph);
         menu = (nx_osd_t){ (uint64_t)(uintptr_t)E.osd_text[0], (uint64_t)(uintptr_t)E.osd_attr[0],
-                           (uint64_t)(uintptr_t)E.osd_font, OSD_COLS, ROW_COUNT + 3, (E.Wo - pw) / 2, (E.Ho - ph) / 2,
+                           (uint64_t)(uintptr_t)E.osd_font, OSD_COLS, ROW_COUNT + 3, ow > pw ? (ow - pw) / 2 : 0, oh > ph ? (oh - ph) / 2 : 0,
                            scale, 2 + E.info.menu_row };
+        E.info.menu_x = menu.x0; E.info.menu_y = menu.y0; E.info.menu_w = pw; E.info.menu_h = ph;
         osds[no++] = &menu;
     }
     int fg_mode = want_fg ? 1 : 0;

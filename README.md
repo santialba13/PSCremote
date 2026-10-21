@@ -1,4 +1,4 @@
-# VCFG-NX 2.65: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
+# VCFG-NX 2.66: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
 
 Rediseño del **VCFG v2.14** (generador de fotogramas en beta de la comunidad
 de GoldHEN) que además incorpora un **modelo de reescalado/realce propio,
@@ -64,6 +64,15 @@ botones mientras está abierto):
   RCAS, contador de FPS (con temperatura) y comparar.
 * Arriba se ven los FPS, la temperatura y el estado (activo, calidad dinámica,
   calor). **Guardar** deja todo para ese juego; **O** cierra.
+
+## Novedades de la 2.66
+
+**El menú se centra bien sin efectos reservados.** En GTA V (nivel 3) el menú
+aparecía arriba a la izquierda con 3/4 fuera de la pantalla: se centraba con el
+tamaño de salida (`Wo`/`Ho`), que solo se calcula al reservar los efectos y
+valía 0. Ahora el OSD usa el tamaño de la imagen donde se dibuja (la del juego
+si no hay efectos) y nunca una posición negativa. Simulador: el escenario 26
+verifica que el menú quede dentro de la pantalla.
 
 ## Novedades de la 2.65
 

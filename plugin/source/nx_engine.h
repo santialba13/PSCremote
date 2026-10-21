@@ -61,6 +61,7 @@ typedef enum {
 typedef struct {
     nx_state_t state;
     int full_ready;       // arena y buffers de salida reservados
+    int menu_x, menu_y, menu_w, menu_h;   // donde se dibujo el menu la ultima vez (px)
     int safe_mode;        // la sesion anterior se cerro con el plugin activo
     int menu_open, menu_row;
     float game_fps;
