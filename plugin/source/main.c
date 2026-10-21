@@ -60,7 +60,7 @@ static void trace(const char* line)
 attr_public const char* g_pluginName = "vcfg_nx";
 attr_public const char* g_pluginDesc = "Frame generation + reescalado IA (NXSR) + SMAA/FSR1, menu L3+R3";
 attr_public const char* g_pluginAuth = "VCFG-NX";
-attr_public u32 g_pluginVersion = 0x00000257; // 2.57
+attr_public u32 g_pluginVersion = 0x00000258; // 2.58
 
 // prototipos de las variantes ForWorkload (OpenOrbis las declara sin argumentos)
 typedef s32 (*submit_wl_t)(u64, u32, void**, u32*, void**, u32*);
@@ -345,13 +345,23 @@ s32 sceVideoOutSetFlipRate_hook(s32 handle, s32 rate)
 static volatile int g_pad_run;
 static OrbisPthread g_pad_thread;
 static int g_thread_tried;
+static int g_level_max = 4;   // BOOT_TOP
+static int g_engine_live;        // nivel 3+: el motor procesa los flips; si no, pasan derecho
+static uint64_t g_game_flips;    // contados aca (el motor puede no estar iniciado)
 static void* pad_thread(void* arg);
+static void boot_level_ok(void);
 static void after_game_flip(void)
 {
-    if (g_thread_tried) return;
-    uint64_t f = nx_engine_info()->flips;
+    uint64_t f = ++g_game_flips;
     if (f == 1) boot_stage(g_title_s, "primer fotograma del juego");
-    if (f < 300) return;
+    if (f == 900) {   // ~15-30 s de juego: este nivel anda, el proximo arranque suma una parte
+        boot_level_ok();
+        boot_stage(g_title_s, g_level < g_level_max ? "jugando: arranque correcto (el proximo suma una parte)"
+                                                    : "jugando: arranque correcto");
+    }
+    // ningun hilo propio antes de que el juego este andando (como VCFG: sus
+    // hilos arrancan desde los flips, nunca desde plugin_load)
+    if (g_thread_tried || !g_engine_live || f < 300) return;
     g_thread_tried = 1;
     g_pad_run = 1;
     if (scePthreadCreate(&g_pad_thread, NULL, pad_thread, NULL, "vcfg_nx_pad") != 0) g_pad_run = 0;
@@ -362,7 +372,7 @@ s32 sceGnmSubmitAndFlipCommandBuffers_hook(u32 count, void** dcb, u32* dcb_sz, v
                                            u32 handle, u32 index, u32 mode, u64 arg)
 {
     nx_submit_t s = { count, dcb, dcb_sz, ccb, ccb_sz, handle, index, mode, (int64_t)arg, 0, 0, 0 };
-    s32 r = nx_engine_on_submit_flip(&s);
+    s32 r = g_engine_live ? nx_engine_on_submit_flip(&s) : pf_submit_flip(&s);
     after_game_flip();
     return r;
 }
@@ -372,7 +382,7 @@ s32 sceGnmSubmitAndFlipCommandBuffers_hook(u32 count, void** dcb, u32* dcb_sz, v
 s32 sceVideoOutSubmitFlip_hook(s32 handle, s32 index, u32 mode, s64 arg)
 {
     nx_submit_t s = { 0, NULL, NULL, NULL, NULL, (u32)handle, (u32)index, mode, arg, 0, 0, 1 };
-    s32 r = nx_engine_on_submit_flip(&s);
+    s32 r = g_engine_live ? nx_engine_on_submit_flip(&s) : pf_submit_flip(&s);
     after_game_flip();
     return r;
 }
@@ -381,7 +391,7 @@ s32 sceGnmSubmitAndFlipCommandBuffersForWorkload_hook(u64 workload, u32 count, v
                                                       u32* ccb_sz, u32 handle, u32 index, u32 mode, s64 arg)
 {
     nx_submit_t s = { count, dcb, dcb_sz, ccb, ccb_sz, handle, index, mode, arg, workload, 1, 0 };
-    s32 r = nx_engine_on_submit_flip(&s);
+    s32 r = g_engine_live ? nx_engine_on_submit_flip(&s) : pf_submit_flip(&s);
     after_game_flip();
     return r;
 }
@@ -444,17 +454,16 @@ static void* pad_thread(void* arg)
 // funciono y ese queda como tope: a lo sumo un cierre, y el nivel en el que
 // paso dice que parte es la culpable.
 //  -1  apagado (hasta el nivel 0 cerro el juego)
-//   0  solo el aviso
+//   0  el aviso y los flips solo se cuentan (para saber que llego a jugar)
 //   1  + configuracion y motor
 //   2  + engancha el registro de pantalla (RegisterBuffers, SetFlipRate)
 //   3  + engancha la presentacion (flips): menu L3+R3 y efectos
 //   4  + 4 MiB tempranos para el menu
 #define BOOT_TOP 4
 #define EARLY_WORK 0
-static const char* const LEVEL_NAME[BOOT_TOP + 2] = { "apagado", "solo aviso", "configuracion", "registro de pantalla",
+static const char* const LEVEL_NAME[BOOT_TOP + 2] = { "apagado", "solo aviso y conteo", "configuracion", "registro de pantalla",
                                                      "menu y efectos", "completo" };
 #define LVNAME(l) LEVEL_NAME[(l) + 1]
-static int g_level_max = BOOT_TOP;
 
 static void boot_stage(const char* title, const char* what)
 {
@@ -501,25 +510,7 @@ static void boot_level_pick(const char* title)
     boot_write("pending");
 }
 
-static void boot_level_ok(void) { boot_write("ok"); }
-
-// hilo minimo: solo espera y marca "arranque correcto" (no toca mando ni
-// usuario: eso lo hace el hilo del mando, que arranca con el juego andando)
-static OrbisPthread g_boot_thread;
-static void* boot_thread(void* arg)
-{
-    (void)arg;
-    for (int s = 0;; ++s) {
-        sceKernelUsleep(1000000);
-        uint64_t f = nx_engine_info()->flips;
-        if ((g_level < 3 && s >= 40) || f > 900) {
-            boot_level_ok();
-            boot_stage(g_title_s, g_level < g_level_max ? "jugando: arranque correcto (el proximo suma una parte)"
-                                                        : "jugando: arranque correcto");
-            return NULL;
-        }
-    }
-}
+static void boot_level_ok(void) { if (g_boot_path[0]) boot_write("ok"); }
 
 // engancha y anota el resultado; si no se puede de forma segura, la funcion
 // queda intacta (el plugin sigue sin esa parte, el juego no se toca)
@@ -545,6 +536,14 @@ static void early_reserve(const char* title)
     int k = snprintf(m, sizeof m, "[mem] reserva temprana: base %s, trabajo %s; libre del sistema %zu MiB\n",
                      g_base.va ? "ok" : "FALLO", g_work.va ? "ok" : "no", raw_avail() >> 20);
     if (k > 0) pf_append_file(NX_LOGDIR "/cargas.txt", m, k);
+}
+
+static void hook_flips(void)
+{
+    HOOK32(sceGnmSubmitAndFlipCommandBuffers);
+    HOOK32(sceGnmSubmitAndFlipCommandBuffersForWorkload);
+    HOOK32(sceVideoOutSubmitFlip);
+    g_hooked = 1;
 }
 
 // marca en logs/cargas.txt apenas GoldHEN abre el plugin: si el juego no deja
@@ -593,16 +592,20 @@ s32 attr_public plugin_load(s32 argc, const char* argv[])
         pf_notify(n);
     }
     boot_stage(title, "inicio");
-    // sin registro no hay escalera que subir: nivel 0 queda en solo el aviso
-    // (ni siquiera el hilo que marca el arranque correcto)
+    // nivel 0: los flips solo se cuentan (pasan derecho al sistema) para saber
+    // que el juego llego a jugar. Ningun hilo propio aca.
     if (g_level < 1) {
-        if (!g_write_err) scePthreadCreate(&g_boot_thread, NULL, boot_thread, NULL, "vcfg_nx_boot");
+        hook_flips();
+        boot_stage(title, "conteo de fotogramas enganchado: plugin_load terminado");
         return 0;
     }
-    scePthreadCreate(&g_boot_thread, NULL, boot_thread, NULL, "vcfg_nx_boot");
     nx_engine_init(&g_pf, title);
     boot_stage(title, "configuracion leida");
-    if (nx_engine_info()->state == NX_ST_OFF || g_level < 2) return 0;
+    if (nx_engine_info()->state == NX_ST_OFF || g_level < 2) {
+        hook_flips();
+        boot_stage(title, "conteo de fotogramas enganchado: plugin_load terminado");
+        return 0;
+    }
     if (g_level >= 4) {
         early_reserve(title);
         boot_stage(title, "memoria temprana lista");
@@ -611,12 +614,14 @@ s32 attr_public plugin_load(s32 argc, const char* argv[])
     HOOK32(sceVideoOutSetFlipRate);
     g_hooked = 1;
     boot_stage(title, "registro de pantalla enganchado");
-    if (g_level < 3) return 0;
     // el mando NO se engancha (como VCFG v2.23): lo lee el hilo propio, que
     // arranca recien con el juego presentando imagen (after_game_flip)
-    HOOK32(sceGnmSubmitAndFlipCommandBuffers);
-    HOOK32(sceGnmSubmitAndFlipCommandBuffersForWorkload);
-    HOOK32(sceVideoOutSubmitFlip);
+    g_engine_live = g_level >= 3;
+    hook_flips();
+    if (!g_engine_live) {
+        boot_stage(title, "conteo de fotogramas enganchado: plugin_load terminado");
+        return 0;
+    }
     nx_engine_flush_log();
     boot_stage(title, "presentacion enganchada: plugin_load terminado");
     return 0;

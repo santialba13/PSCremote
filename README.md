@@ -1,4 +1,4 @@
-# VCFG-NX 2.57: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
+# VCFG-NX 2.58: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
 
 Rediseño del **VCFG v2.14** (generador de fotogramas en beta de la comunidad
 de GoldHEN) que además incorpora un **modelo de reescalado/realce propio,
@@ -64,6 +64,21 @@ botones mientras está abierto):
   RCAS, contador de FPS (con temperatura) y comparar.
 * Arriba se ven los FPS, la temperatura y el estado (activo, calidad dinámica,
   calor). **Guardar** deja todo para ese juego; **O** cierra.
+
+## Novedades de la 2.58
+
+**Ningún hilo propio dentro de `plugin_load`.** Con la 2.57 GTA V mostró el
+aviso de `module_start` y después se cerró. En VCFG (código fuente) ningún hilo
+se crea en `plugin_load`: el de E/S, el del mando y el monitor arrancan desde los
+flips, con el juego ya andando. VCFG-NX creaba el hilo "vcfg_nx_boot" en
+`plugin_load` (antes también el del mando). Ahora:
+
+- no hay hilo de arranque: el "arranque correcto" se marca desde los flips del
+  juego (a los 900 fotogramas);
+- nivel 0 = aviso + los tres flips enganchados **solo para contarlos** (pasan
+  derecho al sistema); niveles 1-2 también cuentan sin procesar; desde el
+  nivel 3 el motor procesa los flips;
+- el hilo del mando sigue arrancando a los 300 fotogramas y solo desde el nivel 3.
 
 ## Novedades de la 2.57
 
