@@ -1,4 +1,4 @@
-# VCFG-NX 2.59: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
+# VCFG-NX 2.60: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
 
 Rediseño del **VCFG v2.14** (generador de fotogramas en beta de la comunidad
 de GoldHEN) que además incorpora un **modelo de reescalado/realce propio,
@@ -64,6 +64,18 @@ botones mientras está abierto):
   RCAS, contador de FPS (con temperatura) y comparar.
 * Arriba se ven los FPS, la temperatura y el estado (activo, calidad dinámica,
   calor). **Guardar** deja todo para ese juego; **O** cierra.
+
+## Novedades de la 2.60
+
+**GTA V arranca con el plugin (confirmado en consola con la 2.59).** La escalera
+de arranque ahora sube directo:
+
+- después de un arranque correcto (900 fotogramas) el próximo va **directo al
+  nivel completo** (menú L3+R3 y efectos); si ese se cierra, baja de a uno;
+- se aprovecha el registro de la 2.59 (desde ahí la pila se realinea): un
+  arranque correcto con la 2.59 ya cuenta;
+- un cierre en el nivel 0 (que no toca nada) ya no apaga el plugin para ese
+  juego: se vuelve a probar el nivel 0.
 
 ## Novedades de la 2.59
 

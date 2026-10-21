@@ -60,7 +60,7 @@ static void trace(const char* line)
 attr_public const char* g_pluginName = "vcfg_nx";
 attr_public const char* g_pluginDesc = "Frame generation + reescalado IA (NXSR) + SMAA/FSR1, menu L3+R3";
 attr_public const char* g_pluginAuth = "VCFG-NX";
-attr_public u32 g_pluginVersion = 0x00000259; // 2.59
+attr_public u32 g_pluginVersion = 0x00000260; // 2.60
 
 // prototipos de las variantes ForWorkload (OpenOrbis las declara sin argumentos)
 typedef s32 (*submit_wl_t)(u64, u32, void**, u32*, void**, u32*);
@@ -356,7 +356,7 @@ static void after_game_flip(void)
     if (f == 1) boot_stage(g_title_s, "primer fotograma del juego");
     if (f == 900) {   // ~15-30 s de juego: este nivel anda, el proximo arranque suma una parte
         boot_level_ok();
-        boot_stage(g_title_s, g_level < g_level_max ? "jugando: arranque correcto (el proximo suma una parte)"
+        boot_stage(g_title_s, g_level < g_level_max ? "jugando: arranque correcto (el proximo va al nivel completo)"
                                                     : "jugando: arranque correcto");
     }
     // ningun hilo propio antes de que el juego este andando (como VCFG: sus
@@ -485,9 +485,14 @@ static void boot_level_pick(const char* title)
     char prev[96] = { 0 };
     int n = pf_read_file(g_boot_path, prev, sizeof prev - 1);
     int lv = 0, mx = BOOT_TOP, pending = 0, ok = 0;
-    char ver[16];
-    snprintf(ver, sizeof ver, "ver=%x ", (unsigned)g_pluginVersion);
-    if (n > 0 && !strncmp(prev, ver, strlen(ver))) {   // de otra version: se vuelve a empezar desde 0
+    // vale el registro de la 2.59 en adelante (desde ahi la pila se realinea);
+    // uno mas viejo no sirve y se empieza desde 0
+    unsigned pv = 0;
+    if (n > 0 && !strncmp(prev, "ver=", 4)) {
+        for (const char* q = prev + 4; (*q >= '0' && *q <= '9') || (*q >= 'a' && *q <= 'f'); ++q)
+            pv = pv * 16 + (unsigned)(*q <= '9' ? *q - '0' : *q - 'a' + 10);
+    }
+    if (n > 0 && pv >= 0x259 && pv <= (unsigned)g_pluginVersion) {
         const char* l = strstr(prev, "level=");
         const char* m = strstr(prev, "max=");
         lv = l ? atoi(l + 6) : 0;
@@ -495,11 +500,13 @@ static void boot_level_pick(const char* title)
         pending = strstr(prev, "state=pending") != NULL;
         ok = strstr(prev, "state=ok") != NULL;
     }
-    if (pending) {          // el arranque anterior se cerro en este nivel: el tope queda abajo
+    if (pending && lv <= 0) {   // nivel 0 no toca nada: se cerro por otra cosa (o se salio antes)
+        lv = 0;
+    } else if (pending) {       // el arranque anterior se cerro en este nivel: el tope queda abajo
         mx = lv - 1;
         lv = mx;
     } else if (ok && lv < mx) {
-        lv++;               // salio bien: se suma una parte
+        lv = mx;                // salio bien: directo al tope (si se cierra, baja de a uno)
     }
     if (mx > BOOT_TOP) mx = BOOT_TOP;
     if (mx < -1) mx = -1;
