@@ -214,6 +214,67 @@ NX_KERNEL void bm_search(__global const float* l0, __global const float* l1, int
     vec[(by * Bx + bx) * 2 + 1] = (float)bvx;
 }
 
+// Igual que bm_search (mismas comparaciones, mismo orden de suma y de desempate),
+// pero un grupo de 64 hilos por bloque: las dos zonas de luma que se comparan se
+// cargan una vez en LDS ((8 + 2R)^2 cada una) y cada hilo evalua candidatos desde
+// ahi. bm_search lee 2 x 64 valores de memoria por candidato y por bloque (~270
+// millones por fotograma a 1080p con radio 3): aca son 2 x (8 + 2R)^2 por bloque.
+// Despacho: Bx * 8 x By * 8 hilos (un grupo por bloque). Radio maximo 4.
+#define BM_RMAX 4
+#define BM_SIDE (8 + 2 * BM_RMAX)
+NX_KERNEL void wg_bm_search(__global const float* l0, __global const float* l1, int H, int W,
+                            __global const float* coarse, int cBy, int cBx,
+                            __global float* vec, int By, int Bx, int radius)
+{
+    __local float t0[BM_SIDE * BM_SIDE];
+    __local float t1[BM_SIDE * BM_SIDE];
+    __local float cost[(2 * BM_RMAX + 1) * (2 * BM_RMAX + 1)];
+    const int bx = GROUP_X, by = GROUP_Y;
+    if (bx >= Bx || by >= By) return;
+    const int R = radius < BM_RMAX ? radius : BM_RMAX;
+    const int side = 8 + 2 * R, nc = 2 * R + 1;
+    int iy = 0, ix = 0;
+    if (coarse) {
+        int cy = by / 2 < cBy - 1 ? by / 2 : cBy - 1, cx = bx / 2 < cBx - 1 ? bx / 2 : cBx - 1;
+        iy = (int)__builtin_rintf(2.0f * coarse[(cy * cBx + cx) * 2 + 0]);
+        ix = (int)__builtin_rintf(2.0f * coarse[(cy * cBx + cx) * 2 + 1]);
+    }
+    // t0[r][c] = l0 en (by*8 - iy - R + r, bx*8 - ix - R + c); t1 con +iy, +ix
+    WG_BEGIN
+    for (int t = LID; t < side * side; t += NX_WG * NX_WG) {
+        int r = t / side, c = t % side;
+        int ya = nx_clampi(by * 8 - iy - R + r, 0, H - 1), xa = nx_clampi(bx * 8 - ix - R + c, 0, W - 1);
+        int yb = nx_clampi(by * 8 + iy - R + r, 0, H - 1), xb = nx_clampi(bx * 8 + ix - R + c, 0, W - 1);
+        t0[t] = l0[ya * W + xa];
+        t1[t] = l1[yb * W + xb];
+    }
+    WG_END
+    WG_BARRIER
+    WG_BEGIN
+    for (int ci = LID; ci < nc * nc; ci += NX_WG * NX_WG) {
+        int dy = ci / nc - R, dx = ci % nc - R;
+        float s = 0.0f;
+        for (int j = 0; j < 8; ++j)
+            for (int i = 0; i < 8; ++i)
+                s += nx_absf(t0[(R - dy + j) * side + (R - dx + i)] - t1[(R + dy + j) * side + (R + dx + i)]);
+        int vy = iy + dy, vx = ix + dx;
+        s += 0.002f * 64.0f * (float)((vy < 0 ? -vy : vy) + (vx < 0 ? -vx : vx));
+        cost[ci] = s;
+    }
+    WG_END
+    WG_BARRIER
+    WG_BEGIN
+    if (LID == 0) {
+        float best = 3.0e38f;
+        int bvy = iy, bvx = ix;
+        for (int ci = 0; ci < nc * nc; ++ci)   // mismo orden que bm_search: dy, despues dx
+            if (cost[ci] < best) { best = cost[ci]; bvy = iy + ci / nc - R; bvx = ix + ci % nc - R; }
+        vec[(by * Bx + bx) * 2 + 0] = (float)bvy;
+        vec[(by * Bx + bx) * 2 + 1] = (float)bvx;
+    }
+    WG_END
+}
+
 NX_KERNEL void bm_median3(__global const float* in, __global float* out, int By, int Bx)
 {
     int bx = GID_X, by = GID_Y;

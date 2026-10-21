@@ -110,6 +110,7 @@ void smaa_edges(P, int, int, P);
 void smaa_weights(P, int, int, P, P, P);
 void smaa_blend(P, P, P, int, int, P);
 void wg_nxsr(P, int, int, P, P, float);
+void wg_bm_search(P, P, int, int, P, int, int, P, int, int, int);
 void wg_nxsr_hq(P, int, int, P, P, float);
 void osd_draw(P, int, int, P, P, int, int, P, int, int, int, int, int, int);
 void copy_rect(P, P, int, int, int, int);
@@ -140,6 +141,8 @@ static void call(const char* n)
     else if (IS("luma_down2")) luma_down2(ap(0), ai(1), ai(2), ap(3));
     else if (IS("bm_search"))
         bm_search(ap(0), ap(1), ai(2), ai(3), ap(4), ai(5), ai(6), ap(7), ai(8), ai(9), ai(10));
+    else if (IS("wg_bm_search"))
+        wg_bm_search(ap(0), ap(1), ai(2), ai(3), ap(4), ai(5), ai(6), ap(7), ai(8), ai(9), ai(10));
     else if (IS("bm_median3")) bm_median3(ap(0), ap(1), ai(2), ai(3));
     else if (IS("warp_blend")) warp_blend(ap(0), ap(1), ap(2), ap(3), ai(4), ai(5), ap(6), ai(7), ai(8));
     else if (IS("easu")) easu(ap(0), ai(1), ai(2), ap(3), ai(4), ai(5));

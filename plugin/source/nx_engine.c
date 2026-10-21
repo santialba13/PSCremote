@@ -542,7 +542,8 @@ static int full_wanted(void)
 
 static int fg8_wanted(void)
 {
-    return !E.hdr && !E.effects_blocked && E.fx_cap >= 3 && E.cfg.effects && E.cfg.framegen == 1;
+    // la presentacion (intermedios, colas, slots) la usan las dos generaciones
+    return !E.hdr && !E.effects_blocked && E.fx_cap >= 3 && E.cfg.effects && E.cfg.framegen >= 1;
 }
 
 // generacion de VCFG: tablas/DCBs (memoria compartida), trabajo, y 3 intermedios
@@ -687,7 +688,7 @@ static void build_menu_text(void)
     osd_put(t, a, 1, 1, !E.cfg.effects ? A_OFF : (warn || E.effects_blocked ? A_WARN : A_ACCENT), l);
     int dim = !E.cfg.effects || E.effects_blocked;
     // con la generacion de VCFG el post-proceso no se combina (como en VCFG)
-    int pdim = dim || (E.cfg.framegen == 1 && E.fx_cap >= 3);
+    int pdim = dim || (E.cfg.framegen >= 1 && E.fx_cap >= 3);
     // interruptor general
     osd_item(t, a, 2 + ROW_ALL, "Todos los efectos", E.cfg.effects ? "ON" : "OFF", E.cfg.effects ? A_ON : A_ERROR, 0);
     osd_item(t, a, 2 + ROW_FG, "Generaci\xf3n de fotogramas",
@@ -703,7 +704,7 @@ static void build_menu_text(void)
     osd_switch(t, a, 2 + ROW_ECO, "Modo ahorro (menos calor)", E.cfg.eco, dim);
     osd_switch(t, a, 2 + ROW_AA, "Antialiasing SMAA", E.cfg.aa, pdim || E.cfg.eco);
     osd_item(t, a, 2 + ROW_RCAS, "Nitidez FSR1 (RCAS)", rc_names[E.cfg.rcas & 3], E.cfg.rcas ? A_ACCENT : A_OFF,
-             pdim || E.cfg.sr);
+             pdim);
     osd_switch(t, a, 2 + ROW_FPS, "Contador de FPS", E.cfg.fps_counter, 0);
     osd_switch(t, a, 2 + ROW_CMP, "Comparar (izq. original)", E.cfg.compare, dim);
     osd_item(t, a, 2 + ROW_SAVE, "Guardar para este juego", NULL, 0, 0);
@@ -1135,9 +1136,12 @@ static int fg8_frame(const nx_submit_t* s, int gi)
     set_rate_forced(1);
     uint32_t seq = ++E.fg8_seq;
     int m = E.fg8_midk;
+    int ia = E.cfg.framegen == 2;   // generacion propia (NXFlow) con la presentacion de VCFG
+    int tag = ia ? 4 : 3;
     int repeat = E.prev_idx < 0 || E.prev_idx == gi || E.prev_idx >= 16 || !((E.game_mask >> E.prev_idx) & 1)
-                 || E.last_fg != 3;
-    E.last_fg = 3;
+                 || E.last_fg != tag;
+    if (E.last_fg != tag) E.pipe.luma_valid[0] = E.pipe.luma_valid[1] = 0;
+    E.last_fg = tag;
     const nx_image_t* C = &E.game_img[gi];
     const nx_image_t* P = repeat ? C : &E.game_img[E.prev_idx];
     nx_osd_t fps = { 0 }, menu = { 0 };
@@ -1149,9 +1153,32 @@ static int fg8_frame(const nx_submit_t* s, int gi)
     nx_fg8_job_t j = { P, C, &E.fg8_mid[m], (uint32_t)E.fg8_mid_index[m], E.handle, seq, 0x8000, repeat,
                        rect[0], rect[1], rect[2], rect[3], E.pf->wait_flip_done,
                        (uint64_t)(uintptr_t)nx_fg8_ts(&E.fg8, k) };
-    int br = nx_fg8_build(&E.fg8, &c, k, &j);
+    nx_osd_begin(&E.osd, 2 + k);   // una sola vez: la copia y el OSD comparten el anillo del slot
+    int br;
+    if (!ia) {
+        br = nx_fg8_build(&E.fg8, &c, k, &j);
+    } else {
+        // prologo y espera de pantalla de VCFG; en el medio, la cadena propia: piramides +
+        // block-matching (LDS) + NXFlow + warp, escribiendo directo en el intermedio
+        nx_fg8_prologue(&E.fg8, &c, k, seq, C, j.ts0);
+        nx_fg8_wait_mid(&c, &j);
+        if (repeat) {   // sin fotograma anterior: el intermedio repite el actual
+            br = nx_osd_copy(&E.osd, &c, 2 + k, C, &E.fg8_mid[m]) != 0 ? -4 : 0;
+        } else {
+            nx_job_t pj;
+            memset(&pj, 0, sizeof pj);
+            pj.prev = P;
+            pj.cur = C;
+            pj.out_mid = &E.fg8_mid[m];
+            pj.slot = k;
+            pj.post = NX_POST_NONE;
+            pj.seq = seq;
+            pj.fg = 1;
+            pj.no_end = 1;
+            br = nx_pipeline_build(&E.pipe, &c, &pj);
+        }
+    }
     if (!br && no) {   // menu/contador en el intermedio y en el real, en el mismo trabajo
-        nx_osd_begin(&E.osd, 2 + k);
         if (nx_osd_draw(&E.osd, &c, 2 + k, &E.fg8_mid[m], osds, no) != 0
             || nx_osd_draw(&E.osd, &c, 2 + k, C, osds, no) != 0) br = -3;
     }
@@ -1271,12 +1298,14 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
     int fx_mem = E.info.full_ready || E.fg8_ready;
     int effects = fx_mem && !E.info.safe_mode && !E.effects_blocked && E.cfg.effects;
     int full = effects && E.info.full_ready;
-    int want_fg = effects && E.cfg.framegen && (E.cfg.framegen == 1 ? E.fg8_ready : E.info.full_ready)
+    // las dos generaciones se presentan como VCFG (fg8_frame); la IA ademas usa la
+    // memoria de la cadena propia (piramides, NXFlow)
+    int want_fg = effects && E.cfg.framegen && E.fg8_ready && (E.cfg.framegen == 1 || E.info.full_ready)
                   && !E.cfg.compare && E.info.game_fps > 1.0f && E.info.game_fps < (float)E.cfg.max_game_fps;
     int sr = full && E.cfg.sr > 0;
     int hq = sr && !E.cfg.eco && (E.cfg.sr_model == 2 || (E.cfg.sr_model == 0 && E.pro));
     int aa = full && E.cfg.aa && !E.cfg.eco;
-    int rcas = full && E.cfg.rcas && !sr;
+    int rcas = full && E.cfg.rcas;   // tambien despues del reescalado
     quality_ladder(&want_fg, &sr, &hq, &aa, &rcas);
     // arranque escalonado: los efectos se habilitan por partes
     if (E.fx_cap < 3) want_fg = 0;
@@ -1286,7 +1315,7 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
     int osd_menu = E.info.menu_open, osd_fps = E.cfg.fps_counter;
     // generacion de VCFG: su propio camino (mismo envio que el juego, flip al intermedio
     // y flip del real al buffer del juego). El post-proceso no se combina con ella.
-    if (want_fg && E.cfg.framegen == 1 && !s->cpu_flip) return fg8_frame(s, gi);
+    if (want_fg && !s->cpu_flip) return fg8_frame(s, gi);
     if (!want_fg && !want_post && !osd_menu && !osd_fps) {
         E.prev_idx = -1;
         rate_idle();
@@ -1372,7 +1401,7 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
         .slot = sl, .post = want_post ? E.post : NX_POST_NONE, .aa = aa,
         .sharpness_stops = E.cfg.rcas ? 0.75f - 0.25f * (float)E.cfg.rcas : 2.0f,
         .seq = E.seq + 1,
-        .fg = want_fg, .fg_fast = E.cfg.framegen != 2, .sr = sr, .sr_k = sr ? 0.5f + 0.25f * (float)(E.cfg.sr - 1) : 0.0f, .sr_hq = hq,
+        .fg = want_fg, .fg_fast = E.cfg.framegen != 2, .sr = sr, .sr_k = sr ? (E.cfg.sr == 1 ? 0.75f : E.cfg.sr == 2 ? 1.1f : 1.5f) : 0.0f, .sr_hq = hq,
         .rcas = rcas,
         .enhance_first = enhance_first,
         .prev_real = enhance_first ? &E.real_img[m ^ 1] : NULL,

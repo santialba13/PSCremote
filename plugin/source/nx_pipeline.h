@@ -3,6 +3,8 @@
 // lo pasa por SMAA 1x y/o FSR1.
 // C portable: la parte especifica de PS4 (memoria, hooks, flips) esta en main.c.
 #pragma once
+
+#define NX_PIPE_SLOTS 4   // trabajos en vuelo (el motor usa 0-1; la generacion con presentacion VCFG, 0-3)
 #include <stddef.h>
 #include <stdint.h>
 
@@ -36,7 +38,7 @@ typedef struct {
     uint64_t vec[3], vtmp, flow5, delta5, flow4, delta4, lvl_in, hA, hB, hR, up;
     uint64_t tmp_img, tmp_img2, tmp_aa;   // imagenes intermedias para el post-proceso
     uint64_t smaa_edges, smaa_weights, smaa_area, smaa_search, nxsr_w, nxsr_hq_w;
-    uint64_t kernarg_base[2], desc_base[2];
+    uint64_t kernarg_base[NX_PIPE_SLOTS], desc_base[NX_PIPE_SLOTS];   // por slot (piramides: por paridad)
     uint64_t label_gpu;
     volatile uint32_t* label_cpu;
     int luma_valid[2];
@@ -63,6 +65,7 @@ typedef struct {
     int prev_real_valid;
     int compare;                // mitad izquierda sin procesar
     const nx_image_t* copy_back; // si no es NULL: out_real se copia aca al final (el buffer del juego)
+    int no_end;                 // 1 = sin el fin de trabajo (lo agrega el que llama: generacion con presentacion VCFG)
     nx_osd_ctx_t* osd_ctx;      // menu / contador (NULL = nada)
     const nx_osd_t* osd[2];
 } nx_job_t;

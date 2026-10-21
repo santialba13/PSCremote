@@ -52,5 +52,10 @@ typedef struct {
 // final del trabajo ni la cola: el que llama agrega el OSD y despues
 // nx_fg8_end(). Devuelve 0 o < 0.
 int nx_fg8_build(nx_fg8_t* f, pm4_t* c, int slot, const nx_fg8_job_t* j);
+// por separado (para la generacion propia con la presentacion de VCFG): el prologo
+// (espera al fin del trabajo del juego + caches; ts0 = reloj de la GPU despues) y la
+// espera a que el intermedio no este en pantalla
+void nx_fg8_prologue(nx_fg8_t* f, pm4_t* c, int slot, uint32_t seq, const nx_image_t* cur, uint64_t ts0);
+void nx_fg8_wait_mid(pm4_t* c, const nx_fg8_job_t* j);
 // label de fin + espera del CP + invalidacion de caches (como el epilogo de VCFG)
 void nx_fg8_end(nx_fg8_t* f, pm4_t* c, int slot, uint32_t seq);

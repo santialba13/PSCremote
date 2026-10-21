@@ -252,9 +252,9 @@ static void boot(const game_t* g, int keep_files)
     C.pro = boot_pro;
     // los escenarios se escribieron con 600 fotogramas de arranque (el valor por
     // defecto ahora es 1200: ver el escenario 24)
-    // y con la generacion IA (framegen = 2): la de VCFG (framegen = 1, la de por
-    // defecto) tiene su propio escenario (28)
-    if (!find_file("/data/vcfg_nx/config.ini")) sim_write("/data/vcfg_nx/config.ini", "warmup_flips = 600\nframegen = 2\n", 32);
+    // y sin generacion (framegen = 0): la calidad dinamica es del post-proceso. Las
+    // generaciones (VCFG = 1, IA = 2) se presentan como VCFG: escenarios 28 y 29
+    if (!find_file("/data/vcfg_nx/config.ini")) sim_write("/data/vcfg_nx/config.ini", "warmup_flips = 600\nframegen = 0\n", 32);
     nx_engine_init(&PF, g->title);
     free(g_fb);
     g_fb = calloc(1, 4096);
@@ -324,7 +324,7 @@ int main(int argc, char** argv)
     report("1. 30 fps, memoria de sobra");
     CHECK(I()->full_ready, "no se activaron los efectos");
     CHECK(I()->our_jobs > 1500, "pocos trabajos propios (%llu)", (unsigned long long)I()->our_jobs);
-    CHECK(C.flips >= 2700 + (int)I()->our_jobs - 10, "faltan flips: %d", C.flips);
+    CHECK(C.flips >= 2700, "faltan flips: %d", C.flips);   // sin generacion: un flip por fotograma
     CHECK(strstr(find_file("/data/GoldHEN/vcfg_nx/guard-CUSA00207.txt")->data, "state=ok") != NULL, "la sesion no quedo marcada ok");
     common_checks();
 
@@ -344,7 +344,7 @@ int main(int argc, char** argv)
     C.gpu_stuck = 1;
     play(&bb, 200, 0);
     report("3. GPU trabada");
-    CHECK(I()->level == I()->level_max && I()->level_max == 3, "no bajo todos los escalones (%d/%d)", I()->level, I()->level_max);
+    CHECK(I()->level == I()->level_max && I()->level_max >= 2, "no bajo todos los escalones (%d/%d)", I()->level, I()->level_max);
     int flips_before = C.flips;
     uint64_t jobs_before = I()->our_jobs;
     play(&bb, 100, 0);
@@ -353,7 +353,7 @@ int main(int argc, char** argv)
 
     // 3b. GPU trabada con el contador de FPS (queda trabajo propio): pausa y reintento
     boot(&bb, 0);
-    sim_write("/data/vcfg_nx/config.ini", "fps_counter = 1\nwarmup_flips = 600\nframegen = 2\n", 48);
+    sim_write("/data/vcfg_nx/config.ini", "fps_counter = 1\nwarmup_flips = 600\nframegen = 0\n", 48);
     nx_engine_init(&PF, bb.title);
     {
         void* ad[2] = { g_fb, g_fb + 256 };
@@ -419,7 +419,7 @@ int main(int argc, char** argv)
     for (int k = 0; k < 9; ++k) { pad_buttons = 0x0040; play(&bb, 1, 0); pad_buttons = 0; play(&bb, 1, 0); }
     pad_buttons = 0x4000; play(&bb, 1, 0); pad_buttons = 0; play(&bb, 1, 0);   // X en "Guardar"
     file_t* ini = find_file("/data/vcfg_nx/CUSA00207.ini");
-    CHECK(ini && strstr(ini->data, "effects = 0") && strstr(ini->data, "framegen = 2") && strstr(ini->data, "sr_model = 1"),
+    CHECK(ini && strstr(ini->data, "effects = 0") && strstr(ini->data, "framegen = 0") && strstr(ini->data, "sr_model = 1"),
           "no se guardo el ini del juego (efectos OFF, modelo Rapido)");
     pad_buttons = 0x2000; play(&bb, 1, 0); pad_buttons = 0; play(&bb, 1, 0);   // O cierra
     CHECK(!I()->menu_open, "O no cerro el menu");
@@ -484,7 +484,7 @@ int main(int argc, char** argv)
     // 12. GPU justa: el juego usa 24 ms de GPU por fotograma (de 33): con todo
     // activo no alcanza; la calidad dinamica baja hasta que alcanza y no se apaga
     boot(&bb, 0);
-    C.game_cost_us = 24000; C.ns_per_group = 60;   // FG + SMAA + NXSR a 1080p ~ 12 ms
+    C.game_cost_us = 24000; C.ns_per_group = 100;   // SMAA + NXSR + RCAS caros: no alcanza con todo
     play(&bb, 4000, 0);
     report("12. GPU justa: calidad dinamica");
     CHECK(I()->state == NX_ST_RUN && I()->level > 0 && I()->level < I()->level_max,
@@ -635,7 +635,7 @@ int main(int argc, char** argv)
     flips_before = C.flips;
     play(&bb, 300, 0);
     report("18. interruptor general (menu L3+R3)");
-    CHECK(I()->our_jobs > jobs_before + 250 && C.flips > flips_before + 500, "no volvio a procesar (FG)");
+    CHECK(I()->our_jobs > jobs_before + 250 && C.flips > flips_before + 250, "no volvio a procesar");
     common_checks();
 
     // 19. registro de a un buffer por llamada (y un handle de otra salida que se ignora)
@@ -825,7 +825,22 @@ int main(int argc, char** argv)
         play(&lowm, 2400, 0);
         report("    ...poca memoria");
         CHECK(I()->our_jobs < 10 && C.mid_flips == 0, "con poca memoria no deberia generar (%llu)", (unsigned long long)I()->our_jobs);
-        sim_write("/data/vcfg_nx/config.ini", "warmup_flips = 600\nframegen = 2\n", 32);
+        sim_write("/data/vcfg_nx/config.ini", "warmup_flips = 600\nframegen = 0\n", 32);
+    }
+
+    // 29. generacion IA (NXFlow) con la presentacion de VCFG: los mismos dos flips por
+    //     fotograma, la cadena propia escribe el intermedio
+    {
+        sim_write("/data/vcfg_nx/config.ini", "warmup_flips = 600\nframegen = 2\nfps_counter = 1\n", 46);
+        boot(&bb, 1);
+        uint64_t g0 = C.groups_total;
+        play(&bb, 2400, 0);
+        report("29. generacion IA");
+        CHECK(I()->our_jobs > 1500 && C.mid_flips > 1500 && C.pairs > 1500, "IA: faltan flips intermedio + real (%llu, %d, %d)",
+              (unsigned long long)I()->our_jobs, C.mid_flips, C.pairs);
+        CHECK(C.groups_total - g0 > 1000000, "IA: casi no hubo trabajo de GPU (la red no corrio)");
+        common_checks();
+        sim_write("/data/vcfg_nx/config.ini", "warmup_flips = 600\nframegen = 0\n", 32);
     }
 
     // 10. juego que arranca en un proceso que no es un juego

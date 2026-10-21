@@ -1,4 +1,4 @@
-# VCFG-NX 2.71: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
+# VCFG-NX 2.72: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
 
 Rediseño del **VCFG v2.14** (generador de fotogramas en beta de la comunidad
 de GoldHEN) que además incorpora un **modelo de reescalado/realce propio,
@@ -64,6 +64,34 @@ botones mientras está abierto):
   RCAS, contador de FPS (con temperatura) y comparar.
 * Arriba se ven los FPS, la temperatura y el estado (activo, calidad dinámica,
   calor). **Guardar** deja todo para ese juego; **O** cierra.
+
+## Novedades de la 2.72
+
+Con la 2.71 en GTA V la generación de VCFG anduvo bien (30 → 60); la IA propia
+seguía bajando los fps y el reescalado no se notaba.
+
+- **Sin escalera de arranque:** siempre el nivel completo. Solo si el juego se
+  cerró con los efectos recién encendidos ("pendfx"), el arranque siguiente baja
+  una parte; el que sale bien vuelve arriba. Salir mientras carga no cuenta.
+- **Generación IA con la presentación de VCFG.** Lo que funcionó con VCFG ahora
+  lo usa también nuestra generación: 3 intermedios con el formato del juego,
+  4 trabajos en vuelo (la CPU casi nunca espera), prólogo que espera al juego en
+  la GPU, `WaitFlipDone` sobre el intermedio, flip al intermedio + flip del real
+  al buffer del juego, juego a 30 con salida a 60 Hz, menú en los dos fotogramas.
+  Entre el prólogo y el final corre la cadena propia (pirámides, block-matching,
+  NXFlow y warp) escribiendo directo en el intermedio.
+- **Block-matching con LDS (`wg_bm_search`):** un grupo de 64 hilos por bloque
+  carga una vez las dos zonas de luma ((8+2R)² cada una) y evalúa los candidatos
+  desde ahí: ~16 veces menos lecturas de memoria (el block-matching leía ~270
+  millones de valores por fotograma a 1080p). Resultado idéntico bit a bit al de
+  antes (emulador, modos IA, rápida y con nitidez).
+- **Reescalado más visible:** NXSR Suave/Normal/Fuerte = 0,75 / 1,1 / 1,5 (antes
+  0,5 / 0,75 / 1,0; es la ganancia del residuo, el modelo no cambia) y la nitidez
+  RCAS se puede usar junto con NXSR (antes se apagaba). Las etapas intermedias del
+  post-proceso alternan buffers.
+- La cadena propia tiene 4 slots de parámetros (pirámides por paridad).
+- Simulador: escenario 29 (generación IA con la presentación de VCFG); los de la
+  calidad dinámica corren sin generación.
 
 ## Novedades de la 2.71
 

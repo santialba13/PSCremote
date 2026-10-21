@@ -60,7 +60,7 @@ static void trace(const char* line)
 attr_public const char* g_pluginName = "vcfg_nx";
 attr_public const char* g_pluginDesc = "Frame generation + reescalado IA (NXSR) + SMAA/FSR1, menu L3+R3";
 attr_public const char* g_pluginAuth = "VCFG-NX";
-attr_public u32 g_pluginVersion = 0x00000271; // 2.71
+attr_public u32 g_pluginVersion = 0x00000272; // 2.72
 
 // prototipos de las variantes ForWorkload (OpenOrbis las declara sin argumentos)
 typedef s32 (*submit_wl_t)(u64, u32, void**, u32*, void**, u32*);
@@ -392,7 +392,7 @@ static void after_game_flip(void)
         if (!fx_state && in->full_ready && in->our_jobs) {
             fx_state = 1;
             fx_from = in->our_jobs;
-            if (g_boot_path[0]) boot_write("pending");
+            if (g_boot_path[0]) boot_write("pendfx");
             boot_stage(g_title_s, "efectos encendidos: a prueba");
         } else if (fx_state == 1 && in->our_jobs >= fx_from + 600) {
             fx_state = 2;
@@ -547,42 +547,16 @@ static void boot_level_pick(const char* title)
     snprintf(g_boot_path, sizeof g_boot_path, NX_LOGDIR "/boot-%.12s.txt", title);
     char prev[96] = { 0 };
     int n = pf_read_file(g_boot_path, prev, sizeof prev - 1);
-    int lv = 0, mx = BOOT_TOP, pending = 0, ok = 0;
-    // vale el registro de la 2.63 en adelante (shaders sin FLAT y envio como
-    // VCFG: lo de antes no dice nada del motor actual); si no, desde 0
-    unsigned pv = 0;
-    if (n > 0 && !strncmp(prev, "ver=", 4)) {
-        for (const char* q = prev + 4; (*q >= '0' && *q <= '9') || (*q >= 'a' && *q <= 'f'); ++q)
-            pv = pv * 16 + (unsigned)(*q <= '9' ? *q - '0' : *q - 'a' + 10);
-    }
-    if (n > 0 && pv >= 0x263 && pv <= (unsigned)g_pluginVersion) {
+    // sin escalera: siempre el nivel completo. Solo si el arranque anterior se cerro
+    // (quedo "pendiente"), este baja una parte; el siguiente que sale bien vuelve arriba.
+    int lv = BOOT_TOP, mx = BOOT_TOP;
+    // ("pendfx" = se cerro con los efectos recien encendidos; salir mientras carga no cuenta)
+    if (n > 0 && strstr(prev, "state=pendfx")) {
         const char* l = strstr(prev, "level=");
-        const char* m = strstr(prev, "max=");
-        lv = l ? atoi(l + 6) : 0;
-        mx = m ? atoi(m + 4) : BOOT_TOP;
-        pending = strstr(prev, "state=pending") != NULL;
-        ok = strstr(prev, "state=ok") != NULL;
-        if (pv != (unsigned)g_pluginVersion) {   // version nueva: otra oportunidad hasta arriba
-            if (pending && lv > 3) lv--;          // se habia cerrado ahi: una parte menos
-            else if (lv > 0 && lv < 3) lv = 3;
-            pending = 0;
-            ok = 0;                               // lo que ya se probo, sigue
-            mx = BOOT_TOP;
-        }
+        int last = l ? atoi(l + 6) : BOOT_TOP;
+        if (last > 0) lv = last - 1;
     }
-    if (pending && lv <= 0) {   // nivel 0 no toca nada: se cerro por otra cosa (o se salio antes)
-        lv = 0;
-    } else if (pending) {       // el arranque anterior se cerro en este nivel: el tope queda abajo
-        mx = lv - 1;
-        lv = mx;
-    } else if (ok && lv < mx) {
-        // salio bien: hasta el menu (3) de una; despues los efectos de a una parte
-        lv = lv < 3 ? (mx < 3 ? mx : 3) : lv + 1;
-    }
-    if (mx > BOOT_TOP) mx = BOOT_TOP;
-    if (mx < -1) mx = -1;
-    if (lv > mx) lv = mx;
-    if (lv < -1) lv = -1;
+    if (lv < 0) lv = 0;
     g_level = lv;
     g_level_max = mx;
     boot_write("pending");

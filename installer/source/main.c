@@ -60,7 +60,7 @@
 #define LOG_DIR ROOT "/data/GoldHEN/vcfg_nx"   // registros del plugin (desde 2.55)
 #define TITLE_ID "VCNX00001"
 #define CONTENT_ID "IV0000-VCNX00001_00-VCFGNXINSTALL000"
-#define VERSION "2.7.1"
+#define VERSION "2.7.2"
 
 #define W 1920
 #define H 1080
@@ -1398,23 +1398,11 @@ static void diag_collect(void)
         char bp[160];   // nivel de arranque actual y tope de este juego
         snprintf(bp, sizeof bp, "boot-%s.txt", g->id);
         char* bt = read_log(bp);
-        const char* lv = strstr(bt, "level="), *mx = strstr(bt, "max=");
-        if (lv && mx) {
-            int l = atoi(lv + 6), m = atoi(mx + 4);
-            char vv[16];   // registro de otra version del plugin: vuelve a tener el tope completo
-            int k = 0;
-            for (const char* q = VERSION; *q && k < 14; ++q) if (*q != '.') vv[k++] = *q;
-            vv[k] = 0;
-            const char* bv = strstr(bt, "ver=");
-            int other = bv && strncmp(bv + 4, vv, (size_t)k) != 0;
-            if (other) {
-                m = 6;
-                if (strstr(bt, "state=pending") && l > 3) l--;
-                else if (l > 0 && l < 3) l = 3;
-            }
-            else if (strstr(bt, "state=pending") && l > 0) m = l = l - 1;   // se cerro en ese nivel
-            else if (strstr(bt, "state=ok") && l < m) l = l < 3 ? (m < 3 ? m : 3) : l + 1;   // salio bien: menu, despues efectos de a una parte
-            snprintf(L[5] + strlen(L[5]), 300 - strlen(L[5]), " \xb7 pr\xf3ximo arranque: nivel %d (tope %d de 6)", l, m);
+        const char* lv = strstr(bt, "level=");
+        if (lv) {   // sin escalera: siempre el nivel completo, salvo tras un cierre con efectos
+            int l = strstr(bt, "state=pendfx") ? atoi(lv + 6) - 1 : 6;
+            if (l < 0) l = 0;
+            snprintf(L[5] + strlen(L[5]), 300 - strlen(L[5]), " \xb7 pr\xf3ximo arranque: nivel %d de 6", l);
         }
         free(bt);
     }

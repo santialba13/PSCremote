@@ -32,7 +32,7 @@ static const char* const k_names[K_COUNT] = {
     "conv3x3_14_32", "conv3x3_17_32", "conv3x3_32_32", "conv3x3_32_5",
     "conv3x3_17_16", "conv3x3_16_16", "conv3x3_16_5",
     "avgpool_rgb", "resize_bilinear", "upsample5", "build_level_input", "bm_to_flow", "luma_full",
-    "luma_down2", "bm_search", "bm_median3", "warp_blend", "easu", "rcas",
+    "luma_down2", "wg_bm_search", "bm_median3", "warp_blend", "easu", "rcas",
     "smaa_edges", "smaa_weights", "smaa_blend", "wg_nxsr", "wg_nxsr_hq",
 };
 
@@ -179,7 +179,7 @@ static int layout(nx_pipeline_t* p, int W, int H, int Wo, int Ho, nx_arena_t are
         memcpy(arena_cpu(a, p->smaa_area), areaTexBytes, sizeof areaTexBytes);
         memcpy(arena_cpu(a, p->smaa_search), searchTexBytes, sizeof searchTexBytes);
     }
-    for (int s = 0; s < 2; ++s) {
+    for (int s = 0; s < NX_PIPE_SLOTS; ++s) {
         p->kernarg_base[s] = arena_alloc(a, KERNARG_BYTES, 256);
         p->desc_base[s] = arena_alloc(a, DESC_BYTES, 256);
     }
@@ -353,15 +353,33 @@ static void post(ctx_t* x, const nx_job_t* job, const nx_image_t* src, const nx_
     int st[4], n = 0;
     if (job->aa) st[n++] = ST_SMAA;
     if (job->post == NX_POST_EASU) st[n++] = ST_EASU;
-    if (job->sr) st[n++] = ST_NXSR;
-    else if (job->rcas || job->post == NX_POST_RCAS) st[n++] = ST_RCAS;
+    if (job->sr) {
+        st[n++] = ST_NXSR;
+        // nitidez tambien despues del reescalado (con EASU no queda otro buffer de salida)
+        if (job->rcas && job->post != NX_POST_EASU) st[n++] = ST_RCAS;
+    } else if (job->rcas || job->post == NX_POST_RCAS) {
+        st[n++] = ST_RCAS;
+    }
     if (n == 0) { x->err = 3; return; }
     nx_image_t taa = linear_img(p->tmp_aa, p->W, p->H);
     nx_image_t t2 = linear_img(p->tmp_img2, p->Wo, p->Ho);
+    nx_image_t t1 = linear_img(p->tmp_img, p->W, p->H);
     const nx_image_t* cur = src;
+    int big = 0;   // despues de EASU las etapas son de Wo x Ho
     for (int i = 0; i < n; ++i) {
-        // cada tamano tiene su intermedio: W x H solo lo usa SMAA, Wo x Ho solo EASU
-        const nx_image_t* o = i == n - 1 ? dst : (st[i] == ST_EASU ? &t2 : &taa);
+        if (st[i] == ST_EASU) big = 1;
+        // intermedio del tamano de la etapa, distinto del que se lee (y de la fuente)
+        const nx_image_t* o = dst;
+        if (i < n - 1) {
+            const nx_image_t* cand[3];
+            int nc = 0;
+            if (big) { cand[nc++] = &t2; if (p->Wo == p->W && p->Ho == p->H) cand[nc++] = &taa; }
+            else { cand[nc++] = &taa; if (p->Wo == p->W && p->Ho == p->H) cand[nc++] = &t2; cand[nc++] = &t1; }
+            o = NULL;
+            for (int k = 0; k < nc && !o; ++k)
+                if (cand[k]->gpu_addr != cur->gpu_addr && cand[k]->gpu_addr != src->gpu_addr) o = cand[k];
+            if (!o) { x->err = 8; return; }
+        }
         int w = (int)o->width, h = (int)o->height;
         if (st[i] == ST_SMAA) {
             smaa(x, cur, o);
@@ -398,7 +416,7 @@ static void frame_generation(ctx_t* x, const nx_job_t* job, const nx_image_t* pr
                              const nx_image_t* warp_dst)
 {
     nx_pipeline_t* p = x->p;
-    int sc = job->slot, sp = job->slot ^ 1;
+    int sc = job->slot & 1, sp = sc ^ 1;   // piramides por paridad (los slots consecutivos alternan)
 
     // 1. luma (piramide) y RGB a 1/8: el del fotograma previo se reutiliza
     if (!p->luma_valid[sp])
@@ -416,7 +434,7 @@ static void frame_generation(ctx_t* x, const nx_job_t* job, const nx_image_t* pr
         ka_bm_t b = { p->luma[sp][lv], p->luma[sc][lv], p->Hp >> lv, p->Wp >> lv,
                       lv == 2 ? 0 : p->vec[lv + 1], p->h8 >> (lv + 1), p->w8 >> (lv + 1),
                       p->vtmp, By, Bx, radius };
-        run(x, K_BM_SEARCH, &b, sizeof b, Bx, By);
+        run(x, K_BM_SEARCH, &b, sizeof b, Bx * 8, By * 8);   // wg_bm_search: un grupo por bloque
         ka_median_t m = { p->vtmp, p->vec[lv], By, Bx };
         run(x, K_BM_MEDIAN3, &m, sizeof m, Bx, By);
     }
@@ -474,7 +492,7 @@ int nx_pipeline_build(nx_pipeline_t* p, pm4_t* c, const nx_job_t* job)
             // fotograma del juego y el intermedio hereda la calidad del real
             if (!job->prev_real_valid) {
                 post(&x, job, job->prev, job->prev_real);
-                p->luma_valid[job->slot ^ 1] = 0;
+                p->luma_valid[(job->slot & 1) ^ 1] = 0;
             }
             post(&x, job, job->cur, job->out_real);
             frame_generation(&x, job, job->prev_real, job->out_real, job->out_mid);
@@ -513,7 +531,9 @@ int nx_pipeline_build(nx_pipeline_t* p, pm4_t* c, const nx_job_t* job)
         && nx_osd_copy(job->osd_ctx, c, job->slot, job->out_real, job->copy_back) != 0)
         x.err = 6;
 
-    pm4_end_of_job(c, p->label_gpu, job->seq);
-    pm4_nop_pad(c, 8);
+    if (!job->no_end) {
+        pm4_end_of_job(c, p->label_gpu, job->seq);
+        pm4_nop_pad(c, 8);
+    }
     return x.err ? -10 - x.err : (c->overflow ? -20 : 0);
 }

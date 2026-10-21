@@ -187,33 +187,49 @@ static void wait_label(pm4_t* c, uint64_t lbl, uint32_t seq)
     EMIT(0x0A);
 }
 
+void nx_fg8_prologue(nx_fg8_t* f, pm4_t* c, int slot, uint32_t seq, const nx_image_t* cur, uint64_t ts0)
+{
+    uint8_t* sb = slotb(f, slot);
+    uint64_t lbl2 = (uint64_t)(uintptr_t)(sb + SLOT_LBL2);
+    *(volatile uint64_t*)(sb + SLOT_LBL2) = 0;
+    *(volatile uint64_t*)(sb + SLOT_LBL) = 0;
+    ((volatile uint64_t*)(sb + SLOT_TS))[0] = ((volatile uint64_t*)(sb + SLOT_TS))[1] = 0;
+    uint32_t nbytes = cur->pitch * cur->height * 4u;
+    // el juego termino su fotograma (el CP espera, no la CPU) y sus escrituras de
+    // color estan en memoria; caches de constantes/instrucciones limpias
+    EMIT(PKT3(0x46, 1, 0)); EMIT(0x0000002E);
+    EMIT(PKT3(0x46, 1, 0)); EMIT(0x00000407);
+    eop_label(c, lbl2, seq);
+    wait_label(c, lbl2, seq);
+    acquire(c, 0x82003FC0u, nbytes >> 8, cur->gpu_addr);
+    acquire(c, 0x80C40000u, 1, 0);
+    acquire(c, 0x88400000u, 1, 0);
+    if (ts0) pm4_timestamp(c, ts0);
+}
+
+void nx_fg8_wait_mid(pm4_t* c, const nx_fg8_job_t* j)
+{
+    int r = -1;
+    if (c->n + 7 <= c->cap && j->wait_flip_done) r = j->wait_flip_done(c->buf + c->n, 7, j->handle, j->mid_index);
+    if (r != 0 && c->n + 7 <= c->cap) {
+        c->buf[c->n] = PKT3(0x10, 6, 0);
+        for (int i = 1; i < 7; ++i) c->buf[c->n + i] = 0;
+    }
+    if (c->n + 7 <= c->cap) c->n += 7; else c->overflow = 1;
+}
+
 int nx_fg8_build(nx_fg8_t* f, pm4_t* c, int slot, const nx_fg8_job_t* j)
 {
     if (!f->ok || slot < 0 || slot >= NX_FG8_SLOTS || !j->prev || !j->cur || !j->mid) return -1;
     uint8_t* sb = slotb(f, slot);
     uint32_t* tb = (uint32_t*)sb;
     uint64_t tbl = (uint64_t)(uintptr_t)tb;
-    uint64_t lbl2 = (uint64_t)(uintptr_t)(sb + SLOT_LBL2);
     uint64_t gb = (uint64_t)(uintptr_t)f->slab;
     volatile uint32_t* stats = (volatile uint32_t*)(sb + SLOT_STATS);
     for (int i = 0; i < 8; ++i) stats[i] = 0xFFFFFFFFu;
     fill_table(tb, j, f->work, (volatile uint32_t*)(f->slab + MON_OFF), stats);
-    *(volatile uint64_t*)(sb + SLOT_LBL2) = 0;
-    *(volatile uint64_t*)(sb + SLOT_LBL) = 0;
-    ((volatile uint64_t*)(sb + SLOT_TS))[0] = ((volatile uint64_t*)(sb + SLOT_TS))[1] = 0;
-
     uint32_t W = j->cur->width, H = j->cur->height;
-    uint32_t nbytes = j->cur->pitch * H * 4u;
-    // prologo: el juego termino su fotograma (el CP espera, no la CPU) y sus
-    // escrituras de color estan en memoria; caches de constantes/instrucciones limpias
-    EMIT(PKT3(0x46, 1, 0)); EMIT(0x0000002E);
-    EMIT(PKT3(0x46, 1, 0)); EMIT(0x00000407);
-    eop_label(c, lbl2, j->seq);
-    wait_label(c, lbl2, j->seq);
-    acquire(c, 0x82003FC0u, nbytes >> 8, j->cur->gpu_addr);
-    acquire(c, 0x80C40000u, 1, 0);
-    acquire(c, 0x88400000u, 1, 0);
-    if (j->ts0) pm4_timestamp(c, j->ts0);
+    nx_fg8_prologue(f, c, slot, j->seq, j->cur, j->ts0);
     EMIT(PKT3(0x76, 4, 1)); EMIT(0x207); EMIT(64); EMIT(1); EMIT(1);
     EMIT(PKT3(0x76, 3, 1)); EMIT(0x240); EMIT((uint32_t)tbl); EMIT((uint32_t)(tbl >> 32));
 
@@ -226,15 +242,7 @@ int nx_fg8_build(nx_fg8_t* f, pm4_t* c, int slot, const nx_fg8_job_t* j)
     set_pass(c, gb + f->sh_off[5], ME1_RSRC1, ME1_RSRC2); dispatch(c, px, py); barrier(c);
     set_pass(c, gb + f->sh_off[6], MF8_RSRC1, MF8_RSRC2); dispatch(c, px, py); barrier(c);
     // recien antes de escribir el intermedio: que no este en pantalla
-    {
-        int r = -1;
-        if (c->n + 7 <= c->cap && j->wait_flip_done) r = j->wait_flip_done(c->buf + c->n, 7, j->handle, j->mid_index);
-        if (r != 0 && c->n + 7 <= c->cap) {
-            c->buf[c->n] = PKT3(0x10, 6, 0);
-            for (int i = 1; i < 7; ++i) c->buf[c->n + i] = 0;
-        }
-        if (c->n + 7 <= c->cap) c->n += 7; else c->overflow = 1;
-    }
+    nx_fg8_wait_mid(c, j);
     acquire(c, 0x80C40000u, 1, 0);
     set_pass(c, gb + f->sh_off[7], PHASE8_RSRC1, PHASE8_RSRC2); dispatch(c, 1, 1); barrier(c);
     set_pass(c, gb + f->sh_off[8], WARP8_RSRC1, WARP8_RSRC2); dispatch(c, FG_WX(W), FG_WY(H)); barrier(c);
