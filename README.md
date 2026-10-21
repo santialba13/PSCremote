@@ -1,4 +1,4 @@
-# VCFG-NX 2.64: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
+# VCFG-NX 2.65: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
 
 Rediseño del **VCFG v2.14** (generador de fotogramas en beta de la comunidad
 de GoldHEN) que además incorpora un **modelo de reescalado/realce propio,
@@ -64,6 +64,20 @@ botones mientras está abierto):
   RCAS, contador de FPS (con temperatura) y comparar.
 * Arriba se ven los FPS, la temperatura y el estado (activo, calidad dinámica,
   calor). **Guardar** deja todo para ese juego; **O** cierra.
+
+## Novedades de la 2.65
+
+**La escalera de arranque ya no se traba en "2 de 2".** En el nivel 3 (solo
+menú) el arranque contaba como correcto recién con ~600 trabajos propios de GPU,
+pero en ese nivel solo hay trabajo con el menú abierto: salir del juego quedaba
+como "se cerró" y el tope bajaba a 2. Ahora:
+
+- el arranque cuenta como correcto a los 900 fotogramas del juego, en cualquier
+  nivel;
+- en el nivel 4, cuando se encienden los efectos la marca vuelve a "pendiente"
+  ("efectos encendidos: a prueba") hasta ~600 fotogramas con efectos;
+- con una versión nueva del plugin el tope vuelve a 4 y el registro anterior
+  cuenta como correcto (0-2 → 3, 3 → 4); Diagnóstico muestra lo mismo.
 
 ## Novedades de la 2.64
 

@@ -60,7 +60,7 @@ static void trace(const char* line)
 attr_public const char* g_pluginName = "vcfg_nx";
 attr_public const char* g_pluginDesc = "Frame generation + reescalado IA (NXSR) + SMAA/FSR1, menu L3+R3";
 attr_public const char* g_pluginAuth = "VCFG-NX";
-attr_public u32 g_pluginVersion = 0x00000264; // 2.64
+attr_public u32 g_pluginVersion = 0x00000265; // 2.65
 
 // prototipos de las variantes ForWorkload (OpenOrbis las declara sin argumentos)
 typedef s32 (*submit_wl_t)(u64, u32, void**, u32*, void**, u32*);
@@ -350,6 +350,7 @@ static int g_engine_live;        // nivel 3+: el motor procesa los flips; si no,
 static uint64_t g_game_flips;    // contados aca (el motor puede no estar iniciado)
 static void* pad_thread(void* arg);
 static void boot_level_ok(void);
+static void boot_write(const char* state);
 static void after_game_flip(void)
 {
     uint64_t f = ++g_game_flips;
@@ -357,12 +358,29 @@ static void after_game_flip(void)
     // ~15-30 s de juego: este nivel anda. Con el motor procesando (nivel 3+), recien
     // cuando nuestro trabajo de GPU lleva ~600 fotogramas (o el juego ~20 min sin
     // activarlo): un cierre con los efectos recien encendidos no cuenta como correcto
-    static int ok_done;
-    if (!ok_done && f >= 900 && (!g_engine_live || nx_engine_info()->our_jobs >= 600 || f >= 36000)) {
+    // ~15-30 s de juego: este nivel anda. Si despues arrancan los efectos (nivel 4),
+    // la marca vuelve a "pendiente" hasta que lleven ~600 fotogramas: un cierre
+    // justo al encenderlos baja el nivel; salir del juego antes no cuenta como cierre.
+    static int ok_done, fx_state;
+    static uint64_t fx_from;
+    if (!ok_done && f >= 900) {
         ok_done = 1;
         boot_level_ok();
         boot_stage(g_title_s, g_level < g_level_max ? "jugando: arranque correcto (el proximo suma una parte)"
                                                     : "jugando: arranque correcto");
+    }
+    if (ok_done && g_level >= 4 && fx_state < 2) {
+        const nx_engine_info_t* in = nx_engine_info();
+        if (!fx_state && in->full_ready && in->our_jobs) {
+            fx_state = 1;
+            fx_from = in->our_jobs;
+            if (g_boot_path[0]) boot_write("pending");
+            boot_stage(g_title_s, "efectos encendidos: a prueba");
+        } else if (fx_state == 1 && in->our_jobs >= fx_from + 600) {
+            fx_state = 2;
+            boot_level_ok();
+            boot_stage(g_title_s, "efectos: arranque correcto");
+        }
     }
     // ningun hilo propio antes de que el juego este andando (como VCFG: sus
     // hilos arrancan desde los flips, nunca desde plugin_load)
@@ -524,6 +542,11 @@ static void boot_level_pick(const char* title)
         mx = m ? atoi(m + 4) : BOOT_TOP;
         pending = strstr(prev, "state=pending") != NULL;
         ok = strstr(prev, "state=ok") != NULL;
+        if (pv != (unsigned)g_pluginVersion) {   // version nueva: otra oportunidad hasta arriba
+            pending = 0;
+            ok = 1;
+            mx = BOOT_TOP;
+        }
     }
     if (pending && lv <= 0) {   // nivel 0 no toca nada: se cerro por otra cosa (o se salio antes)
         lv = 0;

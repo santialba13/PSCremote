@@ -60,7 +60,7 @@
 #define LOG_DIR ROOT "/data/GoldHEN/vcfg_nx"   // registros del plugin (desde 2.55)
 #define TITLE_ID "VCNX00001"
 #define CONTENT_ID "IV0000-VCNX00001_00-VCFGNXINSTALL000"
-#define VERSION "2.6.4"
+#define VERSION "2.6.5"
 
 #define W 1920
 #define H 1080
@@ -1401,7 +1401,15 @@ static void diag_collect(void)
         const char* lv = strstr(bt, "level="), *mx = strstr(bt, "max=");
         if (lv && mx) {
             int l = atoi(lv + 6), m = atoi(mx + 4);
-            if (strstr(bt, "state=pending") && l > 0) m = l = l - 1;   // se cerro en ese nivel
+            char vv[16];   // registro de otra version del plugin: vuelve a tener el tope completo
+            int k = 0;
+            for (const char* q = VERSION; *q && k < 14; ++q) if (*q != '.') vv[k++] = *q;
+            vv[k] = 0;
+            const char* bv = strstr(bt, "ver=");
+            int other = bv && strncmp(bv + 4, vv, (size_t)k) != 0;
+            if (other) m = 4;
+            if (other) { if (l < 3) l = 3; else l = 4; }
+            else if (strstr(bt, "state=pending") && l > 0) m = l = l - 1;   // se cerro en ese nivel
             else if (strstr(bt, "state=ok")) l = l < 3 ? (m < 3 ? m : 3) : m;   // salio bien: menu, despues efectos
             snprintf(L[5] + strlen(L[5]), 300 - strlen(L[5]), " \xb7 pr\xf3ximo arranque: nivel %d (tope %d de 4)", l, m);
         }
