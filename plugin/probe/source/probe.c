@@ -15,7 +15,7 @@
 attr_public const char* g_pluginName = "vcfg_nx_probe";
 attr_public const char* g_pluginDesc = "Sonda de diagnostico de VCFG-NX";
 attr_public const char* g_pluginAuth = "VCFG-NX";
-attr_public u32 g_pluginVersion = 0x00000258; // 2.58
+attr_public u32 g_pluginVersion = 0x00000259; // 2.59
 
 static char g_title[16];
 static OrbisPthread g_thread;

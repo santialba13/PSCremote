@@ -1,4 +1,4 @@
-# VCFG-NX 2.58: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
+# VCFG-NX 2.59: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
 
 Rediseño del **VCFG v2.14** (generador de fotogramas en beta de la comunidad
 de GoldHEN) que además incorpora un **modelo de reescalado/realce propio,
@@ -64,6 +64,19 @@ botones mientras está abierto):
   RCAS, contador de FPS (con temperatura) y comparar.
 * Arriba se ven los FPS, la temperatura y el estado (activo, calidad dinámica,
   calor). **Guardar** deja todo para ese juego; **O** cierra.
+
+## Novedades de la 2.59
+
+**Causa del cierre de GTA V encontrada: la pila llega desalineada.** La traza de
+la 2.58 se cortó justo después de "plugin_load: inicio". La instrucción
+siguiente en el binario era un `movaps` sobre la pila (el compilador inicializa
+así el título del juego con `-O2`). GoldHEN llama a `plugin_load` desde el parche
+de `_init_env` de la libc del juego, y en GTA V la pila llega alineada a 8 y no
+a 16: `movaps` provoca una excepción y el juego se cierra. Por eso VCFG compila
+su motor clásico sin optimizar ("-O2 crashed CUSA00207").
+
+Arreglo: el plugin se compila con `-mstackrealign`: cada función realinea su
+pila al entrar (`and $-16, %rsp`), sin perder la optimización.
 
 ## Novedades de la 2.58
 

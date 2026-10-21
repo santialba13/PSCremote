@@ -8,7 +8,11 @@ TARGET    := $(OUT)/vcfg_nx.prx
 
 LIBS := -lGoldHEN_Hook -lSceLibcInternal -lkernel -lSceSysmodule -lSceVideoOut -lSceGnmDriver -lScePad -lSceUserService
 
-CFLAGS  := --target=x86_64-pc-freebsd12-elf -fPIC -funwind-tables -O2 -Wall -Wno-unused-parameter \
+# -mstackrealign: GoldHEN llama a plugin_load desde el parche de _init_env de la
+# libc del juego y en algunos juegos (GTA V) la pila llega desalineada (8 en vez
+# de 16): cualquier movaps sobre la pila cerraba el juego ahi mismo. Cada funcion
+# realinea su pila al entrar.
+CFLAGS  := --target=x86_64-pc-freebsd12-elf -fPIC -funwind-tables -O2 -mstackrealign -Wall -Wno-unused-parameter \
            -isysroot $(TOOLCHAIN) -isystem $(TOOLCHAIN)/include -I$(GH_SDK)/include -Iinclude -Isource -I../third_party/smaa
 LDFLAGS := -m elf_x86_64 -pie --script $(TOOLCHAIN)/link.x -e _init --eh-frame-hdr \
            -L$(TOOLCHAIN)/lib -L$(GH_SDK) $(LIBS)
