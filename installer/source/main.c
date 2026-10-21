@@ -57,9 +57,10 @@
 #define PROBE_DST ROOT "/data/GoldHEN/plugins/vcfg_nx_probe.prx"
 #define PLUGINS_INI ROOT "/data/GoldHEN/plugins.ini"
 #define CFG_DIR ROOT "/data/vcfg_nx"
+#define LOG_DIR ROOT "/data/GoldHEN/vcfg_nx"   // registros del plugin (desde 2.55)
 #define TITLE_ID "VCNX00001"
 #define CONTENT_ID "IV0000-VCNX00001_00-VCFGNXINSTALL000"
-#define VERSION "2.5.4"
+#define VERSION "2.5.5"
 
 #define W 1920
 #define H 1080
@@ -264,6 +265,8 @@ static void fix_all_perms(void)
     mkdir(CFG_DIR "/logs", 0777);
     fix_perms(CFG_DIR);
     fix_perms(CFG_DIR "/logs");
+    mkdir(LOG_DIR, 0777);
+    fix_perms(LOG_DIR);
     DIR* d = opendir(CFG_DIR);   // los .ini y archivos del plugin dentro de /data/vcfg_nx
     if (d) {
         struct dirent* e;
@@ -275,6 +278,29 @@ static void fix_all_perms(void)
         }
         closedir(d);
     }
+    d = opendir(LOG_DIR);
+    if (d) {
+        struct dirent* e;
+        char p[300];
+        while ((e = readdir(d))) {
+            if (e->d_name[0] == '.') continue;
+            snprintf(p, sizeof p, LOG_DIR "/%s", e->d_name);
+            fix_perms(p);
+        }
+        closedir(d);
+    }
+}
+
+// registro del plugin: la carpeta nueva y, si no esta, la de antes de 2.55
+static char* read_log(const char* name)
+{
+    char p[200];
+    snprintf(p, sizeof p, LOG_DIR "/%s", name);
+    char* t = read_text(p);
+    if (t[0]) return t;
+    free(t);
+    snprintf(p, sizeof p, CFG_DIR "/%s%s", strncmp(name, "boot-", 5) ? "logs/" : "", name);
+    return read_text(p);
 }
 
 // "0777 uid 0" de un archivo, o "no existe"
@@ -1220,6 +1246,7 @@ static void clean_reinstall(void)
     n += inst_rm_matching(PLUGIN_DIR, "vcfg_nx", ".vcfg_tmp");
     // 3. /data/vcfg_nx entera: ajustes, registros, protecciones, reserva
     n += inst_rm_tree(CFG_DIR);
+    n += inst_rm_tree(LOG_DIR);
     // 4. de cero: ajustes por defecto en todos los juegos y reinstalar
     nx_config_defaults(&defaults);
     for (int i = 0; i < ngames; ++i) {
@@ -1308,13 +1335,23 @@ static void diag_collect(void)
                  !others[0] ? "" : clash ? " - CHOCAN: se quitan al guardar" : " (no chocan con VCFG-NX)");
         diag.line_color[4] = clash ? C_WARN : C_OK;
     }
-    char* loads = read_text(CFG_DIR "/logs/cargas.txt");
+    char* loads = read_log("cargas.txt");
     int nload = 0;
     for (const char* q = loads; (q = strstr(q, "cargado en")); ++q) ++nload;
     const char* last = NULL;
     for (const char* q = loads; (q = strstr(q, "[main]")); ++q) last = q;
     char lastl[160] = "";
     if (last) { const char* e = strchr(last, '\n'); snprintf(lastl, sizeof lastl, "%.*s", e ? (int)(e - last) : 150, last); }
+    // traza.txt: lo escribe el plugin con fopen desde module_start (otra via
+    // que la del registro principal): la ultima linea dice hasta donde llego
+    char* trc = read_log("traza.txt");
+    char trc_last[160] = "";
+    int ntrc = 0;
+    {
+        const char* q = trc, *lst = NULL;
+        for (; (q = strstr(q, "[traza]")); ++q) { lst = q; ++ntrc; }
+        if (lst) { const char* e = strchr(lst, '\n'); snprintf(trc_last, sizeof trc_last, "%.*s", e ? (int)(e - lst) : 150, lst + 8); }
+    }
     int starts = 0;
     for (const char* q = loads; (q = strstr(q, "module_start")); ++q) ++starts;
     const char* sonda = NULL;
@@ -1324,6 +1361,7 @@ static void diag_collect(void)
     if (nload) snprintf(L[5], 300, "Cargas del plugin en juegos: %d \xb7 \xfaltima: %s", nload, lastl);
     else if (sonda) snprintf(L[5], 300, "La sonda carg\xf3 pero el plugin principal no: %s", sl);
     else if (starts) snprintf(L[5], 300, "GoldHEN abri\xf3 el plugin %d vez/veces pero plugin_load no termin\xf3", starts);
+    else if (trc_last[0]) snprintf(L[5], 300, "Solo hay traza (sin cargas.txt): %s", trc_last);
     else snprintf(L[5], 300, "GoldHEN nunca carg\xf3 VCFG-NX en ning\xfan juego (no hay registro de carga)");
     diag.line_color[5] = nload ? C_OK : C_DANGER;
     if (g) {   // hasta donde llego el ultimo arranque de este juego (el plugin lo anota al momento)
@@ -1342,8 +1380,8 @@ static void diag_collect(void)
             diag.line_color[5] = ok ? C_OK : C_WARN;
         }
         char bp[160];   // nivel de arranque actual y tope de este juego
-        snprintf(bp, sizeof bp, CFG_DIR "/boot-%s.txt", g->id);
-        char* bt = read_text(bp);
+        snprintf(bp, sizeof bp, "boot-%s.txt", g->id);
+        char* bt = read_log(bp);
         const char* lv = strstr(bt, "level="), *mx = strstr(bt, "max=");
         if (lv && mx) {
             int l = atoi(lv + 6), m = atoi(mx + 4);
@@ -1357,8 +1395,8 @@ static void diag_collect(void)
     char* log = NULL;
     if (g) {
         char path[160];
-        snprintf(path, sizeof path, CFG_DIR "/logs/%s.log", g->id);
-        log = read_text(path);
+        snprintf(path, sizeof path, "%s.log", g->id);
+        log = read_log(path);
         int k = inst_log_summary(log, sum, sizeof sum);
         diag.line_color[6] = k == 3 ? C_OK : k == 0 ? C_DANGER : C_WARN;
     }
@@ -1377,13 +1415,15 @@ static void diag_collect(void)
     snprintf(L[7], 300, "Prueba de carga: plugin %s \xb7 control GNMScale %s", t2, t3);
     diag.line_color[7] = ok1 && ok2 ? C_OK : C_DANGER;
     (void)ctl;
-    snprintf(L[8], 300, "Permisos: vcfg_nx.prx %s \xb7 gnmscale_plugin.prx %s", pm1, pm2);
+    snprintf(L[8], 300, "Permisos: vcfg_nx.prx %s \xb7 traza: %d l\xedneas%s%.110s", pm1, ntrc,
+             trc_last[0] ? ", \xfaltima: " : "", trc_last);
+    (void)pm2;
     if (diag.save_error[0]) {
         snprintf(L[7] + strlen(L[7]), 300 - strlen(L[7]), " \xb7 error al guardar: %s", diag.save_error);
         diag.line_color[7] = C_DANGER;
     }
     // reporte completo para compartir
-    size_t cap = strlen(ini) + strlen(loads) + (log ? strlen(log) : 0) + 8192;
+    size_t cap = strlen(ini) + strlen(loads) + strlen(trc) + (log ? strlen(log) : 0) + 8192;
     char* rep = malloc(cap);
     if (rep) {
         size_t o = 0;
@@ -1392,6 +1432,8 @@ static void diag_collect(void)
         o += (size_t)snprintf(rep + o, cap - o, "\n==== plugins.ini ====\n%s\n", ini);
         size_t ll = strlen(loads);
         o += (size_t)snprintf(rep + o, cap - o, "\n==== logs/cargas.txt (final) ====\n%s\n", loads + (ll > 4096 ? ll - 4096 : 0));
+        size_t tl = strlen(trc);
+        o += (size_t)snprintf(rep + o, cap - o, "\n==== traza.txt (final) ====\n%s\n", trc + (tl > 4096 ? tl - 4096 : 0));
         if (log) {
             size_t gl = strlen(log);
             o += (size_t)snprintf(rep + o, cap - o, "\n==== logs/%s.log (final) ====\n%s\n", g->id, log + (gl > 12288 ? gl - 12288 : 0));
@@ -1402,6 +1444,7 @@ static void diag_collect(void)
         free(rep);
     }
     free(log);
+    free(trc);
     free(loads);
     free(ini);
 }

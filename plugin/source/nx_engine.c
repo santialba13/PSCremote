@@ -193,7 +193,7 @@ static void set_status(const char* s)
 }
 
 // ------------------------------------------------------- proteccion anti-cierre
-static void guard_path(char* p, size_t n) { snprintf(p, n, "/data/vcfg_nx/guard-%s.txt", E.title); }
+static void guard_path(char* p, size_t n) { snprintf(p, n, NX_LOGDIR "/guard-%s.txt", E.title); }
 
 static void guard_write(const char* state)
 {
@@ -253,7 +253,7 @@ void nx_engine_init(const nx_platform_t* pf, const char* title_id)
     E.game_rate = -1;
     nx_config_load(&E.cfg, E.title, pf->read_file);
     if (E.title[0]) {
-        snprintf(E.log_path, sizeof E.log_path, "/data/vcfg_nx/logs/%.12s.log", E.title);
+        snprintf(E.log_path, sizeof E.log_path, NX_LOGDIR "/%.12s.log", E.title);
         if (pf->write_file) {   // un registro por juego: se reemplaza en cada arranque
             char h[160];
             int n = snprintf(h, sizeof h, "VCFG-NX plugin: arranque de %s\n", E.title);

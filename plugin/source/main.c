@@ -15,6 +15,7 @@
 #include <orbis/UserService.h>
 #include <orbis/libkernel.h>
 #include <stdio.h>
+#include <sys/stat.h>
 #include <string.h>
 
 #include "nx_engine.h"
@@ -36,10 +37,26 @@
 #define UNHOOK(name) nx_hook_remove(&NXH_##name)
 static int hook_one(nx_hook_t* h, void* fn, void* hk, const char* name);
 
+// Registro de respaldo con fopen de la libc del sistema (como VCFG v2.23, que
+// escribe asi sus registros desde el juego): si las llamadas del kernel no
+// pueden escribir, esta via deja constancia igual.
+static void trace(const char* line)
+{
+    FILE* f = fopen(NX_LOGDIR "/traza.txt", "a");
+    if (!f) {
+        mkdir("/data/GoldHEN", 0777);
+        mkdir(NX_LOGDIR, 0777);
+        f = fopen(NX_LOGDIR "/traza.txt", "a");
+        if (!f) return;
+    }
+    fputs(line, f);
+    fclose(f);
+}
+
 attr_public const char* g_pluginName = "vcfg_nx";
 attr_public const char* g_pluginDesc = "Frame generation + reescalado IA (NXSR) + SMAA/FSR1, menu L3+R3";
 attr_public const char* g_pluginAuth = "VCFG-NX";
-attr_public u32 g_pluginVersion = 0x00000254; // 2.54
+attr_public u32 g_pluginVersion = 0x00000255; // 2.55
 
 // prototipos de las variantes ForWorkload (OpenOrbis las declara sin argumentos)
 typedef s32 (*submit_wl_t)(u64, u32, void**, u32*, void**, u32*);
@@ -233,7 +250,7 @@ static void pf_log(const char* msg) { final_printf("%s", msg); }
 static void make_dirs(void)
 {
     sceKernelMkdir("/data/vcfg_nx", 0777);
-    sceKernelMkdir("/data/vcfg_nx/logs", 0777);
+    sceKernelMkdir(NX_LOGDIR, 0777);
 }
 
 static int pf_read_file(const char* path, char* buf, int cap)
@@ -438,7 +455,7 @@ static void boot_stage(const char* title, const char* what)
 {
     char m[160];
     int n = snprintf(m, sizeof m, "[etapa] %s nivel %d: %s\n", title, g_level, what);
-    if (n > 0) append_sync("/data/vcfg_nx/logs/cargas.txt", m, n);
+    if (n > 0) { append_sync(NX_LOGDIR "/cargas.txt", m, n); trace(m); }
 }
 
 static void boot_write(const char* state)
@@ -450,7 +467,7 @@ static void boot_write(const char* state)
 
 static void boot_level_pick(const char* title)
 {
-    snprintf(g_boot_path, sizeof g_boot_path, "/data/vcfg_nx/boot-%.12s.txt", title);
+    snprintf(g_boot_path, sizeof g_boot_path, NX_LOGDIR "/boot-%.12s.txt", title);
     char prev[96] = { 0 };
     int n = pf_read_file(g_boot_path, prev, sizeof prev - 1);
     int lv = 0, mx = BOOT_TOP, pending = 0, ok = 0;
@@ -507,7 +524,7 @@ static int hook_one(nx_hook_t* h, void* fn, void* hk, const char* name)
     char m[200];
     int n = snprintf(m, sizeof m, "[hook] %s: %s%s%s (fn %p puente %p)\n", name, r == 0 ? "ok" : "NO enganchada: ",
                      r == 0 ? "" : h->why, "", h->target, (void*)h->mem);
-    if (n > 0) append_sync("/data/vcfg_nx/logs/cargas.txt", m, n);
+    if (n > 0) append_sync(NX_LOGDIR "/cargas.txt", m, n);
     return r;
 }
 
@@ -522,7 +539,7 @@ static void early_reserve(const char* title)
     char m[160];
     int k = snprintf(m, sizeof m, "[mem] reserva temprana: base %s, trabajo %s; libre del sistema %zu MiB\n",
                      g_base.va ? "ok" : "FALLO", g_work.va ? "ok" : "no", raw_avail() >> 20);
-    if (k > 0) pf_append_file("/data/vcfg_nx/logs/cargas.txt", m, k);
+    if (k > 0) pf_append_file(NX_LOGDIR "/cargas.txt", m, k);
 }
 
 // marca en logs/cargas.txt apenas GoldHEN abre el plugin: si el juego no deja
@@ -532,16 +549,22 @@ static void boot_mark(const char* what, const char* title)
 {
     char m[96];
     int n = snprintf(m, sizeof m, "[boot] %s %x.%02x %s\n", what, g_pluginVersion >> 8, g_pluginVersion & 0xFF, title);
-    if (n > 0) pf_append_file("/data/vcfg_nx/logs/cargas.txt", m, n);
+    if (n > 0) pf_append_file(NX_LOGDIR "/cargas.txt", m, n);
 }
 
 s32 attr_public plugin_load(s32 argc, const char* argv[])
 {
     final_printf("<%s ver 0x%08x> %s\n", g_pluginName, g_pluginVersion, __func__);
+    trace("[traza] plugin_load: inicio\n");
     struct proc_info info;
     char title[16] = { 0 };
     if (sys_sdk_proc_info(&info) == 0)
         memcpy(title, info.titleid, sizeof title - 1);
+    {
+        char t[80];
+        snprintf(t, sizeof t, "[traza] plugin_load: titulo '%.15s' version %x\n", title, (unsigned)g_pluginVersion);
+        trace(t);
+    }
     make_dirs();
     memcpy(g_title_s, title, sizeof g_title_s);
     int is_game = !strncmp(title, "CUSA", 4) || !strncmp(title, "PLAS", 4);
@@ -601,5 +624,9 @@ s32 attr_public plugin_unload(s32 argc, const char* argv[])
     return 0;
 }
 
-s32 attr_module_hidden module_start(s64 argc, const void* args) { return 0; }
+s32 attr_module_hidden module_start(s64 argc, const void* args)
+{
+    trace("[traza] module_start\n");
+    return 0;
+}
 s32 attr_module_hidden module_stop(s64 argc, const void* args) { return 0; }

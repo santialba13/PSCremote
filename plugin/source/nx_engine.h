@@ -9,6 +9,10 @@
 
 #include "config.h"
 
+// registros y estado de arranque: en la carpeta de GoldHEN (GoldHEN la lee y
+// escribe desde dentro de los juegos; /data/vcfg_nx no siempre se pudo escribir)
+#define NX_LOGDIR "/data/GoldHEN/vcfg_nx"
+
 typedef struct {
     int32_t format, tmode, aspect;
     uint32_t width, height, pitch;

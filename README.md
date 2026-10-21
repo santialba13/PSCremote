@@ -1,4 +1,4 @@
-# VCFG-NX 2.54: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
+# VCFG-NX 2.55: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
 
 Rediseño del **VCFG v2.14** (generador de fotogramas en beta de la comunidad
 de GoldHEN) que además incorpora un **modelo de reescalado/realce propio,
@@ -64,6 +64,27 @@ botones mientras está abierto):
   RCAS, contador de FPS (con temperatura) y comparar.
 * Arriba se ven los FPS, la temperatura y el estado (activo, calidad dinámica,
   calor). **Guardar** deja todo para ese juego; **O** cierra.
+
+## Novedades de la 2.55
+
+**Registros dentro de la carpeta de GoldHEN (`/data/GoldHEN/vcfg_nx`).** En
+GTA V el diagnóstico mostraba que el plugin nunca había dejado ningún registro,
+ni siquiera el del arranque escalonado, así que ese sistema no podía guardar
+nada entre intentos. Ahora:
+
+- los registros (`cargas.txt`, `boot-<ID>.txt`, `<ID>.log`, `guard-<ID>.txt`)
+  se escriben en `/data/GoldHEN/vcfg_nx`, la misma carpeta donde GoldHEN ya
+  escribe sin problemas;
+- hay una segunda vía, `traza.txt`, escrita con `fopen` de libc (como la
+  v2.23) desde `module_start`: si una vía falla, la otra muestra hasta dónde
+  llegó el plugin;
+- Diagnóstico muestra la última línea de la traza y cuántas hay; el reporte
+  incluye el final de `traza.txt`; la app sigue leyendo los registros viejos
+  de `/data/vcfg_nx/logs` si no hay nuevos;
+- "Limpiar todo y reinstalar" también borra la carpeta nueva; los permisos
+  quedan en 0777.
+
+Los ajustes (`config.ini`, `<ID>.ini`) siguen en `/data/vcfg_nx`.
 
 ## Novedades de la 2.54
 

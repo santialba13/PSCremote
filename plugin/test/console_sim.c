@@ -300,7 +300,7 @@ int main(int argc, char** argv)
     CHECK(I()->full_ready, "no se activaron los efectos");
     CHECK(I()->our_jobs > 1500, "pocos trabajos propios (%llu)", (unsigned long long)I()->our_jobs);
     CHECK(C.flips >= 2700 + (int)I()->our_jobs - 10, "faltan flips: %d", C.flips);
-    CHECK(strstr(find_file("/data/vcfg_nx/guard-CUSA00207.txt")->data, "state=ok") != NULL, "la sesion no quedo marcada ok");
+    CHECK(strstr(find_file("/data/GoldHEN/vcfg_nx/guard-CUSA00207.txt")->data, "state=ok") != NULL, "la sesion no quedo marcada ok");
     common_checks();
 
     // 2. poca memoria: el juego deja 150 MiB libres (menos que la reserva + lo necesario)
@@ -351,7 +351,7 @@ int main(int argc, char** argv)
     // 4. cierre del juego con efectos activos -> la proxima sesion arranca en modo seguro
     boot(&bb, 0);
     play(&bb, 900, 0);   // efectos activos, todavia no "estable"
-    CHECK(strstr(find_file("/data/vcfg_nx/guard-CUSA00207.txt")->data, "pending") != NULL, "sin marca pendiente");
+    CHECK(strstr(find_file("/data/GoldHEN/vcfg_nx/guard-CUSA00207.txt")->data, "pending") != NULL, "sin marca pendiente");
     boot(&bb, 1);        // "se cerro": nueva sesion conservando /data
     play(&bb, 1500, 0);
     report("4. sesion tras un cierre: modo seguro");
@@ -524,7 +524,7 @@ int main(int argc, char** argv)
     play(&bb, 1200, 0);
     CHECK(I()->hq == 0, "Auto en PS4 normal deberia usar el modelo Rapido");
     sim_write("/data/vcfg_nx/CUSA00207.ini", "sr_model = 2\n", 13);
-    sim_write("/data/vcfg_nx/guard-CUSA00207.txt", "state=ok\ncrashes=0\n", 19);   // salio bien
+    sim_write("/data/GoldHEN/vcfg_nx/guard-CUSA00207.txt", "state=ok\ncrashes=0\n", 19);   // salio bien
     boot(&bb, 1);
     play(&bb, 1200, 0);
     report("15. modelo IA (Auto / Calidad)");
@@ -533,7 +533,7 @@ int main(int argc, char** argv)
 
     // 16. temperatura: sube por encima del limite, luego critica, luego enfria
     sim_write("/data/vcfg_nx/CUSA00207.ini", "fps_counter = 1\n", 16);
-    sim_write("/data/vcfg_nx/guard-CUSA00207.txt", "state=ok\ncrashes=0\n", 19);
+    sim_write("/data/GoldHEN/vcfg_nx/guard-CUSA00207.txt", "state=ok\ncrashes=0\n", 19);
     boot(&bb, 1);
     C.temp = 65;
     play(&bb, 1200, 0);
@@ -560,7 +560,7 @@ int main(int argc, char** argv)
 
     // 17. modo ahorro: sin modelo Calidad ni SMAA aunque sea PS4 Pro
     sim_write("/data/vcfg_nx/CUSA00207.ini", "eco = 1\n", 8);
-    sim_write("/data/vcfg_nx/guard-CUSA00207.txt", "state=ok\ncrashes=0\n", 19);
+    sim_write("/data/GoldHEN/vcfg_nx/guard-CUSA00207.txt", "state=ok\ncrashes=0\n", 19);
     boot_pro = 1;
     boot(&bb, 1);
     play(&bb, 1200, 0);
@@ -569,7 +569,7 @@ int main(int argc, char** argv)
     uint64_t eco_groups = (C.groups_total - g0) / (I()->our_jobs - j0);
     CHECK(I()->hq == 0, "modo ahorro uso el modelo Calidad");
     sim_write("/data/vcfg_nx/CUSA00207.ini", "eco = 0\n", 8);
-    sim_write("/data/vcfg_nx/guard-CUSA00207.txt", "state=ok\ncrashes=0\n", 19);
+    sim_write("/data/GoldHEN/vcfg_nx/guard-CUSA00207.txt", "state=ok\ncrashes=0\n", 19);
     boot(&bb, 1);
     play(&bb, 1200, 0);
     g0 = C.groups_total; j0 = I()->our_jobs;
@@ -583,7 +583,7 @@ int main(int argc, char** argv)
     common_checks();
 
     // 18. interruptor general desde el menu: todo apagado y despues vuelve
-    sim_write("/data/vcfg_nx/guard-CUSA00207.txt", "state=ok\ncrashes=0\n", 19);
+    sim_write("/data/GoldHEN/vcfg_nx/guard-CUSA00207.txt", "state=ok\ncrashes=0\n", 19);
     sim_write("/data/vcfg_nx/CUSA00207.ini", "effects = 1\n", 12);
     boot(&bb, 1);
     play(&bb, 1200, 0);
@@ -606,7 +606,7 @@ int main(int argc, char** argv)
     common_checks();
 
     // 19. registro de a un buffer por llamada (y un handle de otra salida que se ignora)
-    sim_write("/data/vcfg_nx/guard-CUSA00207.txt", "state=ok\ncrashes=0\n", 19);
+    sim_write("/data/GoldHEN/vcfg_nx/guard-CUSA00207.txt", "state=ok\ncrashes=0\n", 19);
     sim_write("/data/vcfg_nx/CUSA00207.ini", "effects = 1\n", 12);
     boot(&bb, 1);
     {
@@ -629,12 +629,12 @@ int main(int argc, char** argv)
     CHECK(I()->state == NX_ST_RUN && I()->full_ready && I()->our_jobs > 1000, "no se activo con buffers registrados de a uno");
     CHECK(sim_loglen > 0 && strstr(sim_logfile, "RegisterBuffers") && strstr(sim_logfile, "[flip]"),
           "el registro del juego no se escribio");
-    CHECK(!strcmp(sim_logpath, "/data/vcfg_nx/logs/CUSA00207.log"), "ruta del registro: %s", sim_logpath);
+    CHECK(!strcmp(sim_logpath, "/data/GoldHEN/vcfg_nx/CUSA00207.log"), "ruta del registro: %s", sim_logpath);
     common_checks();
 
     // 20. sondeo propio del mando: el combo funciona aunque el juego no lea con
     // los hooks; con el menu abierto los hooks siguen filtrando
-    sim_write("/data/vcfg_nx/guard-CUSA00207.txt", "state=ok\ncrashes=0\n", 19);
+    sim_write("/data/GoldHEN/vcfg_nx/guard-CUSA00207.txt", "state=ok\ncrashes=0\n", 19);
     boot(&bb, 1);
     nx_engine_pad_polled(1);
     play(&bb, 1200, 0);
@@ -660,7 +660,7 @@ int main(int argc, char** argv)
     printf("  21. L3+R3 sin pantalla: \"%s\"\n", C.last_notify);
 
     // 22. primero registra una superficie en formato no soportado y despues la pantalla real
-    sim_write("/data/vcfg_nx/guard-CUSA00207.txt", "state=ok\ncrashes=0\n", 19);
+    sim_write("/data/GoldHEN/vcfg_nx/guard-CUSA00207.txt", "state=ok\ncrashes=0\n", 19);
     boot(&bb, 1);
     for (int i = 0; i < 16; ++i) C.registered[i] = 0;
     nx_engine_init(&PF, bb.title);
@@ -680,7 +680,7 @@ int main(int argc, char** argv)
     // 23. GTA V: el juego se queda con casi toda la memoria directa al arrancar
     //     (quedan 20 MiB). Sin la reserva temprana no habria ni menu; con ella
     //     (4 MiB base + 112 de trabajo, hecha al cargar el plugin) anda todo.
-    sim_write("/data/vcfg_nx/guard-CUSA00411.txt", "state=ok\ncrashes=0\n", 19);
+    sim_write("/data/GoldHEN/vcfg_nx/guard-CUSA00411.txt", "state=ok\ncrashes=0\n", 19);
     game_t gta = bb; gta.title = "CUSA00411"; gta.game_mb = bb.pool_mb - 20;
     boot(&gta, 1);
     play(&gta, 2400, 0);
