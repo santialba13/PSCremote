@@ -23,7 +23,7 @@
 attr_public const char* g_pluginName = "vcfg_nx";
 attr_public const char* g_pluginDesc = "Frame generation + reescalado IA (NXSR) + SMAA/FSR1, menu L3+R3";
 attr_public const char* g_pluginAuth = "VCFG-NX";
-attr_public u32 g_pluginVersion = 0x00000251; // 2.51
+attr_public u32 g_pluginVersion = 0x00000252; // 2.52
 
 // prototipos de las variantes ForWorkload (OpenOrbis las declara sin argumentos)
 typedef s32 (*submit_wl_t)(u64, u32, void**, u32*, void**, u32*);
@@ -198,6 +198,7 @@ static void pf_log(const char* msg) { final_printf("%s", msg); }
 #define K_APPEND 0x0008
 #define K_CREAT 0x0200
 #define K_TRUNC 0x0400
+#define K_FSYNC 0x0080   // escritura sincronica: sobrevive a un apagado forzado
 
 static void make_dirs(void)
 {
@@ -240,6 +241,8 @@ static int write_flags(const char* path, const char* data, int len, int flags)
 
 static int pf_write_file(const char* path, const char* data, int len) { return write_flags(path, data, len, K_TRUNC); }
 static int pf_append_file(const char* path, const char* data, int len) { return write_flags(path, data, len, K_APPEND); }
+static int write_sync(const char* path, const char* data, int len) { return write_flags(path, data, len, K_TRUNC | K_FSYNC); }
+static int append_sync(const char* path, const char* data, int len) { return write_flags(path, data, len, K_APPEND | K_FSYNC); }
 
 // el juego corre con la GPU completa de PS4 Pro (modo Neo): alcanza para NXSR Calidad
 static int pf_is_pro(void) { return sceKernelIsNeoMode() == 1; }
@@ -283,11 +286,33 @@ s32 sceVideoOutSetFlipRate_hook(s32 handle, s32 rate)
     return HOOK_CONTINUE(sceVideoOutSetFlipRate, s32 (*)(s32, s32), handle, nx_engine_on_set_flip_rate(handle, rate));
 }
 
+// El hilo propio (mando, avisos, etapas) recien arranca cuando el juego ya
+// presento ~10 s de imagen, como VCFG v2.23 ("pad poll thread" desde la
+// activacion, no desde plugin_load). Arrancarlo en plugin_load llamaba a
+// UserService/Pad mientras el juego todavia se inicializaba.
+static volatile int g_pad_run;
+static OrbisPthread g_pad_thread;
+static int g_thread_tried;
+static void* pad_thread(void* arg);
+static void after_game_flip(void)
+{
+    if (g_thread_tried) return;
+    uint64_t f = nx_engine_info()->flips;
+    if (f == 1) boot_stage(g_title_s, "primer fotograma del juego");
+    if (f < 300) return;
+    g_thread_tried = 1;
+    g_pad_run = 1;
+    if (scePthreadCreate(&g_pad_thread, NULL, pad_thread, NULL, "vcfg_nx_pad") != 0) g_pad_run = 0;
+    boot_stage(g_title_s, g_pad_run ? "300 fotogramas: hilo del plugin iniciado" : "300 fotogramas: el hilo no se pudo crear");
+}
+
 s32 sceGnmSubmitAndFlipCommandBuffers_hook(u32 count, void** dcb, u32* dcb_sz, void** ccb, u32* ccb_sz,
                                            u32 handle, u32 index, u32 mode, u64 arg)
 {
     nx_submit_t s = { count, dcb, dcb_sz, ccb, ccb_sz, handle, index, mode, (int64_t)arg, 0, 0, 0 };
-    return nx_engine_on_submit_flip(&s);
+    s32 r = nx_engine_on_submit_flip(&s);
+    after_game_flip();
+    return r;
 }
 
 // juegos que presentan desde la CPU: su trabajo de GPU ya esta en la cola, asi
@@ -295,14 +320,18 @@ s32 sceGnmSubmitAndFlipCommandBuffers_hook(u32 count, void** dcb, u32* dcb_sz, v
 s32 sceVideoOutSubmitFlip_hook(s32 handle, s32 index, u32 mode, s64 arg)
 {
     nx_submit_t s = { 0, NULL, NULL, NULL, NULL, (u32)handle, (u32)index, mode, arg, 0, 0, 1 };
-    return nx_engine_on_submit_flip(&s);
+    s32 r = nx_engine_on_submit_flip(&s);
+    after_game_flip();
+    return r;
 }
 
 s32 sceGnmSubmitAndFlipCommandBuffersForWorkload_hook(u64 workload, u32 count, void** dcb, u32* dcb_sz, void** ccb,
                                                       u32* ccb_sz, u32 handle, u32 index, u32 mode, s64 arg)
 {
     nx_submit_t s = { count, dcb, dcb_sz, ccb, ccb_sz, handle, index, mode, arg, workload, 1, 0 };
-    return nx_engine_on_submit_flip(&s);
+    s32 r = nx_engine_on_submit_flip(&s);
+    after_game_flip();
+    return r;
 }
 
 static void pad_filter(OrbisPadData* d)
@@ -350,9 +379,6 @@ s32 scePadReadExt_hook(s32 handle, OrbisPadData* data, s32 count)
 // hilo propio: lee el mando del usuario cada ~16 ms con la funcion original
 // (sin pasar por nuestros hooks), asi L3+R3 funciona aunque el juego lea el
 // mando de una forma que no vemos. Tambien hace el diagnostico periodico.
-static volatile int g_pad_run;
-static OrbisPthread g_pad_thread;
-
 static void* pad_thread(void* arg)
 {
     (void)arg;
@@ -365,11 +391,10 @@ static void* pad_thread(void* arg)
             nx_engine_tick();
             next_tick = t + 1000000;
             const nx_engine_info_t* inf = nx_engine_info();
-            if (inf->flips && !(seen & 1)) { seen |= 1; boot_stage(g_title_s, "primer fotograma del juego"); }
             if (inf->state >= NX_ST_WARMUP && !(seen & 2)) { seen |= 2; boot_stage(g_title_s, "pantalla del juego registrada"); }
             if (inf->state == NX_ST_RUN && !(seen & 4)) { seen |= 4; boot_stage(g_title_s, "menu listo"); }
             if (inf->full_ready && !(seen & 8)) { seen |= 8; boot_stage(g_title_s, "efectos activos"); }
-            if (!boot_ok && (nx_engine_info()->flips > 900 || (g_level >= 2 && t > 60000000))) {
+            if (!boot_ok && nx_engine_info()->flips > 900) {
                 boot_ok = 1;
                 boot_level_ok();
                 boot_stage(g_title_s, "jugando: arranque correcto");
@@ -422,7 +447,7 @@ static void boot_stage(const char* title, const char* what)
 {
     char m[160];
     int n = snprintf(m, sizeof m, "[etapa] %s nivel %d: %s\n", title, g_level, what);
-    if (n > 0) pf_append_file("/data/vcfg_nx/logs/cargas.txt", m, n);
+    if (n > 0) append_sync("/data/vcfg_nx/logs/cargas.txt", m, n);
 }
 
 static void boot_level_pick(const char* title)
@@ -431,25 +456,27 @@ static void boot_level_pick(const char* title)
     char prev[64] = { 0 };
     int n = pf_read_file(g_boot_path, prev, sizeof prev - 1);
     int lv = 0, pending = 0;
-    if (n > 0) {
+    char ver[16];
+    snprintf(ver, sizeof ver, "ver=%x ", (unsigned)g_pluginVersion);
+    if (n > 0 && !strncmp(prev, ver, strlen(ver))) {   // de otra version: se vuelve a empezar desde 0
         const char* l = strstr(prev, "level=");
         lv = l ? atoi(l + 6) : 0;
-        pending = l && strstr(prev, "state=pending") != NULL;   // los archivos de la 2.48 o antes no cuentan
+        pending = l && strstr(prev, "state=pending") != NULL;
     }
     if (lv < 0 || lv >= BOOT_LEVELS) lv = 0;
     if (pending && lv < BOOT_LEVELS - 1) lv++;   // el anterior se cerro antes de jugar: mas prudente
 
     g_level = lv;
-    char t[48];
-    int k = snprintf(t, sizeof t, "level=%d state=pending\n", lv);
-    pf_write_file(g_boot_path, t, k);
+    char t[64];
+    int k = snprintf(t, sizeof t, "ver=%x level=%d state=pending\n", (unsigned)g_pluginVersion, lv);
+    write_sync(g_boot_path, t, k);
 }
 
 static void boot_level_ok(void)
 {
-    char t[48];
-    int k = snprintf(t, sizeof t, "level=%d state=ok\n", g_level);
-    pf_write_file(g_boot_path, t, k);
+    char t[64];
+    int k = snprintf(t, sizeof t, "ver=%x level=%d state=ok\n", (unsigned)g_pluginVersion, g_level);
+    write_sync(g_boot_path, t, k);
 }
 
 static void early_reserve(const char* title)
@@ -507,8 +534,7 @@ s32 attr_public plugin_load(s32 argc, const char* argv[])
     boot_stage(title, "configuracion leida");
     if (g_level >= 2) {   // pasivo: solo se deja constancia; si el juego igual se cierra, no es el plugin
         boot_stage(title, "pasivo: sin hooks");
-        g_pad_run = 1;
-        if (scePthreadCreate(&g_pad_thread, NULL, pad_thread, NULL, "vcfg_nx_pad") != 0) g_pad_run = 0;
+        boot_level_ok();   // en pasivo el plugin no toca nada: no hay nada mas prudente
         return 0;
     }
     early_reserve(title);
@@ -523,9 +549,7 @@ s32 attr_public plugin_load(s32 argc, const char* argv[])
     // solo lo lee el hilo propio. El juego sigue recibiendo los botones con el
     // menu abierto, pero no se toca nada de su lectura del mando.
     g_hooked = 1;
-    g_pad_run = 1;
-    int tr = scePthreadCreate(&g_pad_thread, NULL, pad_thread, NULL, "vcfg_nx_pad");
-    if (tr != 0) g_pad_run = 0;
+    int tr = 0;   // el hilo se crea despues (after_game_flip)
     char m[160];
     snprintf(m, sizeof m, "[main] plugin %x.%02x cargado en %s; hooks listos; hilo del mando rc=0x%08x; temperatura %s\n",
              g_pluginVersion >> 8, g_pluginVersion & 0xFF, title, (unsigned)tr,
