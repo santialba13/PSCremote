@@ -91,7 +91,8 @@ static int sim_register(int handle, int start, void* const* addrs, int num, cons
     return 0;
 }
 
-static int sim_rate(int h, int r) { (void)h; (void)r; return 0; }
+static int rate_calls;
+static int sim_rate(int h, int r) { (void)h; (void)r; ++rate_calls; return 0; }
 
 static void gpu_resolve(void)
 {
@@ -483,6 +484,12 @@ int main(int argc, char** argv)
     CHECK(I()->state == NX_ST_RUN && I()->level > 0 && I()->level < I()->level_max,
           "deberia quedar activo con calidad parcial (nivel -%d de %d)", I()->level, I()->level_max);
     uint64_t st12 = I()->stalls;
+    {   // con atrasos sueltos la salida no salta entre 30 y 60 Hz en cada fotograma
+        int rc0 = rate_calls;
+        play(&bb, 1000, 0);
+        CHECK(rate_calls - rc0 <= 4, "la tasa de salida cambio %d veces en 1000 fotogramas", rate_calls - rc0);
+        st12 = I()->stalls;
+    }
     CHECK(st12 < 60, "demasiados fotogramas atrasados (%llu)", (unsigned long long)st12);
     jobs_before = I()->our_jobs;
     play(&bb, 3000, 0);

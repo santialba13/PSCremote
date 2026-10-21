@@ -1,4 +1,4 @@
-# VCFG-NX 2.68: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
+# VCFG-NX 2.69: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
 
 Rediseño del **VCFG v2.14** (generador de fotogramas en beta de la comunidad
 de GoldHEN) que además incorpora un **modelo de reescalado/realce propio,
@@ -64,6 +64,17 @@ botones mientras está abierto):
   RCAS, contador de FPS (con temperatura) y comparar.
 * Arriba se ven los FPS, la temperatura y el estado (activo, calidad dinámica,
   calor). **Guardar** deja todo para ese juego; **O** cierra.
+
+## Novedades de la 2.69
+
+**La salida a 60 Hz ya no se prende y apaga en cada fotograma.** Para que la
+generación sirva, el plugin fuerza `sceVideoOutSetFlipRate(0)` (GTA V pide 1:
+30 Hz). Antes se soltaba en cualquier fotograma sin generación (por ejemplo tras
+un atraso de la GPU) y se volvía a forzar en el siguiente: la salida saltaba
+entre 30 y 60 Hz. Ahora queda forzada mientras la generación esté en uso y se
+suelta recién tras ~2 s seguidos sin ella. Cada cambio queda en el registro.
+
+El menú muestra la tasa de salida en la primera línea ("fps · GPU x ms · 60Hz").
 
 ## Novedades de la 2.68
 

@@ -107,7 +107,7 @@ static struct {
     uint32_t seq, slot_seq[2];
     uint64_t last_flip_us, stable_flips;
     int stall_run, guard_marked;
-    int game_rate, rate_forced;
+    int game_rate, rate_forced, nofg_run;
     // mando
     uint64_t combo_since;
     uint32_t last_buttons;
@@ -587,8 +587,11 @@ static void build_menu_text(void)
     // titulo + fps/temperatura
     osd_clear(t, a, 0);
     osd_put(t, a, 0, 1, A_TITLE, "VCFG-NX");
-    char g[24] = "";
+    char g[40] = "";
     if (E.info.gpu_ms > 0.0f) snprintf(g, sizeof g, "  GPU %.1f ms", (double)E.info.gpu_ms);
+    // tasa de salida: 60 Hz forzada (generacion) o la que pidio el juego (1 = 30 Hz)
+    int hz = E.rate_forced || E.game_rate <= 0 ? 60 : E.game_rate == 1 ? 30 : 20;
+    snprintf(g + strlen(g), sizeof g - strlen(g), "  %dHz", hz);
     if (E.info.temp_c > 0) snprintf(l, sizeof l, "%.0f fps%s  %d\xb0" "C", E.info.game_fps, g, E.info.temp_c);
     else snprintf(l, sizeof l, "%.0f fps%s", E.info.game_fps, g);
     osd_put(t, a, 0, OSD_COLS - 1 - (int)strlen(l), A_DIM, l);
@@ -780,9 +783,21 @@ static int flip_index(const nx_submit_t* game, int index, uint32_t mode)
 
 static void set_rate_forced(int on)
 {
+    if (on) E.nofg_run = 0;
     if (on == E.rate_forced || !E.pf->set_flip_rate) return;
     E.rate_forced = on;
-    E.pf->set_flip_rate(E.handle, on ? 0 : (E.game_rate >= 0 ? E.game_rate : 0));
+    int r = E.pf->set_flip_rate(E.handle, on ? 0 : (E.game_rate >= 0 ? E.game_rate : 0));
+    logf_("[flip] tasa de salida %s (juego pidio %d) = 0x%08x\n", on ? "60 Hz (forzada)" : "la del juego", E.game_rate,
+          (unsigned)r);
+}
+
+// un fotograma sin generacion: la salida a 60 Hz se suelta recien tras ~2 s
+// seguidos sin ella. Cambiar la tasa en cada fotograma (pasaba con cada atraso
+// de la GPU) hacia saltar la salida entre 30 y 60 Hz: tirones y menos fps.
+static void rate_idle(void)
+{
+    if (E.rate_forced && ++E.nofg_run < 120) return;
+    set_rate_forced(0);
 }
 
 const nx_engine_info_t* nx_engine_info(void) { return &E.info; }
@@ -1002,7 +1017,7 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
             log_flush();
         }
         E.prev_idx = -1;
-        set_rate_forced(0);
+        rate_idle();
         return passthrough_why(s, why);
     }
 
@@ -1022,7 +1037,7 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
     int osd_menu = E.info.menu_open, osd_fps = E.cfg.fps_counter;
     if (!want_fg && !want_post && !osd_menu && !osd_fps) {
         E.prev_idx = -1;
-        set_rate_forced(0);
+        rate_idle();
         // con todo bajado por la calidad dinamica no hay trabajo propio: se mira
         // si la GPU ya se puso al dia para volver a subir
         if (E.info.level > 0) {
@@ -1197,7 +1212,7 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
             stage("efectos: primer fotograma generado (flips 0x%08x 0x%08x)", (unsigned)rc, (unsigned)rc2);
         }
     } else {
-        set_rate_forced(0);
+        rate_idle();
         all.index = (uint32_t)real_idx;
         rc = E.pf->submit_flip(&all);
     }
