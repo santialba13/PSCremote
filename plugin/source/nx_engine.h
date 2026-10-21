@@ -49,6 +49,12 @@ typedef struct {
     int (*temp_c)(void);                                    // temperatura del procesador en grados C, < 0 si no se sabe (puede ser NULL)
     size_t (*pool_free)(int base);                          // bytes libres de la reserva temprana (base = 1: la del menu); puede ser NULL
     void (*stage)(const char* msg);                         // hito anotado al instante (traza); puede ser NULL
+    // memoria que escribe la CPU y lee la GPU (WB_ONION, coherente; tablas y DCBs de la
+    // generacion VCFG); NULL = usar alloc_gpu
+    void* (*alloc_shared)(size_t len, size_t align);
+    // sceGnmInsertWaitFlipDone: 7 dwords en cmd para que la GPU espere a que el buffer
+    // no este en pantalla; 0 = ok. NULL = no hay
+    int (*wait_flip_done)(uint32_t* cmd, uint32_t ndw, int32_t handle, uint32_t index);
 } nx_platform_t;
 
 typedef enum {

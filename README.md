@@ -1,4 +1,4 @@
-# VCFG-NX 2.70: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
+# VCFG-NX 2.71: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
 
 Rediseño del **VCFG v2.14** (generador de fotogramas en beta de la comunidad
 de GoldHEN) que además incorpora un **modelo de reescalado/realce propio,
@@ -64,6 +64,41 @@ botones mientras está abierto):
   RCAS, contador de FPS (con temperatura) y comparar.
 * Arriba se ven los FPS, la temperatura y el estado (activo, calidad dinámica,
   calor). **Guardar** deja todo para ese juego; **O** cierra.
+
+## Novedades de la 2.71
+
+**Generación de fotogramas de VCFG (motor clásico) portada al plugin.** Con la
+2.69/2.70 en GTA V (PS4 Slim) la generación propia funcionaba (salida a 60 Hz)
+pero costaba ~62 ms de GPU por fotograma: el juego caía a 12 fps. VCFG
+(github.com/Melnikoff07/vcfg, licencia MIT) lleva GTA V de 30 a 60 en una PS4
+base con ~3-4 ms. Su código es abierto, así que la generación se porta tal cual
+(crédito y licencia en `plugin/vcfg8/`):
+
+- **Shaders de VCFG** (`pyr8`, `me3`, `me2`, `gm8`, `fgs8`, `me1`, `mf8`,
+  `phase8`, `warp8`), compilados desde sus fuentes `.ll` con su propio
+  `gen_shaders.py` → `plugin/include/vcfg8_shaders.h`.
+- **`nx_fg8.c`**: portado de `build_dcb_flow8` / `fg8_table.h` / `fg_res.h`.
+  Pirámide de luma fija (960x540, 480x270, 240x135; solo la del fotograma
+  actual, la anterior por paridad), estimación de movimiento de grueso a fino,
+  fase y warp a resolución completa. Prólogo y epílogo de VCFG: el CP (no la CPU)
+  espera el fin del trabajo del juego, `ACQUIRE_MEM` de color/L2/K$, y
+  `sceGnmInsertWaitFlipDone` sobre el intermedio justo antes del warp.
+- **Presentación como VCFG:** un envío con los DCB del juego (sin su cola) + el
+  nuestro (con la cola copiada) y flip al **intermedio**; después un envío con la
+  cola sola y flip al **buffer del juego**, con el mismo `flipMode` y `flipArg`
+  del juego. **3 intermedios** con el formato, tiling y pitch del juego,
+  rotando; 4 slots de trabajo (la CPU casi nunca espera).
+- **El juego queda a 30 parejo** con la salida forzada a 60 Hz (como el
+  `fps_lock 30` de VCFG): entre envíos pasan al menos 33 ms.
+- **Menú y contador sin parpadeo:** se dibujan en el intermedio y en el real en
+  el mismo trabajo, y el warp toma el fotograma actual dentro del rectángulo del
+  menú (protección de overlay de `warp8`).
+- Menú: **Generación de fotogramas: OFF / VCFG / IA.** VCFG es la de por defecto;
+  con ella el reescalado, el SMAA y la nitidez no se aplican (como en VCFG) y no
+  se reserva su memoria. "IA" es la generación con NXFlow (pesada).
+- Simulador: escenario 28 (flip intermedio + real por fotograma, colas, 60 Hz,
+  pausa con la GPU trabada, sin memoria no se activa). Los escenarios de la
+  calidad dinámica usan la generación IA.
 
 ## Novedades de la 2.70
 

@@ -21,7 +21,7 @@ size_t nx_osd_mem_size(void)
     const nx_shader_t* a = nx_find_shader("osd_draw");
     const nx_shader_t* b = nx_find_shader("copy_rect");
     size_t code = (a ? a->code_dwords * 4 : 0) + (b ? b->code_dwords * 4 : 0);
-    return (code + 512 + 255) / 256 * 256 + 2 * RING_BYTES;
+    return (code + 512 + 255) / 256 * 256 + NX_OSD_RINGS * RING_BYTES;
 }
 
 int nx_osd_init(nx_osd_ctx_t* o, uint8_t* cpu, uint64_t gpu)
@@ -37,7 +37,7 @@ int nx_osd_init(nx_osd_ctx_t* o, uint8_t* cpu, uint64_t gpu)
     memcpy(cpu + off, o->sh_copy->code, o->sh_copy->code_dwords * 4);
     o->code_copy = gpu + off;
     off = (off + o->sh_copy->code_dwords * 4 + 255) / 256 * 256;
-    for (int s = 0; s < 2; ++s) {
+    for (int s = 0; s < NX_OSD_RINGS; ++s) {
         o->ring[s] = (nx_ring_t){ cpu + off, gpu + off, RING_BYTES, 0 };
         off += RING_BYTES;
     }

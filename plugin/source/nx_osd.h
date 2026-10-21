@@ -17,11 +17,13 @@ typedef struct {
 // tamano del panel en pixeles (para centrarlo)
 void nx_osd_panel_size(int cols, int rows, int scale, int* w, int* h);
 
+#define NX_OSD_RINGS 6
+
 typedef struct {
     const nx_shader_t* sh_draw;
     const nx_shader_t* sh_copy;
     uint64_t code_draw, code_copy;
-    nx_ring_t ring[2];         // kernargs + descriptores por slot
+    nx_ring_t ring[NX_OSD_RINGS];   // kernargs + descriptores: 0-1 motor, 2-5 generacion VCFG (nx_fg8)
 } nx_osd_ctx_t;
 
 size_t nx_osd_mem_size(void);

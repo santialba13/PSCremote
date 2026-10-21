@@ -60,7 +60,7 @@ static void trace(const char* line)
 attr_public const char* g_pluginName = "vcfg_nx";
 attr_public const char* g_pluginDesc = "Frame generation + reescalado IA (NXSR) + SMAA/FSR1, menu L3+R3";
 attr_public const char* g_pluginAuth = "VCFG-NX";
-attr_public u32 g_pluginVersion = 0x00000270; // 2.70
+attr_public u32 g_pluginVersion = 0x00000271; // 2.71
 
 // prototipos de las variantes ForWorkload (OpenOrbis las declara sin argumentos)
 typedef s32 (*submit_wl_t)(u64, u32, void**, u32*, void**, u32*);
@@ -105,12 +105,12 @@ static int32_t dm_alloc(off_t lo, off_t hi, size_t len, size_t align, int type, 
     return sceKernelAllocateDirectMemory(lo, hi, len, align, type, out);
 }
 
-static void* map_new(size_t len, size_t align, off_t* phys_out)
+static void* map_type(size_t len, size_t align, off_t* phys_out, int type)
 {
     off_t phys = 0;
     void* va = NULL;
     len = (len + 0xFFFF) & ~(size_t)0xFFFF;
-    if (dm_alloc(0, sceKernelGetDirectMemorySize(), len, align, ORBIS_KERNEL_WC_GARLIC, &phys) != 0) return NULL;
+    if (dm_alloc(0, sceKernelGetDirectMemorySize(), len, align, type, &phys) != 0) return NULL;
     if (sceKernelMapDirectMemory(&va, len, ORBIS_KERNEL_PROT_CPU_RW | ORBIS_KERNEL_PROT_GPU_RW, 0, phys, align) != 0) {
         sceKernelReleaseDirectMemory(phys, len);
         return NULL;
@@ -118,6 +118,7 @@ static void* map_new(size_t len, size_t align, off_t* phys_out)
     if (phys_out) *phys_out = phys;
     return va;   // en PS4 la direccion virtual de CPU es la misma que ve la GPU
 }
+static void* map_new(size_t len, size_t align, off_t* phys_out) { return map_type(len, align, phys_out, ORBIS_KERNEL_WC_GARLIC); }
 
 static int pool_init(pool_t* p, size_t len)
 {
@@ -143,6 +144,20 @@ static void* pf_alloc_gpu(size_t len, size_t align)
     void* r = len <= (2u << 20) ? pool_take(&g_base, len, align) : NULL;
     if (!r && !g_work_given_back) r = pool_take(&g_work, len, align);
     return r ? r : map_new(len, align, NULL);
+}
+
+// tablas y DCBs que la CPU escribe en cada fotograma (como el slab de VCFG)
+static void* pf_alloc_shared(size_t len, size_t align)
+{
+    if (align < 65536) align = 65536;
+    return map_type(len, align, NULL, 0 /* WB_ONION */);
+}
+
+// OpenOrbis la declara sin argumentos: en el sistema es (cmd, numDwords, handle, indice)
+typedef int32_t (*wait_flip_done_fn)(uint32_t*, uint32_t, int32_t, uint32_t);
+static int pf_wait_flip_done(uint32_t* cmd, uint32_t ndw, int32_t handle, uint32_t index)
+{
+    return ((wait_flip_done_fn)sceGnmInsertWaitFlipDone)(cmd, ndw, handle, index);
 }
 
 static size_t raw_avail(void)
@@ -321,7 +336,7 @@ static void pf_stage(const char* m) { boot_stage(g_title_s, m); }
 static const nx_platform_t g_pf = {
     pf_alloc_gpu, pf_avail_direct, pf_register, pf_set_flip_rate, pf_submit, pf_submit_flip,
     pf_now_us, pf_sleep_us, pf_notify, pf_log, pf_read_file, pf_write_file, pf_append_file, pf_is_pro, pf_temp_c,
-    pf_pool_free, pf_stage,
+    pf_pool_free, pf_stage, pf_alloc_shared, pf_wait_flip_done,
 };
 
 // ----------------------------------------------------------------- hooks

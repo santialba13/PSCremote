@@ -38,7 +38,7 @@ HOSTK = kernels_host.o fsr1_host.o smaa_host.o nxsr_host.o nxsr_hq_host.o osd_ho
 gpu_emu: gpu_emu.c $(HOSTK) $(PORTABLE) $(HEADERS)
 	$(CC) $(CFLAGS) -Wno-unused-parameter -I../source -o $@ gpu_emu.c $(HOSTK) $(PORTABLE) -lm
 
-ENGINE = ../source/nx_engine.c ../source/config.c $(PORTABLE)
+ENGINE = ../source/nx_engine.c ../source/config.c ../source/nx_fg8.c $(PORTABLE)
 
 console_sim: console_sim.c $(ENGINE) $(HEADERS) ../source/nx_engine.h
 	gcc -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -Wall -Wextra -Wno-unused-parameter \

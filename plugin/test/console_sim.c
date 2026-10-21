@@ -38,6 +38,7 @@ static struct {
     int temp;                         // grados C (0 = el sistema no la informa)
     uint64_t groups_total;
     int game_dcb_submits, flips, bad_flips, our_dcbs, bad_dcbs, bad_tail, plain_with_ours;
+    int mid_flips, pairs, last_mid, game_nbuf;
     int last_flip_index;
     file_t files[16];
     int nfiles;
@@ -166,6 +167,8 @@ static int sim_submit_flip(const nx_submit_t* s)
     process(s);
     C.flips++;
     if (s->index >= 16 || !C.registered[s->index]) C.bad_flips++;
+    if (C.game_nbuf && (int)s->index >= C.game_nbuf) { C.mid_flips++; C.last_mid = 1; }
+    else { if (C.last_mid) C.pairs++; C.last_mid = 0; }
     C.last_flip_index = (int)s->index;
     return 0;
 }
@@ -220,7 +223,7 @@ static int sim_append(const char* p, const char* d, int len)
 
 static const nx_platform_t PF = { sim_alloc, sim_avail, sim_register, sim_rate, sim_submit, sim_submit_flip,
                                   sim_now, sim_sleep, sim_notify, sim_log, sim_read, sim_write, sim_append,
-                                  sim_is_pro, sim_temp, sim_pool_free, NULL };
+                                  sim_is_pro, sim_temp, sim_pool_free, NULL, NULL, NULL };
 
 // ------------------------------------------------------------- juego
 typedef struct {
@@ -249,7 +252,9 @@ static void boot(const game_t* g, int keep_files)
     C.pro = boot_pro;
     // los escenarios se escribieron con 600 fotogramas de arranque (el valor por
     // defecto ahora es 1200: ver el escenario 24)
-    if (!find_file("/data/vcfg_nx/config.ini")) sim_write("/data/vcfg_nx/config.ini", "warmup_flips = 600\n", 19);
+    // y con la generacion IA (framegen = 2): la de VCFG (framegen = 1, la de por
+    // defecto) tiene su propio escenario (28)
+    if (!find_file("/data/vcfg_nx/config.ini")) sim_write("/data/vcfg_nx/config.ini", "warmup_flips = 600\nframegen = 2\n", 32);
     nx_engine_init(&PF, g->title);
     free(g_fb);
     g_fb = calloc(1, 4096);
@@ -257,6 +262,7 @@ static void boot(const game_t* g, int keep_files)
     for (int i = 0; i < g->nbuf; ++i) addrs[i] = g_fb + i * 256;
     nx_vo_attr_t a = { g->format, 0, 0, (uint32_t)g->W, (uint32_t)g->H, (uint32_t)((g->W + 63) / 64 * 64) };
     int rc = sim_register(0, 0, addrs, g->nbuf, &a);
+    C.game_nbuf = g->nbuf;
     nx_engine_on_register(0, 0, addrs, g->nbuf, &a, rc);
 }
 
@@ -347,7 +353,7 @@ int main(int argc, char** argv)
 
     // 3b. GPU trabada con el contador de FPS (queda trabajo propio): pausa y reintento
     boot(&bb, 0);
-    sim_write("/data/vcfg_nx/config.ini", "fps_counter = 1\nwarmup_flips = 600\n", 35);
+    sim_write("/data/vcfg_nx/config.ini", "fps_counter = 1\nwarmup_flips = 600\nframegen = 2\n", 48);
     nx_engine_init(&PF, bb.title);
     {
         void* ad[2] = { g_fb, g_fb + 256 };
@@ -413,7 +419,7 @@ int main(int argc, char** argv)
     for (int k = 0; k < 9; ++k) { pad_buttons = 0x0040; play(&bb, 1, 0); pad_buttons = 0; play(&bb, 1, 0); }
     pad_buttons = 0x4000; play(&bb, 1, 0); pad_buttons = 0; play(&bb, 1, 0);   // X en "Guardar"
     file_t* ini = find_file("/data/vcfg_nx/CUSA00207.ini");
-    CHECK(ini && strstr(ini->data, "effects = 0") && strstr(ini->data, "framegen = 1") && strstr(ini->data, "sr_model = 1"),
+    CHECK(ini && strstr(ini->data, "effects = 0") && strstr(ini->data, "framegen = 2") && strstr(ini->data, "sr_model = 1"),
           "no se guardo el ini del juego (efectos OFF, modelo Rapido)");
     pad_buttons = 0x2000; play(&bb, 1, 0); pad_buttons = 0; play(&bb, 1, 0);   // O cierra
     CHECK(!I()->menu_open, "O no cerro el menu");
@@ -790,6 +796,36 @@ int main(int argc, char** argv)
                   "parte %d: el ultimo flip deberia ser a un buffer del juego (fue %d)", caps[k], C.last_flip_index);
             common_checks();
         }
+    }
+
+    // 28. generacion de VCFG (framegen = 1, la de por defecto): por fotograma del
+    //     juego, un envio con el trabajo del juego + el nuestro y flip al intermedio, y
+    //     despues el flip del real al buffer del juego (los dos terminan en la cola)
+    {
+        sim_write("/data/vcfg_nx/config.ini", "warmup_flips = 600\nframegen = 1\nfps_counter = 1\n", 46);
+        boot(&bb, 1);
+        int rc0 = rate_calls;
+        play(&bb, 2400, 0);
+        report("28. generacion VCFG");
+        CHECK(I()->our_jobs > 1500, "pocos fotogramas generados (%llu)", (unsigned long long)I()->our_jobs);
+        CHECK(C.mid_flips > 1500 && C.pairs > 1500, "faltan flips intermedio + real (%d, %d)", C.mid_flips, C.pairs);
+        CHECK(C.last_flip_index >= 0 && C.last_flip_index < bb.nbuf, "el ultimo flip deberia ser al buffer del juego (%d)",
+              C.last_flip_index);
+        CHECK(rate_calls - rc0 >= 1, "no forzo la salida a 60 Hz");
+        CHECK(!I()->full_ready, "con solo la generacion VCFG no hace falta la memoria grande de los efectos");
+        common_checks();
+        // con la GPU trabada se pausa (y no se cuelga)
+        C.gpu_stuck = 1;
+        play(&bb, 200, 0);
+        CHECK(I()->state == NX_ST_DEGRADED, "con la GPU trabada deberia pausarse");
+        C.gpu_stuck = 0;
+        // con poca memoria no se activa
+        game_t lowm = bb; lowm.game_mb = bb.pool_mb - 100;
+        boot(&lowm, 1);
+        play(&lowm, 2400, 0);
+        report("    ...poca memoria");
+        CHECK(I()->our_jobs < 10 && C.mid_flips == 0, "con poca memoria no deberia generar (%llu)", (unsigned long long)I()->our_jobs);
+        sim_write("/data/vcfg_nx/config.ini", "warmup_flips = 600\nframegen = 2\n", 32);
     }
 
     // 10. juego que arranca en un proceso que no es un juego

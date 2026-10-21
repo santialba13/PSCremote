@@ -31,6 +31,7 @@
 
 #define NX_OSD_FONT_DATA
 #include "../include/nx_osd_font.h"
+#include "nx_fg8.h"
 #include "nx_pipeline.h"
 
 #define MAX_MID 2
@@ -124,6 +125,14 @@ static struct {
     // calidad dinamica
     int pro, announced, hdr;
     int effects_blocked;             // el arranque escalonado todavia no habilito los efectos
+    // generacion de fotogramas de VCFG (nx_fg8): 3 intermedios con el formato del juego
+    nx_fg8_t fg8;
+    int fg8_ready, fg8_failed, fg8_slot, fg8_midk, fg8_first;
+    uint32_t fg8_seq, fg8_slotseq[NX_FG8_SLOTS];
+    uint64_t fg8_next_try, pace_last_us;
+    nx_image_t fg8_mid[3];
+    int fg8_mid_index[3];
+    uint32_t own_mask;               // indices de VideoOut que registro el plugin
     int fx_cap;                      // tope de efectos (nx_engine_allow_effects)
     int fx_first_job, fx_first_fg;
     uint64_t level_since, last_stall, probe_until, degraded_at;
@@ -475,7 +484,7 @@ static int alloc_full(void)
     // nuestros indices: el bloque libre mas alto (el juego suele usar los primeros)
     int extra_first = -1;
     for (int s0 = 16 - 2 * MAX_MID; s0 >= 0 && extra_first < 0; --s0)
-        if (!((E.game_mask >> s0) & ((1u << (2 * MAX_MID)) - 1))) extra_first = s0;
+        if (!(((E.game_mask | E.own_mask) >> s0) & ((1u << (2 * MAX_MID)) - 1))) extra_first = s0;
     if (extra_first < 0) {
         set_status("sin indices libres de VideoOut");
         logf_("[mem] sin indices libres (mascara del juego 0x%04x)\n", E.game_mask);
@@ -504,6 +513,7 @@ static int alloc_full(void)
     oa.tmode = 1;   // nuestros kernels escriben en lineal
     int rc = E.pf->register_buffers(E.handle, extra_first, addrs, 2 * MAX_MID, &oa);
     if (rc < 0) { logf_("[engine] RegisterBuffers propio = 0x%08x\n", (unsigned)rc); set_status("VideoOut rechazo los buffers"); return -1; }
+    E.own_mask |= ((1u << (2 * MAX_MID)) - 1) << extra_first;
     nx_format_t fmt = E.game_img[__builtin_ctz(E.game_mask)].format;
     for (int i = 0; i < MAX_MID; ++i) {
         nx_image_t im = { (uint64_t)(uintptr_t)addrs[i], (uint32_t)E.Wo, (uint32_t)E.Ho, (uint32_t)pitch_o, fmt,
@@ -515,6 +525,69 @@ static int alloc_full(void)
     E.info.full_ready = 1;
     logf_("[engine] listo: %dx%d -> %dx%d, %zu MiB\n", E.W, E.H, E.Wo, E.Ho, total >> 20);
     stage("efectos: memoria lista %dx%d, %zu MiB, buffers propios desde el indice %d", E.Wo, E.Ho, total >> 20, extra_first);
+    return 1;
+}
+
+// lo que necesita la memoria grande de los efectos (alloc_full): reescalado, SMAA,
+// nitidez o la generacion con IA. La generacion de VCFG tiene la suya (alloc_fg8).
+static int full_wanted(void)
+{
+    if (E.hdr || E.effects_blocked || !E.cfg.effects) return 0;
+    if (E.cfg.framegen == 2) return 1;
+    // con la generacion de VCFG en uso el post-proceso no se aplica: no hace falta
+    // reservar su memoria (en GTA V cada MiB cuenta); si se apaga la generacion, si
+    if (E.cfg.framegen == 1 && E.fx_cap >= 3) return 0;
+    return E.cfg.sr || E.cfg.aa || E.cfg.rcas;
+}
+
+static int fg8_wanted(void)
+{
+    return !E.hdr && !E.effects_blocked && E.fx_cap >= 3 && E.cfg.effects && E.cfg.framegen == 1;
+}
+
+// generacion de VCFG: tablas/DCBs (memoria compartida), trabajo, y 3 intermedios
+// con el mismo formato, tiling y pitch que los buffers del juego (como VCFG)
+static int alloc_fg8(void)
+{
+    if (!E.game_mask) return 0;
+    const nx_image_t* g = &E.game_img[__builtin_ctz(E.game_mask)];
+    if (g->width != 1920 && g->width != 1280 && g->width != 1600 && g->width != 2560 && g->width != 3840) {
+        stage("generacion VCFG: resolucion %ux%u no soportada", g->width, g->height);
+        return -1;
+    }
+    size_t one = (size_t)g->pitch * ((g->height + 63u) & ~63u) * 4;
+    one = (one + 0x7FFFF) & ~(size_t)0x7FFFF;   // 512 KiB, como VCFG
+    size_t total = NX_FG8_SLAB + NX_FG8_WORK + 3 * one;
+    size_t avail = E.pf->avail_direct();
+    size_t pool = E.pf->pool_free ? E.pf->pool_free(0) : 0;
+    // el mismo margen que los demas efectos (con reserva temprana propia alcanza)
+    if (pool < total + 2 * 65536 && avail < total + (size_t)E.cfg.reserve_mb * 1048576) {
+        logf_("[fg8] hacen falta %zu MiB + %d de margen, libres %zu MiB: se reintenta\n", total >> 20, E.cfg.reserve_mb,
+              avail >> 20);
+        return 0;
+    }
+    int first = -1;
+    for (int s0 = 13; s0 >= 0 && first < 0; --s0)
+        if (!(((E.game_mask | E.own_mask) >> s0) & 7u)) first = s0;
+    if (first < 0) { stage("generacion VCFG: sin indices libres de VideoOut (0x%04x)", E.game_mask | E.own_mask); return -1; }
+    uint8_t* slab = E.pf->alloc_shared ? E.pf->alloc_shared(NX_FG8_SLAB, 65536) : E.pf->alloc_gpu(NX_FG8_SLAB, 65536);
+    uint8_t* work = slab ? E.pf->alloc_gpu(NX_FG8_WORK, 65536) : NULL;
+    uint8_t* mids = work ? E.pf->alloc_gpu(3 * one, 65536) : NULL;
+    if (!mids) { logf_("[fg8] la reserva fallo (%p %p %p)\n", (void*)slab, (void*)work, (void*)mids); return 0; }
+    if (nx_fg8_init(&E.fg8, slab, work) != 0) { stage("generacion VCFG: los shaders no entran"); return -1; }
+    void* addrs[3];
+    for (int i = 0; i < 3; ++i) {
+        addrs[i] = mids + one * (size_t)i;
+        E.fg8_mid[i] = *g;
+        E.fg8_mid[i].gpu_addr = (uint64_t)(uintptr_t)addrs[i];
+        E.fg8_mid_index[i] = first + i;
+    }
+    int rc = E.pf->register_buffers(E.handle, first, addrs, 3, &E.attr);
+    if (rc < 0) { stage("generacion VCFG: VideoOut rechazo los intermedios (0x%08x)", (unsigned)rc); return -1; }
+    E.own_mask |= 7u << first;
+    E.fg8_ready = 1;
+    stage("generacion VCFG: lista, 3 intermedios %ux%u desde el indice %d (%zu MiB)", g->width, g->height, first,
+          total >> 20);
     return 1;
 }
 
@@ -531,7 +604,13 @@ static void try_allocations(void)
             notify(E.info.safe_mode ? "VCFG-NX en modo seguro (el juego se cerro la ultima vez). L3+R3: menu"
                                 : "VCFG-NX listo. Mantener L3+R3: menu");
     }
-    if (E.info.full_ready || E.info.safe_mode || !effects_wanted() || E.retries >= MAX_RETRIES) return;
+    if (!E.info.safe_mode && fg8_wanted() && !E.fg8_ready && !E.fg8_failed && E.info.flips >= E.fg8_next_try) {
+        int r8 = alloc_fg8();
+        if (r8 < 0) E.fg8_failed = 1;
+        else if (r8 == 0) E.fg8_next_try = E.info.flips + RETRY_FLIPS;
+        else set_status("activo");
+    }
+    if (E.info.full_ready || E.info.safe_mode || !full_wanted() || E.retries >= MAX_RETRIES) return;
     int r = alloc_full();
     if (r == 1) {
         set_status("activo");
@@ -607,22 +686,24 @@ static void build_menu_text(void)
     else snprintf(l, sizeof l, "%.36s", E.info.status);
     osd_put(t, a, 1, 1, !E.cfg.effects ? A_OFF : (warn || E.effects_blocked ? A_WARN : A_ACCENT), l);
     int dim = !E.cfg.effects || E.effects_blocked;
+    // con la generacion de VCFG el post-proceso no se combina (como en VCFG)
+    int pdim = dim || (E.cfg.framegen == 1 && E.fx_cap >= 3);
     // interruptor general
     osd_item(t, a, 2 + ROW_ALL, "Todos los efectos", E.cfg.effects ? "ON" : "OFF", E.cfg.effects ? A_ON : A_ERROR, 0);
     osd_item(t, a, 2 + ROW_FG, "Generaci\xf3n de fotogramas",
-             E.cfg.framegen == 2 ? "IA" : E.cfg.framegen ? "R\xe1pida" : "OFF", E.cfg.framegen ? A_ON : A_OFF, dim);
-    osd_item(t, a, 2 + ROW_SR, "Reescalado IA (NXSR)", sr_names[E.cfg.sr & 3], E.cfg.sr ? A_ACCENT : A_OFF, dim);
+             E.cfg.framegen == 2 ? "IA" : E.cfg.framegen ? "VCFG" : "OFF", E.cfg.framegen ? A_ON : A_OFF, dim);
+    osd_item(t, a, 2 + ROW_SR, "Reescalado IA (NXSR)", sr_names[E.cfg.sr & 3], E.cfg.sr ? A_ACCENT : A_OFF, pdim);
     // modelo: lo que eligio el usuario y lo que se usa de verdad
     const char* mv;
     if (E.cfg.eco) mv = "R\xe1pido (ahorro)";
     else if (E.cfg.sr_model == 2) mv = "Calidad";
     else if (E.cfg.sr_model == 1) mv = "R\xe1pido";
     else mv = E.pro ? "Auto: Calidad" : "Auto: R\xe1pido";
-    osd_item(t, a, 2 + ROW_MODEL, "Modelo IA", mv, A_ACCENT, dim || !E.cfg.sr);
+    osd_item(t, a, 2 + ROW_MODEL, "Modelo IA", mv, A_ACCENT, pdim || !E.cfg.sr);
     osd_switch(t, a, 2 + ROW_ECO, "Modo ahorro (menos calor)", E.cfg.eco, dim);
-    osd_switch(t, a, 2 + ROW_AA, "Antialiasing SMAA", E.cfg.aa, dim || E.cfg.eco);
+    osd_switch(t, a, 2 + ROW_AA, "Antialiasing SMAA", E.cfg.aa, pdim || E.cfg.eco);
     osd_item(t, a, 2 + ROW_RCAS, "Nitidez FSR1 (RCAS)", rc_names[E.cfg.rcas & 3], E.cfg.rcas ? A_ACCENT : A_OFF,
-             dim || E.cfg.sr);
+             pdim || E.cfg.sr);
     osd_switch(t, a, 2 + ROW_FPS, "Contador de FPS", E.cfg.fps_counter, 0);
     osd_switch(t, a, 2 + ROW_CMP, "Comparar (izq. original)", E.cfg.compare, dim);
     osd_item(t, a, 2 + ROW_SAVE, "Guardar para este juego", NULL, 0, 0);
@@ -940,9 +1021,9 @@ static void maybe_level_up(void)
 
 // tiempo de GPU del trabajo anterior en este slot (ya termino): la unidad del
 // reloj de la GPU se calibra contra el de la CPU con los inicios de cada trabajo
-static void gpu_time_read(int sl)
+static void gpu_time_read_ts(volatile uint64_t* ts)
 {
-    uint64_t t0 = E.ts_cpu[sl * 2], t1 = E.ts_cpu[sl * 2 + 1];
+    uint64_t t0 = ts[0], t1 = ts[1];
     if (!t0 || t1 <= t0) return;
     uint64_t now = E.pf->now_us();
     if (!E.ts_first) { E.ts_first = t0; E.ts_cpu_first = now; return; }
@@ -952,6 +1033,8 @@ static void gpu_time_read(int sl)
     float ms = (float)(t1 - t0) / E.ts_unit / 1000.0f;
     if (ms > 0.0f && ms < 1000.0f) E.info.gpu_ms = E.info.gpu_ms ? E.info.gpu_ms * 0.9f + ms * 0.1f : ms;
 }
+
+static void gpu_time_read(int sl) { gpu_time_read_ts(E.ts_cpu + sl * 2); }
 
 // resumen periodico al registro: cuantos fotogramas y por que pasaron intactos
 static void flip_summary(const nx_submit_t* s)
@@ -966,6 +1049,170 @@ static void flip_summary(const nx_submit_t* s)
           (unsigned long long)E.flips_wl, (unsigned long long)E.flips_cpu, (unsigned long long)E.info.our_jobs,
           (double)E.info.game_fps, (double)E.info.gpu_ms, E.info.level, w);
     log_flush();
+}
+
+// paneles del OSD (contador y menu) para una imagen de ow x oh; rect (si no es
+// NULL) = el rectangulo que cubre a los dos (x, y, w, h), 0 si no hay
+static int make_osds(const nx_osd_t** osds, nx_osd_t* fps, nx_osd_t* menu, int osd_fps, int osd_menu, int fg_on,
+                     int ow, int oh, int* rect)
+{
+    int no = 0, x0 = 1 << 30, y0 = 1 << 30, x1 = 0, y1 = 0;
+    osds[0] = osds[1] = NULL;
+    if (osd_fps) {
+        build_fps_text(fg_on);
+        int sc = ow >= 3000 ? 2 : 1, pw, ph;
+        *fps = (nx_osd_t){ (uint64_t)(uintptr_t)E.osd_text[1], (uint64_t)(uintptr_t)E.osd_attr[1],
+                           (uint64_t)(uintptr_t)E.osd_font, 16, 1, 24, 24, sc, -1 };
+        nx_osd_panel_size(16, 1, sc, &pw, &ph);
+        x0 = 24; y0 = 24; x1 = 24 + pw; y1 = 24 + ph;
+        osds[no++] = fps;
+    }
+    if (osd_menu) {
+        build_menu_text();
+        int scale = ow >= 3000 ? 2 : 1, pw, ph;   // la fuente ya es de 15x30: x2 solo en 4K
+        nx_osd_panel_size(OSD_COLS, ROW_COUNT + 3, scale, &pw, &ph);
+        *menu = (nx_osd_t){ (uint64_t)(uintptr_t)E.osd_text[0], (uint64_t)(uintptr_t)E.osd_attr[0],
+                            (uint64_t)(uintptr_t)E.osd_font, OSD_COLS, ROW_COUNT + 3, ow > pw ? (ow - pw) / 2 : 0,
+                            oh > ph ? (oh - ph) / 2 : 0, scale, 2 + E.info.menu_row };
+        E.info.menu_x = menu->x0; E.info.menu_y = menu->y0; E.info.menu_w = pw; E.info.menu_h = ph;
+        if (menu->x0 < x0) x0 = menu->x0;
+        if (menu->y0 < y0) y0 = menu->y0;
+        if (menu->x0 + pw > x1) x1 = menu->x0 + pw;
+        if (menu->y0 + ph > y1) y1 = menu->y0 + ph;
+        osds[no++] = menu;
+    }
+    if (rect) {
+        rect[0] = no ? x0 : 0; rect[1] = no ? y0 : 0;
+        rect[2] = no ? x1 - x0 : 0; rect[3] = no ? y1 - y0 : 0;
+    }
+    return no;
+}
+
+// con la salida forzada a 60 Hz el juego queda a 30 parejo: entre un envio y el
+// siguiente pasan al menos 33 ms (como pace_hz(30) / fps_lock 30 de VCFG; sin esto
+// GTA V se destraba a 45-52 fps y la generacion tironea)
+static void pace30(void)
+{
+    uint64_t now = E.pf->now_us();
+    if (E.pace_last_us && now < E.pace_last_us + 33000) {
+        uint64_t d = E.pace_last_us + 33000 - now;
+        if (d <= 34000) E.pf->sleep_us((uint32_t)d);
+        now = E.pf->now_us();
+    }
+    E.pace_last_us = now;
+}
+
+static void gpu_time_read_ts(volatile uint64_t* ts);
+
+// un fotograma con la generacion de VCFG
+static int fg8_frame(const nx_submit_t* s, int gi)
+{
+    const uint32_t* gtail = find_tail(s);   // ya verificada al admitir el fotograma
+    int k = E.fg8_slot;
+    volatile uint32_t* lab = nx_fg8_label(&E.fg8, k);
+    uint64_t waited = 0;
+    while (*lab < E.fg8_slotseq[k] && waited < WAIT_BUDGET_US) {   // 4 slots: casi nunca espera
+        E.pf->sleep_us(WAIT_STEP_US);
+        waited += WAIT_STEP_US;
+    }
+    if (*lab < E.fg8_slotseq[k]) {
+        E.info.stalls++;
+        E.prev_idx = -1;
+        if (++E.stall_run >= STALL_LIMIT) {
+            E.info.state = NX_ST_DEGRADED;
+            E.degraded_gpu = 1;
+            E.degraded_at = E.info.flips;
+            set_status("GPU saturada: desactivado");
+            set_rate_forced(0);
+            notify("VCFG-NX: la GPU no da abasto en este juego; en pausa");
+            stage("generacion VCFG: GPU atrasada %d fotogramas seguidos: en pausa", E.stall_run);
+        }
+        return passthrough_why(s, WHY_STALL);
+    }
+    E.stall_run = 0;
+    gpu_time_read_ts(nx_fg8_ts(&E.fg8, k));
+    pace30();
+    set_rate_forced(1);
+    uint32_t seq = ++E.fg8_seq;
+    int m = E.fg8_midk;
+    int repeat = E.prev_idx < 0 || E.prev_idx == gi || E.prev_idx >= 16 || !((E.game_mask >> E.prev_idx) & 1)
+                 || E.last_fg != 3;
+    E.last_fg = 3;
+    const nx_image_t* C = &E.game_img[gi];
+    const nx_image_t* P = repeat ? C : &E.game_img[E.prev_idx];
+    nx_osd_t fps = { 0 }, menu = { 0 };
+    const nx_osd_t* osds[2];
+    int rect[4];
+    int no = make_osds(osds, &fps, &menu, E.cfg.fps_counter, E.info.menu_open, 1, E.W, E.H, rect);
+    pm4_t c;
+    pm4_init(&c, nx_fg8_dcb(&E.fg8, k), NX_FG8_DCB_DWORDS - NX_FG8_TAIL_DWORDS);
+    nx_fg8_job_t j = { P, C, &E.fg8_mid[m], (uint32_t)E.fg8_mid_index[m], E.handle, seq, 0x8000, repeat,
+                       rect[0], rect[1], rect[2], rect[3], E.pf->wait_flip_done,
+                       (uint64_t)(uintptr_t)nx_fg8_ts(&E.fg8, k) };
+    int br = nx_fg8_build(&E.fg8, &c, k, &j);
+    if (!br && no) {   // menu/contador en el intermedio y en el real, en el mismo trabajo
+        nx_osd_begin(&E.osd, 2 + k);
+        if (nx_osd_draw(&E.osd, &c, 2 + k, &E.fg8_mid[m], osds, no) != 0
+            || nx_osd_draw(&E.osd, &c, 2 + k, C, osds, no) != 0) br = -3;
+    }
+    if (!br) {
+        pm4_timestamp(&c, (uint64_t)(uintptr_t)(nx_fg8_ts(&E.fg8, k) + 1));
+        nx_fg8_end(&E.fg8, &c, k, seq);
+    }
+    if (br || c.overflow) {
+        logf_("[fg8] build = %d (overflow %d): generacion VCFG apagada\n", br, c.overflow);
+        stage("generacion VCFG: error al armar el trabajo (%d)", br);
+        E.fg8_ready = 0;
+        E.fg8_failed = 1;
+        return E.pf->submit_flip(s);
+    }
+    memcpy(c.buf + c.n, gtail, NX_FG8_TAIL_DWORDS * 4);
+    c.n += NX_FG8_TAIL_DWORDS;
+    memcpy(nx_fg8_tail(&E.fg8, k), gtail, NX_FG8_TAIL_DWORDS * 4);
+    // envio 1: los DCB del juego (el ultimo sin su cola) + el nuestro, flip al intermedio
+    void* d[65];
+    uint32_t dsz[65];
+    void* cb[65];
+    uint32_t cbsz[65];
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < s->count; ++i) {
+        d[n] = s->dcb[i];
+        dsz[n] = s->dcb_sz[i];
+        cb[n] = s->ccb ? s->ccb[i] : NULL;
+        cbsz[n] = s->ccb_sz ? s->ccb_sz[i] : 0;
+        ++n;
+    }
+    if (n) {
+        dsz[n - 1] -= NX_FG8_TAIL_DWORDS * 4;
+        if (!dsz[n - 1]) --n;
+    }
+    d[n] = c.buf;
+    dsz[n] = (uint32_t)(c.n * 4);
+    cb[n] = NULL;
+    cbsz[n] = 0;
+    ++n;
+    int has_ccb = s->ccb != NULL;
+    nx_submit_t mid = { n, d, dsz, has_ccb ? cb : NULL, has_ccb ? cbsz : NULL, s->handle, (uint32_t)E.fg8_mid_index[m],
+                        s->mode, s->arg, s->workload, s->for_workload, 0 };
+    int rc = E.pf->submit_flip(&mid);
+    // envio 2: el real, en el buffer del juego, con la cola sola
+    void* d2[1] = { nx_fg8_tail(&E.fg8, k) };
+    uint32_t z2[1] = { NX_FG8_TAIL_DWORDS * 4 };
+    nx_submit_t real = { 1, d2, z2, NULL, NULL, s->handle, (uint32_t)gi, s->mode, s->arg, 0, 0, 0 };
+    int rc2 = E.pf->submit_flip(&real);
+    E.fg8_slotseq[k] = seq;
+    E.fg8_slot = (k + 1) % NX_FG8_SLOTS;
+    E.fg8_midk = (m + 1) % 3;
+    E.prev_idx = gi;
+    E.info.our_jobs++;
+    // proteccion anti-cierre, igual que en el otro camino
+    if (!E.guard_marked) { guard_write("pending"); E.guard_marked = 1; E.stable_flips = 0; }
+    if (++E.stable_flips == STABLE_FLIPS) { E.crashes = 0; guard_write("ok"); }
+    if (!E.fg8_first) {
+        E.fg8_first = 1;
+        stage("generacion VCFG: primer fotograma generado (flips 0x%08x 0x%08x)", (unsigned)rc, (unsigned)rc2);
+    }
+    return rc;
 }
 
 int nx_engine_on_submit_flip(const nx_submit_t* s)
@@ -1021,20 +1268,25 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
         return passthrough_why(s, why);
     }
 
-    int effects = E.info.full_ready && !E.info.safe_mode && !E.effects_blocked && E.cfg.effects;
-    int want_fg = effects && E.cfg.framegen && !E.cfg.compare && E.info.game_fps > 1.0f
-                  && E.info.game_fps < (float)E.cfg.max_game_fps;
-    int sr = effects && E.cfg.sr > 0;
+    int fx_mem = E.info.full_ready || E.fg8_ready;
+    int effects = fx_mem && !E.info.safe_mode && !E.effects_blocked && E.cfg.effects;
+    int full = effects && E.info.full_ready;
+    int want_fg = effects && E.cfg.framegen && (E.cfg.framegen == 1 ? E.fg8_ready : E.info.full_ready)
+                  && !E.cfg.compare && E.info.game_fps > 1.0f && E.info.game_fps < (float)E.cfg.max_game_fps;
+    int sr = full && E.cfg.sr > 0;
     int hq = sr && !E.cfg.eco && (E.cfg.sr_model == 2 || (E.cfg.sr_model == 0 && E.pro));
-    int aa = effects && E.cfg.aa && !E.cfg.eco;
-    int rcas = effects && E.cfg.rcas && !sr;
+    int aa = full && E.cfg.aa && !E.cfg.eco;
+    int rcas = full && E.cfg.rcas && !sr;
     quality_ladder(&want_fg, &sr, &hq, &aa, &rcas);
     // arranque escalonado: los efectos se habilitan por partes
     if (E.fx_cap < 3) want_fg = 0;
-    if (E.fx_cap < 2) { sr = hq = aa = 0; rcas = effects; }
+    if (E.fx_cap < 2) { sr = hq = aa = 0; rcas = full; }
     E.info.hq = hq;
     int want_post = effects && (sr || aa || rcas || E.post == NX_POST_EASU);
     int osd_menu = E.info.menu_open, osd_fps = E.cfg.fps_counter;
+    // generacion de VCFG: su propio camino (mismo envio que el juego, flip al intermedio
+    // y flip del real al buffer del juego). El post-proceso no se combina con ella.
+    if (want_fg && E.cfg.framegen == 1 && !s->cpu_flip) return fg8_frame(s, gi);
     if (!want_fg && !want_post && !osd_menu && !osd_fps) {
         E.prev_idx = -1;
         rate_idle();
@@ -1094,22 +1346,8 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
     // si no la del juego (en el nivel 3 Wo/Ho nunca se calculaban: valian 0 y el
     // menu quedaba centrado en (0,0), con 3/4 fuera de la pantalla)
     int ow = E.info.full_ready && E.Wo ? E.Wo : E.W, oh = E.info.full_ready && E.Ho ? E.Ho : E.H;
-    if (osd_fps) {
-        build_fps_text(want_fg);
-        fps = (nx_osd_t){ (uint64_t)(uintptr_t)E.osd_text[1], (uint64_t)(uintptr_t)E.osd_attr[1],
-                          (uint64_t)(uintptr_t)E.osd_font, 16, 1, 24, 24, ow >= 3000 ? 2 : 1, -1 };
-        osds[no++] = &fps;
-    }
-    if (osd_menu) {
-        build_menu_text();
-        int scale = ow >= 3000 ? 2 : 1, pw, ph;   // la fuente ya es de 15x30: x2 solo en 4K
-        nx_osd_panel_size(OSD_COLS, ROW_COUNT + 3, scale, &pw, &ph);
-        menu = (nx_osd_t){ (uint64_t)(uintptr_t)E.osd_text[0], (uint64_t)(uintptr_t)E.osd_attr[0],
-                           (uint64_t)(uintptr_t)E.osd_font, OSD_COLS, ROW_COUNT + 3, ow > pw ? (ow - pw) / 2 : 0, oh > ph ? (oh - ph) / 2 : 0,
-                           scale, 2 + E.info.menu_row };
-        E.info.menu_x = menu.x0; E.info.menu_y = menu.y0; E.info.menu_w = pw; E.info.menu_h = ph;
-        osds[no++] = &menu;
-    }
+    no = make_osds(osds, &fps, &menu, osd_fps, osd_menu, want_fg, ow, oh, NULL);
+    (void)no;
     int fg_mode = want_fg ? (E.cfg.framegen == 2 ? 2 : 1) : 0;   // cambiar de rapida a IA rehace la piramide
     if (fg_mode != E.last_fg) { E.prev_real_valid = 0; E.pipe.luma_valid[0] = E.pipe.luma_valid[1] = 0; }
     E.last_fg = fg_mode;
