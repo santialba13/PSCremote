@@ -51,7 +51,7 @@ void nx_config_parse(nx_config_t* c, const char* text)
         while (*v == ' ' || *v == '\t') ++v;
         int iv = atoi(v);
         if (!strcmp(k, "effects")) c->effects = iv != 0;
-        else if (!strcmp(k, "framegen")) c->framegen = iv != 0;
+        else if (!strcmp(k, "framegen")) c->framegen = clampi(iv, 0, 2);   // 0 no, 1 rapida, 2 IA
         else if (!strcmp(k, "sr")) c->sr = clampi(iv, 0, 3);
         else if (!strcmp(k, "sr_model")) c->sr_model = clampi(iv, 0, 2);
         else if (!strcmp(k, "dynamic")) c->dynamic = iv != 0;

@@ -60,7 +60,7 @@ static void trace(const char* line)
 attr_public const char* g_pluginName = "vcfg_nx";
 attr_public const char* g_pluginDesc = "Frame generation + reescalado IA (NXSR) + SMAA/FSR1, menu L3+R3";
 attr_public const char* g_pluginAuth = "VCFG-NX";
-attr_public u32 g_pluginVersion = 0x00000267; // 2.67
+attr_public u32 g_pluginVersion = 0x00000268; // 2.68
 
 // prototipos de las variantes ForWorkload (OpenOrbis las declara sin argumentos)
 typedef s32 (*submit_wl_t)(u64, u32, void**, u32*, void**, u32*);
@@ -548,10 +548,11 @@ static void boot_level_pick(const char* title)
         pending = strstr(prev, "state=pending") != NULL;
         ok = strstr(prev, "state=ok") != NULL;
         if (pv != (unsigned)g_pluginVersion) {   // version nueva: otra oportunidad hasta arriba
+            if (pending && lv > 3) lv--;          // se habia cerrado ahi: una parte menos
+            else if (lv > 0 && lv < 3) lv = 3;
             pending = 0;
-            ok = 0;
+            ok = 0;                               // lo que ya se probo, sigue
             mx = BOOT_TOP;
-            lv = lv >= 3 ? 4 : lv > 0 ? 3 : 0;   // lo que ya se probo, sigue; los efectos, desde la primera parte
         }
     }
     if (pending && lv <= 0) {   // nivel 0 no toca nada: se cerro por otra cosa (o se salio antes)

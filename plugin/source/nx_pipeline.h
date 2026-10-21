@@ -53,6 +53,7 @@ typedef struct {
     float sharpness_stops;      // 0 = maxima nitidez, 2 = suave (como FSR)
     uint32_t seq;               // valor que el GPU escribe en label al terminar
     int fg;                     // 0 = solo post-proceso del fotograma real
+    int fg_fast;                // 1 = sin la red NXFlow: vectores del block-matching + warp (mucho mas liviano)
     int sr;                     // NXSR (reemplaza a RCAS)
     float sr_k;                 // intensidad de NXSR, 0..1 (nunca extrapola)
     int sr_hq;                  // 1 = modelo Calidad (wg_nxsr_hq), 0 = Rapido

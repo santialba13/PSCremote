@@ -61,6 +61,16 @@ void pm4_wait_label(pm4_t* c, uint64_t addr, uint32_t value)
     emit(c, 0x0A);
 }
 
+void pm4_timestamp(pm4_t* c, uint64_t addr)
+{
+    emit(c, PM4_TYPE3(PM4_EVENT_WRITE_EOP, 5));
+    emit(c, EV_BOTTOM_OF_PIPE_TS | (5u << 8));
+    emit(c, (uint32_t)addr);
+    emit(c, 0x60000000u | ((uint32_t)(addr >> 32) & 0xFFFF));   // DATA_SEL = 3: reloj de la GPU
+    emit(c, 0);
+    emit(c, 0);
+}
+
 void pm4_cs_barrier(pm4_t* c)
 {
     // entre pasadas: CS_PARTIAL_FLUSH + ACQUIRE_MEM (invalida L1/K$), igual que

@@ -69,6 +69,8 @@ void pm4_nop_pad(pm4_t* c, unsigned align_dwords);
 void pm4_acquire_mem(pm4_t* c, uint32_t cntl, uint32_t size256, uint64_t base);
 // espera en el CP a que el dword en addr valga value
 void pm4_wait_label(pm4_t* c, uint64_t addr, uint32_t value);
+// el reloj de la GPU (64 bits) en addr cuando todo lo anterior termino
+void pm4_timestamp(pm4_t* c, uint64_t addr);
 // el trabajo anterior del anillo (el del juego) termino y su imagen esta en
 // memoria: EOP al fondo del pipeline + espera + invalidacion de caches
 void pm4_wait_previous_work(pm4_t* c, uint64_t label_addr, uint32_t value, uint64_t surf, uint32_t surf_bytes);

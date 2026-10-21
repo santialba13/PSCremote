@@ -293,11 +293,11 @@ int main(int argc, char** argv)
     pm4_t c;
     pm4_init(&c, dcb, sizeof dcb / 4);
     // modos: 0 FG, 1 FG+RCAS, 2 FG+SMAA, 3 solo NXSR (k=1), 4 FG+NXSR procesando antes de interpolar,
-    //        5 solo NXSR Calidad (k=1)
-    nx_job_t job = { .prev = &img[0], .cur = &img[1], .out_mid = &img[2], .out_real = post ? &img[3] : NULL,
+    //        5 solo NXSR Calidad (k=1), 6 FG rapida (sin la red NXFlow)
+    nx_job_t job = { .prev = &img[0], .cur = &img[1], .out_mid = &img[2], .out_real = post && post != 6 ? &img[3] : NULL,
                      .slot = 1, .post = post == 1 ? NX_POST_RCAS : NX_POST_NONE, .aa = post == 2,
-                     .sharpness_stops = 0.25f, .seq = 7, .fg = post != 3 && post != 5,
-                     .sr = post >= 3, .sr_k = 1.0f, .sr_hq = post == 5, .enhance_first = post == 4,
+                     .sharpness_stops = 0.25f, .seq = 7, .fg = post != 3 && post != 5, .fg_fast = post == 6,
+                     .sr = post >= 3 && post != 6, .sr_k = 1.0f, .sr_hq = post == 5, .enhance_first = post == 4,
                      .prev_real = &img[4], .prev_real_valid = 0 };
     if (nx_pipeline_build(&p, &c, &job) != 0) { fprintf(stderr, "build fallo\n"); return 1; }
     int d = run_dcb(&p, dcb, c.n);

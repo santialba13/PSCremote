@@ -419,6 +419,11 @@ static void frame_generation(ctx_t* x, const nx_job_t* job, const nx_image_t* pr
     // 3. NXFlow: niveles A y B a 1/8, nivel C a 1/4
     ka_bm2flow_t f = { p->vec[0], p->h8, p->w8, p->flow5 };
     run(x, K_BM_TO_FLOW, &f, sizeof f, p->w8, p->h8);
+    if (job->fg_fast) {   // generacion rapida: sin las capas de la red, el flujo del block-matching
+        ka_up5_t uf = { p->flow5, p->h8, p->w8, p->flow4 };
+        run(x, K_UPSAMPLE5, &uf, sizeof uf, p->w4, p->h4);
+        goto warp;
+    }
     ka_build_t bi = { p->a8[sp], p->a8[sc], p->flow5, 0, p->h8, p->w8, 0, 0, p->lvl_in };
     run(x, K_BUILD_INPUT, &bi, sizeof bi, p->w8, p->h8);
     nx_block(x, BLOCK_A, p->h8, p->w8, p->delta5);
@@ -436,6 +441,7 @@ static void frame_generation(ctx_t* x, const nx_job_t* job, const nx_image_t* pr
     run(x, K_BUILD_INPUT, &bc, sizeof bc, p->w4, p->h4);
 
     // 4. warp + mezcla a resolucion completa (con el sampler bilineal del hardware)
+warp:;
     uint32_t samp[4];
     nx_make_ssharp(samp, 1);
     ka_warp_t w = { tsharp(x, prev), tsharp(x, cur), put_desc(x, samp, 4), p->flow4,

@@ -1,4 +1,4 @@
-# VCFG-NX 2.67: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
+# VCFG-NX 2.68: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
 
 Rediseño del **VCFG v2.14** (generador de fotogramas en beta de la comunidad
 de GoldHEN) que además incorpora un **modelo de reescalado/realce propio,
@@ -64,6 +64,25 @@ botones mientras está abierto):
   RCAS, contador de FPS (con temperatura) y comparar.
 * Arriba se ven los FPS, la temperatura y el estado (activo, calidad dinámica,
   calor). **Guardar** deja todo para ese juego; **O** cierra.
+
+## Novedades de la 2.68
+
+GTA V corre con efectos sin colgarse (2.67, niveles 4-6 probados en consola).
+Pero la generación con la red NXFlow a 1080p bajaba el juego a ~10 fps: GTA V
+ya usa casi toda la GPU.
+
+- **Generación de fotogramas: OFF / Rápida / IA.** "Rápida" usa los vectores del
+  block-matching (escala 1/8 → 1/4) y el warp, sin las capas de NXFlow (19
+  despachos en lugar de 44); es el tipo de generación de VCFG. "IA" es la de
+  siempre. Los modelos no cambian. En el emulador, con un desplazamiento de
+  8 px: Rápida 41,2 dB, IA 42,8 dB, mezcla simple 19,0 dB. `framegen = 1` en el
+  .ini es Rápida, `2` es IA.
+- **Tiempo de GPU propio en el menú** ("GPU x ms") y en el registro: dos marcas
+  del reloj de la GPU (`EVENT_WRITE_EOP` con DATA_SEL 3) al empezar y terminar el
+  trabajo propio; la unidad se calibra contra el reloj de la CPU.
+- Con una versión nueva se conserva el nivel de la escalera ya alcanzado (si se
+  había cerrado, una parte menos).
+- `gpu_emu`: modo 6 (generación rápida).
 
 ## Novedades de la 2.67
 

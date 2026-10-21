@@ -92,6 +92,9 @@ static struct {
     volatile uint32_t* label_cpu;   // un solo label para todo nuestro trabajo de GPU
     volatile uint32_t* label2_cpu;  // label del prologo (el trabajo del juego termino)
     uint64_t label2_gpu;
+    volatile uint64_t* ts_cpu;      // reloj de la GPU al empezar/terminar nuestro trabajo, por slot
+    uint64_t ts_gpu, ts_first, ts_cpu_first;
+    float ts_unit;                  // tics de la GPU por microsegundo (calibrado contra el reloj de la CPU)
     uint64_t label_gpu;
     nx_pipeline_t pipe;
     nx_image_t mid_img[MAX_MID], real_img[MAX_MID];
@@ -413,6 +416,8 @@ static int alloc_base(void)
     p = ALIGN256(p);
     E.label_cpu = (volatile uint32_t*)p; E.label_gpu = (uint64_t)(uintptr_t)p; *E.label_cpu = 0;
     E.label2_cpu = (volatile uint32_t*)(p + 64); E.label2_gpu = E.label_gpu + 64; *E.label2_cpu = 0;
+    E.ts_cpu = (volatile uint64_t*)(p + 128); E.ts_gpu = E.label_gpu + 128;   // [slot][inicio, fin]
+    for (int i = 0; i < 4; ++i) E.ts_cpu[i] = 0;
     p += 256;
     E.osd_text[0] = p; p += 4096;
     E.info.menu_text = E.osd_text[0];
@@ -582,8 +587,10 @@ static void build_menu_text(void)
     // titulo + fps/temperatura
     osd_clear(t, a, 0);
     osd_put(t, a, 0, 1, A_TITLE, "VCFG-NX");
-    if (E.info.temp_c > 0) snprintf(l, sizeof l, "%.0f fps  %d\xb0" "C", E.info.game_fps, E.info.temp_c);
-    else snprintf(l, sizeof l, "%.0f fps", E.info.game_fps);
+    char g[24] = "";
+    if (E.info.gpu_ms > 0.0f) snprintf(g, sizeof g, "  GPU %.1f ms", (double)E.info.gpu_ms);
+    if (E.info.temp_c > 0) snprintf(l, sizeof l, "%.0f fps%s  %d\xb0" "C", E.info.game_fps, g, E.info.temp_c);
+    else snprintf(l, sizeof l, "%.0f fps%s", E.info.game_fps, g);
     osd_put(t, a, 0, OSD_COLS - 1 - (int)strlen(l), A_DIM, l);
     // estado
     osd_clear(t, a, 1);
@@ -599,7 +606,8 @@ static void build_menu_text(void)
     int dim = !E.cfg.effects || E.effects_blocked;
     // interruptor general
     osd_item(t, a, 2 + ROW_ALL, "Todos los efectos", E.cfg.effects ? "ON" : "OFF", E.cfg.effects ? A_ON : A_ERROR, 0);
-    osd_switch(t, a, 2 + ROW_FG, "Generaci\xf3n de fotogramas", E.cfg.framegen, dim);
+    osd_item(t, a, 2 + ROW_FG, "Generaci\xf3n de fotogramas",
+             E.cfg.framegen == 2 ? "IA" : E.cfg.framegen ? "R\xe1pida" : "OFF", E.cfg.framegen ? A_ON : A_OFF, dim);
     osd_item(t, a, 2 + ROW_SR, "Reescalado IA (NXSR)", sr_names[E.cfg.sr & 3], E.cfg.sr ? A_ACCENT : A_OFF, dim);
     // modelo: lo que eligio el usuario y lo que se usa de verdad
     const char* mv;
@@ -647,7 +655,7 @@ static void menu_change(int row, int dir)
         c->effects = !c->effects;
         if (c->effects && !E.info.full_ready) E.next_try_flip = E.info.flips;   // reservar ya si hace falta
         break;
-    case ROW_FG: c->framegen = !c->framegen; break;
+    case ROW_FG: c->framegen = (c->framegen + (dir > 0 ? 1 : 2)) % 3; break;   // OFF, Rapida, IA
     case ROW_SR: c->sr = (c->sr + (dir > 0 ? 1 : 3)) % 4; break;
     case ROW_MODEL: c->sr_model = (c->sr_model + (dir > 0 ? 1 : 2)) % 3; break;
     case ROW_ECO: c->eco = !c->eco; break;
@@ -915,6 +923,21 @@ static void maybe_level_up(void)
     logf_("[engine] calidad dinamica: prueba subir a -%d\n", E.info.level);
 }
 
+// tiempo de GPU del trabajo anterior en este slot (ya termino): la unidad del
+// reloj de la GPU se calibra contra el de la CPU con los inicios de cada trabajo
+static void gpu_time_read(int sl)
+{
+    uint64_t t0 = E.ts_cpu[sl * 2], t1 = E.ts_cpu[sl * 2 + 1];
+    if (!t0 || t1 <= t0) return;
+    uint64_t now = E.pf->now_us();
+    if (!E.ts_first) { E.ts_first = t0; E.ts_cpu_first = now; return; }
+    if (now > E.ts_cpu_first + 2000000 && t0 > E.ts_first)
+        E.ts_unit = (float)(t0 - E.ts_first) / (float)(now - E.ts_cpu_first);
+    if (E.ts_unit <= 0.0f) return;
+    float ms = (float)(t1 - t0) / E.ts_unit / 1000.0f;
+    if (ms > 0.0f && ms < 1000.0f) E.info.gpu_ms = E.info.gpu_ms ? E.info.gpu_ms * 0.9f + ms * 0.1f : ms;
+}
+
 // resumen periodico al registro: cuantos fotogramas y por que pasaron intactos
 static void flip_summary(const nx_submit_t* s)
 {
@@ -923,10 +946,10 @@ static void flip_summary(const nx_submit_t* s)
     for (int i = 0; i < WHY_N && n < (int)sizeof w - 32; ++i)
         if (E.why[i]) n += snprintf(w + n, sizeof w - (size_t)n, " %s=%llu", WHY_NAME[i], (unsigned long long)E.why[i]);
     if (!n) snprintf(w, sizeof w, " -");
-    logf_("[flip] estado=%d handle=%u idx=%u count=%u gnm=%llu wl=%llu cpu=%llu nuestros=%llu fps=%.1f nivel=%d intactos:%s\n",
+    logf_("[flip] estado=%d handle=%u idx=%u count=%u gnm=%llu wl=%llu cpu=%llu nuestros=%llu fps=%.1f gpu=%.1fms nivel=%d intactos:%s\n",
           (int)E.info.state, s->handle, s->index, s->count, (unsigned long long)E.flips_gnm,
           (unsigned long long)E.flips_wl, (unsigned long long)E.flips_cpu, (unsigned long long)E.info.our_jobs,
-          (double)E.info.game_fps, E.info.level, w);
+          (double)E.info.game_fps, (double)E.info.gpu_ms, E.info.level, w);
     log_flush();
 }
 
@@ -1035,6 +1058,7 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
         return passthrough_why(s, WHY_STALL);
     }
     E.stall_run = 0;
+    gpu_time_read(sl);
     // la GPU llego, pero esperarla frena al juego: si es sostenido, bajar calidad
     if (waited >= SLOW_WAIT_US) {
         if (++E.slow_run >= SLOW_LIMIT) { E.slow_run = 0; on_stall(); }
@@ -1085,6 +1109,8 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
         *E.label2_cpu = 0;
         pm4_wait_previous_work(&c, E.label2_gpu, E.seq + 1, g->gpu_addr, bytes);
     }
+    E.ts_cpu[sl * 2] = E.ts_cpu[sl * 2 + 1] = 0;
+    pm4_timestamp(&c, E.ts_gpu + (uint64_t)sl * 16);
     nx_job_t job = {
         .prev = want_fg ? &E.game_img[E.prev_idx] : NULL,
         .cur = &E.game_img[gi],
@@ -1093,7 +1119,7 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
         .slot = sl, .post = want_post ? E.post : NX_POST_NONE, .aa = aa,
         .sharpness_stops = E.cfg.rcas ? 0.75f - 0.25f * (float)E.cfg.rcas : 2.0f,
         .seq = E.seq + 1,
-        .fg = want_fg, .sr = sr, .sr_k = sr ? 0.5f + 0.25f * (float)(E.cfg.sr - 1) : 0.0f, .sr_hq = hq,
+        .fg = want_fg, .fg_fast = E.cfg.framegen != 2, .sr = sr, .sr_k = sr ? 0.5f + 0.25f * (float)(E.cfg.sr - 1) : 0.0f, .sr_hq = hq,
         .rcas = rcas,
         .enhance_first = enhance_first,
         .prev_real = enhance_first ? &E.real_img[m ^ 1] : NULL,
@@ -1114,6 +1140,7 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
         set_status("error interno: desactivado");
         return E.pf->submit_flip(s);   // nada se envio todavia: el fotograma del juego tal cual
     }
+    pm4_timestamp(&c, E.ts_gpu + (uint64_t)sl * 16 + 8);
     // cola de flip al final de nuestro DCB y copia para el flip extra
     if (gtail) {
         memcpy(E.dcb[sl] + c.n, gtail, NOP_DWORDS * 4);
