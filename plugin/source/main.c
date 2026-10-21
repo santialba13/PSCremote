@@ -60,7 +60,7 @@ static void trace(const char* line)
 attr_public const char* g_pluginName = "vcfg_nx";
 attr_public const char* g_pluginDesc = "Frame generation + reescalado IA (NXSR) + SMAA/FSR1, menu L3+R3";
 attr_public const char* g_pluginAuth = "VCFG-NX";
-attr_public u32 g_pluginVersion = 0x00000262; // 2.62
+attr_public u32 g_pluginVersion = 0x00000263; // 2.63
 
 // prototipos de las variantes ForWorkload (OpenOrbis las declara sin argumentos)
 typedef s32 (*submit_wl_t)(u64, u32, void**, u32*, void**, u32*);
@@ -361,7 +361,7 @@ static void after_game_flip(void)
     if (!ok_done && f >= 900 && (!g_engine_live || nx_engine_info()->our_jobs >= 600 || f >= 36000)) {
         ok_done = 1;
         boot_level_ok();
-        boot_stage(g_title_s, g_level < g_level_max ? "jugando: arranque correcto (el proximo va al nivel completo)"
+        boot_stage(g_title_s, g_level < g_level_max ? "jugando: arranque correcto (el proximo suma una parte)"
                                                     : "jugando: arranque correcto");
     }
     // ningun hilo propio antes de que el juego este andando (como VCFG: sus
@@ -487,7 +487,7 @@ static void* pad_thread(void* arg)
 #define BOOT_TOP 4
 #define EARLY_WORK 0
 static const char* const LEVEL_NAME[BOOT_TOP + 2] = { "apagado", "solo aviso y conteo", "configuracion", "registro de pantalla",
-                                                     "menu y efectos", "completo" };
+                                                     "menu L3+R3", "menu y efectos" };
 #define LVNAME(l) LEVEL_NAME[(l) + 1]
 
 static void boot_stage(const char* title, const char* what)
@@ -510,14 +510,14 @@ static void boot_level_pick(const char* title)
     char prev[96] = { 0 };
     int n = pf_read_file(g_boot_path, prev, sizeof prev - 1);
     int lv = 0, mx = BOOT_TOP, pending = 0, ok = 0;
-    // vale el registro de la 2.59 en adelante (desde ahi la pila se realinea);
-    // uno mas viejo no sirve y se empieza desde 0
+    // vale el registro de la 2.63 en adelante (shaders sin FLAT y envio como
+    // VCFG: lo de antes no dice nada del motor actual); si no, desde 0
     unsigned pv = 0;
     if (n > 0 && !strncmp(prev, "ver=", 4)) {
         for (const char* q = prev + 4; (*q >= '0' && *q <= '9') || (*q >= 'a' && *q <= 'f'); ++q)
             pv = pv * 16 + (unsigned)(*q <= '9' ? *q - '0' : *q - 'a' + 10);
     }
-    if (n > 0 && pv >= 0x259 && pv <= (unsigned)g_pluginVersion) {
+    if (n > 0 && pv >= 0x263 && pv <= (unsigned)g_pluginVersion) {
         const char* l = strstr(prev, "level=");
         const char* m = strstr(prev, "max=");
         lv = l ? atoi(l + 6) : 0;
@@ -531,7 +531,8 @@ static void boot_level_pick(const char* title)
         mx = lv - 1;
         lv = mx;
     } else if (ok && lv < mx) {
-        lv = mx;                // salio bien: directo al tope (si se cierra, baja de a uno)
+        // salio bien: hasta el menu (3) de una; del menu, a los efectos (4)
+        lv = lv < 3 ? (mx < 3 ? mx : 3) : mx;
     }
     if (mx > BOOT_TOP) mx = BOOT_TOP;
     if (mx < -1) mx = -1;
@@ -649,6 +650,9 @@ s32 attr_public plugin_load(s32 argc, const char* argv[])
     // el mando NO se engancha (como VCFG v2.23): lo lee el hilo propio, que
     // arranca recien con el juego presentando imagen (after_game_flip)
     g_engine_live = g_level >= 3;
+    // nivel 3: el motor solo dibuja el menu (un shader chico); los efectos, que
+    // son la mayor parte del trabajo de GPU, recien en el nivel 4
+    nx_engine_allow_effects(g_level >= 4);
     hook_flips();
     if (!g_engine_live) {
         boot_stage(title, "conteo de fotogramas enganchado: plugin_load terminado");

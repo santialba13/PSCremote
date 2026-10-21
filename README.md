@@ -1,4 +1,4 @@
-# VCFG-NX 2.62: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
+# VCFG-NX 2.63: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
 
 Rediseño del **VCFG v2.14** (generador de fotogramas en beta de la comunidad
 de GoldHEN) que además incorpora un **modelo de reescalado/realce propio,
@@ -64,6 +64,29 @@ botones mientras está abierto):
   RCAS, contador de FPS (con temperatura) y comparar.
 * Arriba se ven los FPS, la temperatura y el estado (activo, calidad dinámica,
   calor). **Guardar** deja todo para ese juego; **O** cierra.
+
+## Novedades de la 2.63
+
+Con la 2.62 GTA V ya corre a 30 fps con el plugin; se colgaba justo cuando el
+motor mandaba su primer trabajo de GPU ("menú listo" → "carga alta" → cuelgue).
+
+- **Shaders sin instrucciones FLAT.** Compilados para gfx7 con `amdhsa`, LLVM
+  usaba `flat_load/flat_store` para la memoria global; FLAT depende de las
+  aperturas que prepara el driver de HSA (`SH_MEM_BASES`), que el de la PS4 no
+  configura. VCFG solo usa instrucciones de buffer e imagen. Ahora
+  `shaders/build_gcn.sh` compila con `-flat-for-global` desactivado: el backend
+  usa MUBUF `addr64` (descriptor de base 0 y dirección de 64 bits en VGPRs, como
+  radeonsi en SI/CI) y el script falla si queda alguna instrucción FLAT. Los
+  modelos no cambian.
+- **Sincronización como VCFG.** Antes de leer la imagen, el DCB propio espera a
+  que el juego termine de dibujarla (`EVENT_WRITE_EOP` BOTTOM_OF_PIPE + 
+  `WAIT_REG_MEM` + `ACQUIRE_MEM` sobre el buffer); entre pasadas,
+  `ACQUIRE_MEM` en lugar de `SURFACE_SYNC`.
+- **Escalera de arranque con el riesgo de GPU separado:** nivel 3 = solo el menú
+  (un shader chico), nivel 4 = efectos + memoria temprana. Tras un arranque
+  correcto en 0-2 se salta al 3; del 3 al 4. El registro de versiones
+  anteriores a la 2.63 no se usa (el motor cambió): se empieza de 0.
+- Simulador: escenario 26 (nivel 3: solo menú).
 
 ## Novedades de la 2.62
 

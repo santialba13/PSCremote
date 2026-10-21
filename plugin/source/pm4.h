@@ -16,6 +16,8 @@
 #define PM4_EVENT_WRITE      0x46
 #define PM4_EVENT_WRITE_EOP  0x47
 #define PM4_SET_SH_REG       0x76
+#define PM4_WAIT_REG_MEM     0x3C
+#define PM4_ACQUIRE_MEM      0x58
 
 #define PM4_TYPE3(op, ndw_body) \
     ((3u << 30) | ((((uint32_t)(ndw_body) - 1) & 0x3FFF) << 16) | (((op) & 0xFF) << 8))
@@ -60,3 +62,13 @@ void pm4_cs_barrier(pm4_t* c);
 // "value" en label_gpu_addr cuando el GPU termino (la CPU puede reusar buffers)
 void pm4_end_of_job(pm4_t* c, uint64_t label_gpu_addr, uint32_t value);
 void pm4_nop_pad(pm4_t* c, unsigned align_dwords);
+
+// --- sincronizacion como el motor clasico de VCFG (anda en GTA V)
+// ACQUIRE_MEM (CIK) en lugar de SURFACE_SYNC: CP_COHER_CNTL, tamano y base en
+// unidades de 256 bytes
+void pm4_acquire_mem(pm4_t* c, uint32_t cntl, uint32_t size256, uint64_t base);
+// espera en el CP a que el dword en addr valga value
+void pm4_wait_label(pm4_t* c, uint64_t addr, uint32_t value);
+// el trabajo anterior del anillo (el del juego) termino y su imagen esta en
+// memoria: EOP al fondo del pipeline + espera + invalidacion de caches
+void pm4_wait_previous_work(pm4_t* c, uint64_t label_addr, uint32_t value, uint64_t surf, uint32_t surf_bytes);

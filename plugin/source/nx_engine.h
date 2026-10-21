@@ -78,6 +78,8 @@ typedef struct {
 } nx_engine_info_t;
 
 void nx_engine_init(const nx_platform_t* pf, const char* title_id);
+// 0: solo menu/contador (sin reservar ni correr los efectos). Por defecto 1.
+void nx_engine_allow_effects(int on);
 void nx_engine_on_register(int handle, int start, void* const* addrs, int num, const nx_vo_attr_t* a, int rc);
 int nx_engine_on_set_flip_rate(int handle, int rate);      // devuelve la tasa a aplicar
 int nx_engine_on_submit_flip(const nx_submit_t* s);         // hace las submits; devuelve el rc del juego

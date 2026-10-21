@@ -752,6 +752,18 @@ int main(int argc, char** argv)
               (unsigned long long)I()->our_jobs);
     }
 
+    // 26. nivel 3 del arranque escalonado: solo menu, sin efectos
+    {
+        boot(&bb, 0);
+        nx_engine_allow_effects(0);
+        play(&bb, 2400, 0);
+        CHECK(I()->state == NX_ST_RUN && !I()->full_ready, "con efectos bloqueados no deberia reservar efectos");
+        pad_buttons = 0x0002 | 0x0004; play(&bb, 60, 0); pad_buttons = 0; play(&bb, 30, 0);
+        report("26. nivel 3: solo menu");
+        CHECK(I()->menu_open && I()->our_jobs > 0, "el menu deberia abrir y dibujarse");
+        common_checks();
+    }
+
     // 10. juego que arranca en un proceso que no es un juego
     game_t sh = bb; sh.title = "NPXS20001";
     boot(&sh, 0);

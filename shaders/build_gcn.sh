@@ -6,7 +6,14 @@ set -eu
 cd "$(dirname "$0")"
 OUT=${OUT:-build}
 mkdir -p "$OUT"
-CLFLAGS="-target amdgcn-amd-amdhsa -mcpu=gfx701 -nogpulib -O3 -cl-std=CL1.2"
+# -flat-for-global: en gfx7 con amdhsa, LLVM usa instrucciones FLAT para la
+# memoria global, y FLAT depende de las aperturas que configura el driver de
+# HSA (SH_MEM_BASES), que el de la PS4 no prepara: una direccion mal resuelta
+# cuelga la GPU. Sin FLAT, el backend usa MUBUF addr64 (descriptor con base 0
+# y la direccion de 64 bits en VGPRs), como radeonsi en SI/CI. VCFG tampoco usa
+# FLAT (solo buffer/imagen).
+MATTR="-Xclang -target-feature -Xclang -flat-for-global"
+CLFLAGS="-target amdgcn-amd-amdhsa -mcpu=gfx701 $MATTR -nogpulib -O3 -cl-std=CL1.2"
 
 # NXSR: canales y capas los fija cada modelo exportado (Rapido y Calidad)
 hdr() { sed -n "s/^#define $1 \\([0-9]*\\)/\\1/p" "../plugin/include/$2"; }
@@ -21,8 +28,9 @@ for k in nxflow fsr1 smaa nxsr nxsr_hq osd; do
     esac
     clang $CLFLAGS -I. $flags -emit-llvm -c "$src" -o "$OUT/$k.bc"
     llvm-link "$OUT/$k.bc" "$OUT/gcn_image.bc" -o "$OUT/$k.linked.bc"
-    clang -target amdgcn-amd-amdhsa -mcpu=gfx701 -nogpulib -O3 "$OUT/$k.linked.bc" -o "$OUT/$k.co"
-    clang -target amdgcn-amd-amdhsa -mcpu=gfx701 -nogpulib -O3 -S "$OUT/$k.linked.bc" -o "$OUT/$k.s"
+    clang -target amdgcn-amd-amdhsa -mcpu=gfx701 $MATTR -nogpulib -O3 "$OUT/$k.linked.bc" -o "$OUT/$k.co"
+    clang -target amdgcn-amd-amdhsa -mcpu=gfx701 $MATTR -nogpulib -O3 -S "$OUT/$k.linked.bc" -o "$OUT/$k.s"
+    if grep -qE "^\s+flat_" "$OUT/$k.s"; then echo "ERROR: $k usa instrucciones FLAT" >&2; exit 1; fi
 done
 python3 ../tools/gcn_pack.py "$OUT/nxflow.co" "$OUT/fsr1.co" "$OUT/smaa.co" "$OUT/nxsr.co" "$OUT/nxsr_hq.co" "$OUT/osd.co" \
     --asm "$OUT/nxflow.s" "$OUT/fsr1.s" "$OUT/smaa.s" "$OUT/nxsr.s" "$OUT/nxsr_hq.s" "$OUT/osd.s" \

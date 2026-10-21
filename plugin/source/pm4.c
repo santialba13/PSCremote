@@ -39,16 +39,51 @@ void pm4_dispatch(pm4_t* c, uint32_t gx, uint32_t gy, uint32_t gz)
     emit(c, 1); // COMPUTE_DISPATCH_INITIATOR.COMPUTE_SHADER_EN
 }
 
+void pm4_acquire_mem(pm4_t* c, uint32_t cntl, uint32_t size256, uint64_t base)
+{
+    emit(c, PM4_TYPE3(PM4_ACQUIRE_MEM, 6));
+    emit(c, cntl);
+    emit(c, size256);
+    emit(c, 0);                              // CP_COHER_SIZE_HI
+    emit(c, (uint32_t)(base >> 8));
+    emit(c, (uint32_t)(base >> 40));
+    emit(c, 0x0A);                           // POLL_INTERVAL
+}
+
+void pm4_wait_label(pm4_t* c, uint64_t addr, uint32_t value)
+{
+    emit(c, PM4_TYPE3(PM4_WAIT_REG_MEM, 6));
+    emit(c, 0x13);                           // FUNCTION = igual, MEM_SPACE = memoria
+    emit(c, (uint32_t)addr);
+    emit(c, (uint32_t)(addr >> 32));
+    emit(c, value);
+    emit(c, 0xFFFFFFFFu);
+    emit(c, 0x0A);
+}
+
 void pm4_cs_barrier(pm4_t* c)
 {
+    // entre pasadas: CS_PARTIAL_FLUSH + ACQUIRE_MEM (invalida L1/K$), igual que
+    // PASS_BARRIER de VCFG
     emit(c, PM4_TYPE3(PM4_EVENT_WRITE, 1));
     emit(c, EV_CS_PARTIAL_FLUSH | (4u << 8));   // EVENT_INDEX = 4
-    // SURFACE_SYNC: CP_COHER_CNTL, CP_COHER_SIZE (todo), CP_COHER_BASE (0), POLL_INTERVAL
-    emit(c, PM4_TYPE3(PM4_SURFACE_SYNC, 4));
-    emit(c, COHER_TCL1_ACTION_ENA | COHER_SH_KCACHE_ACTION);
-    emit(c, 0xFFFFFFFFu);
+    pm4_acquire_mem(c, 0x80400000u, 1, 0);
+}
+
+void pm4_wait_previous_work(pm4_t* c, uint64_t label_addr, uint32_t value, uint64_t surf, uint32_t surf_bytes)
+{
+    emit(c, PM4_TYPE3(PM4_EVENT_WRITE, 1));
+    emit(c, EV_CS_PARTIAL_FLUSH | (4u << 8));
+    // EOP BOTTOM_OF_PIPE_TS con dato de 64 bits (DATA_SEL = 2)
+    emit(c, PM4_TYPE3(PM4_EVENT_WRITE_EOP, 5));
+    emit(c, EV_BOTTOM_OF_PIPE_TS | (5u << 8));
+    emit(c, (uint32_t)label_addr);
+    emit(c, 0x40000000u | ((uint32_t)(label_addr >> 32) & 0xFFFF));
+    emit(c, value);
     emit(c, 0);
-    emit(c, 10);
+    pm4_wait_label(c, label_addr, value);
+    pm4_acquire_mem(c, 0x82003FC0u, surf_bytes >> 8, surf);   // escrituras de color del juego sobre su buffer
+    pm4_acquire_mem(c, 0x80C40000u, 1, 0);
 }
 
 void pm4_end_of_job(pm4_t* c, uint64_t label_gpu_addr, uint32_t value)

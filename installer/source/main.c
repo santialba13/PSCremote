@@ -60,7 +60,7 @@
 #define LOG_DIR ROOT "/data/GoldHEN/vcfg_nx"   // registros del plugin (desde 2.55)
 #define TITLE_ID "VCNX00001"
 #define CONTENT_ID "IV0000-VCNX00001_00-VCFGNXINSTALL000"
-#define VERSION "2.6.2"
+#define VERSION "2.6.3"
 
 #define W 1920
 #define H 1080
@@ -1402,7 +1402,7 @@ static void diag_collect(void)
         if (lv && mx) {
             int l = atoi(lv + 6), m = atoi(mx + 4);
             if (strstr(bt, "state=pending") && l > 0) m = l = l - 1;   // se cerro en ese nivel
-            else if (strstr(bt, "state=ok")) l = m;                       // salio bien: directo al tope
+            else if (strstr(bt, "state=ok")) l = l < 3 ? (m < 3 ? m : 3) : m;   // salio bien: menu, despues efectos
             snprintf(L[5] + strlen(L[5]), 300 - strlen(L[5]), " \xb7 pr\xf3ximo arranque: nivel %d (tope %d de 4)", l, m);
         }
         free(bt);

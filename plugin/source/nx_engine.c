@@ -90,6 +90,8 @@ static struct {
     uint8_t* osd_font;          // atlas suavizado (nx_osd_font.h)
     nx_osd_ctx_t osd;
     volatile uint32_t* label_cpu;   // un solo label para todo nuestro trabajo de GPU
+    volatile uint32_t* label2_cpu;  // label del prologo (el trabajo del juego termino)
+    uint64_t label2_gpu;
     uint64_t label_gpu;
     nx_pipeline_t pipe;
     nx_image_t mid_img[MAX_MID], real_img[MAX_MID];
@@ -118,6 +120,7 @@ static struct {
     int nofmt_notified;
     // calidad dinamica
     int pro, announced, hdr;
+    int effects_blocked;             // el arranque escalonado todavia no habilito los efectos
     uint64_t level_since, last_stall, probe_until, degraded_at;
     int up_fails, degraded_gpu, degraded_retries, slow_run;
     // temperatura
@@ -405,7 +408,9 @@ static int alloc_base(void)
         make_tail(E.tail[k]);
     }
     p = ALIGN256(p);
-    E.label_cpu = (volatile uint32_t*)p; E.label_gpu = (uint64_t)(uintptr_t)p; *E.label_cpu = 0; p += 256;
+    E.label_cpu = (volatile uint32_t*)p; E.label_gpu = (uint64_t)(uintptr_t)p; *E.label_cpu = 0;
+    E.label2_cpu = (volatile uint32_t*)(p + 64); E.label2_gpu = E.label_gpu + 64; *E.label2_cpu = 0;
+    p += 256;
     E.osd_text[0] = p; p += 4096;
     E.info.menu_text = E.osd_text[0];
     E.info.menu_cols = OSD_COLS;
@@ -422,9 +427,11 @@ static int alloc_base(void)
     return 1;
 }
 
+void nx_engine_allow_effects(int on) { E.effects_blocked = !on; }
+
 static int effects_wanted(void)
 {
-    return !E.hdr && E.cfg.effects && (E.cfg.framegen || E.cfg.sr || E.cfg.aa || E.cfg.rcas);
+    return !E.hdr && !E.effects_blocked && E.cfg.effects && (E.cfg.framegen || E.cfg.sr || E.cfg.aa || E.cfg.rcas);
 }
 
 static int alloc_full(void)
@@ -950,7 +957,7 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
         return passthrough_why(s, why);
     }
 
-    int effects = E.info.full_ready && !E.info.safe_mode && E.cfg.effects;
+    int effects = E.info.full_ready && !E.info.safe_mode && !E.effects_blocked && E.cfg.effects;
     int want_fg = effects && E.cfg.framegen && !E.cfg.compare && E.info.game_fps > 1.0f
                   && E.info.game_fps < (float)E.cfg.max_game_fps;
     int sr = effects && E.cfg.sr > 0;
@@ -1035,6 +1042,14 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
     int enhance_first = want_fg && want_post && E.Wo == E.W;
     pm4_t c;
     pm4_init(&c, E.dcb[sl], DCB_DWORDS - NOP_DWORDS);   // los ultimos 64: la cola de flip
+    // antes de leer la imagen: que el juego haya terminado de dibujarla (EOP +
+    // espera + caches), como el prologo de los DCB de VCFG
+    {
+        const nx_image_t* g = &E.game_img[gi];
+        uint32_t bytes = g->pitch * g->height * 4;
+        *E.label2_cpu = 0;
+        pm4_wait_previous_work(&c, E.label2_gpu, E.seq + 1, g->gpu_addr, bytes);
+    }
     nx_job_t job = {
         .prev = want_fg ? &E.game_img[E.prev_idx] : NULL,
         .cur = &E.game_img[gi],
