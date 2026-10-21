@@ -60,7 +60,7 @@ static void trace(const char* line)
 attr_public const char* g_pluginName = "vcfg_nx";
 attr_public const char* g_pluginDesc = "Frame generation + reescalado IA (NXSR) + SMAA/FSR1, menu L3+R3";
 attr_public const char* g_pluginAuth = "VCFG-NX";
-attr_public u32 g_pluginVersion = 0x00000261; // 2.61
+attr_public u32 g_pluginVersion = 0x00000262; // 2.62
 
 // prototipos de las variantes ForWorkload (OpenOrbis las declara sin argumentos)
 typedef s32 (*submit_wl_t)(u64, u32, void**, u32*, void**, u32*);
@@ -373,12 +373,24 @@ static void after_game_flip(void)
     boot_stage(g_title_s, g_pad_run ? "300 fotogramas: hilo del plugin iniciado" : "300 fotogramas: el hilo no se pudo crear");
 }
 
+// Anidamiento: sceGnmSubmitAndFlipCommandBuffers llama por dentro a la variante
+// ForWorkload (VCFG lo cuenta como "nested in ours"). Como las dos estan
+// enganchadas, sin esta guarda el motor procesaba otra vez su propio envio
+// desde adentro, en cadena: GTA V llego a "30000 fps", "carga alta" y se colgo.
+// Lo que llega mientras ya estamos dentro de un envio pasa derecho.
+static volatile int g_in_submit;
+
 s32 sceGnmSubmitAndFlipCommandBuffers_hook(u32 count, void** dcb, u32* dcb_sz, void** ccb, u32* ccb_sz,
                                            u32 handle, u32 index, u32 mode, u64 arg)
 {
+    if (g_in_submit)
+        return HOOK_CONTINUE(sceGnmSubmitAndFlipCommandBuffers, submit_flip_t, count, dcb, dcb_sz, ccb, ccb_sz, handle,
+                             index, mode, arg);
+    g_in_submit++;
     nx_submit_t s = { count, dcb, dcb_sz, ccb, ccb_sz, handle, index, mode, (int64_t)arg, 0, 0, 0 };
     s32 r = g_engine_live ? nx_engine_on_submit_flip(&s) : pf_submit_flip(&s);
     after_game_flip();
+    g_in_submit--;
     return r;
 }
 
@@ -386,18 +398,26 @@ s32 sceGnmSubmitAndFlipCommandBuffers_hook(u32 count, void** dcb, u32* dcb_sz, v
 // que nuestro DCB + flip queda ordenado despues. VALIDAR en consola.
 s32 sceVideoOutSubmitFlip_hook(s32 handle, s32 index, u32 mode, s64 arg)
 {
+    if (g_in_submit) return HOOK_CONTINUE(sceVideoOutSubmitFlip, s32 (*)(s32, s32, u32, s64), handle, index, mode, arg);
+    g_in_submit++;
     nx_submit_t s = { 0, NULL, NULL, NULL, NULL, (u32)handle, (u32)index, mode, arg, 0, 0, 1 };
     s32 r = g_engine_live ? nx_engine_on_submit_flip(&s) : pf_submit_flip(&s);
     after_game_flip();
+    g_in_submit--;
     return r;
 }
 
 s32 sceGnmSubmitAndFlipCommandBuffersForWorkload_hook(u64 workload, u32 count, void** dcb, u32* dcb_sz, void** ccb,
                                                       u32* ccb_sz, u32 handle, u32 index, u32 mode, s64 arg)
 {
+    if (g_in_submit)
+        return HOOK_CONTINUE(sceGnmSubmitAndFlipCommandBuffersForWorkload, submit_flip_wl_t, workload, count, dcb, dcb_sz,
+                             ccb, ccb_sz, handle, index, mode, arg);
+    g_in_submit++;
     nx_submit_t s = { count, dcb, dcb_sz, ccb, ccb_sz, handle, index, mode, arg, workload, 1, 0 };
     s32 r = g_engine_live ? nx_engine_on_submit_flip(&s) : pf_submit_flip(&s);
     after_game_flip();
+    g_in_submit--;
     return r;
 }
 

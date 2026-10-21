@@ -1,4 +1,4 @@
-# VCFG-NX 2.61: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
+# VCFG-NX 2.62: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
 
 Rediseño del **VCFG v2.14** (generador de fotogramas en beta de la comunidad
 de GoldHEN) que además incorpora un **modelo de reescalado/realce propio,
@@ -64,6 +64,20 @@ botones mientras está abierto):
   RCAS, contador de FPS (con temperatura) y comparar.
 * Arriba se ven los FPS, la temperatura y el estado (activo, calidad dinámica,
   calor). **Guardar** deja todo para ese juego; **O** cierra.
+
+## Novedades de la 2.62
+
+**Guarda contra el anidamiento de los hooks de flip.** Con la 2.61, GTA V en
+nivel 4 mostró "carga alta" y el aviso de los 25 s marcó **~30000 fps**; la
+partida nunca terminó de cargar y el sistema cerró el juego.
+`sceGnmSubmitAndFlipCommandBuffers` llama por dentro a
+`sceGnmSubmitAndFlipCommandBuffersForWorkload` (VCFG lo registra como
+"nested in ours" y lo deja pasar con `g_in_submit`). VCFG-NX engancha las dos:
+el motor volvía a procesar su propio envío desde adentro, en cadena.
+
+Ahora los tres hooks de presentación tienen una guarda: lo que llega mientras ya
+se está dentro de un envío va directo a la función original, sin motor ni
+conteo.
 
 ## Novedades de la 2.61
 
