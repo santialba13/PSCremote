@@ -1,4 +1,4 @@
-# VCFG-NX 2.60: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
+# VCFG-NX 2.61: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
 
 Rediseño del **VCFG v2.14** (generador de fotogramas en beta de la comunidad
 de GoldHEN) que además incorpora un **modelo de reescalado/realce propio,
@@ -64,6 +64,32 @@ botones mientras está abierto):
   RCAS, contador de FPS (con temperatura) y comparar.
 * Arriba se ven los FPS, la temperatura y el estado (activo, calidad dinámica,
   calor). **Guardar** deja todo para ese juego; **O** cierra.
+
+## Novedades de la 2.61
+
+**El trabajo propio va en el mismo envío que el del juego, con la "cola de
+flip" (como VCFG).** Con la 2.59 GTA V llegó al nivel 3 ("efectos activos"),
+avisó "carga alta" y al abrir el menú se colgó. `sceGnmSubmitAndFlipCommandBuffers`
+exige que el último DCB termine en el paquete de `prepareFlip` (NOP de 64 dwords
+con la marca `0x687507xx`; GTA V usa `0x68750778`), que el sistema reescribe al
+presentar. VCFG-NX enviaba el trabajo del juego aparte y su DCB sin esa cola:
+el sistema escribía sobre las últimas instrucciones del DCB propio (el label de
+fin de trabajo no llegaba → "carga alta"; con el menú, la GPU colgada).
+
+Ahora, igual que el motor clásico de VCFG:
+
+- un solo envío con flip: los DCB del juego (el último sin sus 64 dwords) + el
+  DCB propio, que termina con una copia de la cola;
+- el flip extra de la generación de fotogramas usa otra copia de la cola;
+- si el último DCB del juego no termina en la cola, el fotograma pasa intacto
+  (`sin_cola_de_flip` en el registro, con los dwords finales);
+- PS4 Pro: los T# de buffers con tiling 2D llevan `alt_tile_mode` (bit 24 de
+  `t[6]`), como libSceGnm (sin él, franjas verticales);
+- con efectos, el arranque cuenta como correcto recién cuando el trabajo propio
+  lleva ~600 fotogramas (un cierre al encenderlos baja el nivel).
+
+Simulador: el DCB del juego lleva la cola real; cada flip se verifica que
+termine en ella; escenarios 25a (marca de GTA V) y 25b (sin cola: intacto).
 
 ## Novedades de la 2.60
 

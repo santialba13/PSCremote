@@ -12,6 +12,11 @@
 #define SEL_W 7
 #define SQ_RSRC_IMG_2D 9
 
+// PS4 Pro (Neo): los buffers con tiling 2D usan la tabla de macro-tiles de 16
+// pipes; el T# lo indica con alt_tile_mode (bit 24 de t[6]), como hace libSceGnm
+// (lo documenta VCFG, fg8_table.h). Sin el bit se escribe con la tabla de 8.
+int nx_desc_neo;
+
 void nx_make_tsharp(uint32_t t[8], const nx_image_t* img)
 {
     uint32_t dfmt = img->format == NX_FMT_RGB10A2_UNORM ? DFMT_2_10_10_10 : DFMT_8_8_8_8;
@@ -28,7 +33,7 @@ void nx_make_tsharp(uint32_t t[8], const nx_image_t* img)
     t[3] |= (uint32_t)SQ_RSRC_IMG_2D << 28;
     t[4] = (img->pitch - 1) << 13;                 // DEPTH = 0
     t[5] = 0;                                      // BASE_ARRAY / LAST_ARRAY = 0
-    t[6] = 0;
+    t[6] = nx_desc_neo && img->tile_index != NX_TILE_DISPLAY_LINEAR_ALIGNED ? 1u << 24 : 0;
     t[7] = 0;                                      // sin metadata (sin DCC/CMASK)
 }
 

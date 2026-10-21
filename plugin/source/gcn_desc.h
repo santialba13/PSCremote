@@ -24,6 +24,7 @@ typedef struct {
     uint32_t tile_index;
 } nx_image_t;
 
+extern int nx_desc_neo;   // 1 en PS4 Pro: T# con alt_tile_mode para tiling 2D
 void nx_make_tsharp(uint32_t out[8], const nx_image_t* img);
 // sampler con clamp al borde, coordenadas en pixeles, filtro bilineal o nearest
 void nx_make_ssharp(uint32_t out[4], int bilinear);

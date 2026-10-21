@@ -60,7 +60,7 @@ static void trace(const char* line)
 attr_public const char* g_pluginName = "vcfg_nx";
 attr_public const char* g_pluginDesc = "Frame generation + reescalado IA (NXSR) + SMAA/FSR1, menu L3+R3";
 attr_public const char* g_pluginAuth = "VCFG-NX";
-attr_public u32 g_pluginVersion = 0x00000260; // 2.60
+attr_public u32 g_pluginVersion = 0x00000261; // 2.61
 
 // prototipos de las variantes ForWorkload (OpenOrbis las declara sin argumentos)
 typedef s32 (*submit_wl_t)(u64, u32, void**, u32*, void**, u32*);
@@ -354,7 +354,12 @@ static void after_game_flip(void)
 {
     uint64_t f = ++g_game_flips;
     if (f == 1) boot_stage(g_title_s, "primer fotograma del juego");
-    if (f == 900) {   // ~15-30 s de juego: este nivel anda, el proximo arranque suma una parte
+    // ~15-30 s de juego: este nivel anda. Con el motor procesando (nivel 3+), recien
+    // cuando nuestro trabajo de GPU lleva ~600 fotogramas (o el juego ~20 min sin
+    // activarlo): un cierre con los efectos recien encendidos no cuenta como correcto
+    static int ok_done;
+    if (!ok_done && f >= 900 && (!g_engine_live || nx_engine_info()->our_jobs >= 600 || f >= 36000)) {
+        ok_done = 1;
         boot_level_ok();
         boot_stage(g_title_s, g_level < g_level_max ? "jugando: arranque correcto (el proximo va al nivel completo)"
                                                     : "jugando: arranque correcto");

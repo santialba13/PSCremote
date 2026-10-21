@@ -37,7 +37,7 @@ static struct {
     size_t early_base, early_work;    // reserva temprana del plugin (la hace main.c al cargar)
     int temp;                         // grados C (0 = el sistema no la informa)
     uint64_t groups_total;
-    int game_dcb_submits, flips, bad_flips, our_dcbs, bad_dcbs;
+    int game_dcb_submits, flips, bad_flips, our_dcbs, bad_dcbs, bad_tail, plain_with_ours;
     int last_flip_index;
     file_t files[16];
     int nfiles;
@@ -49,7 +49,15 @@ static struct {
 static int fails;
 #define CHECK(c, ...) do { if (!(c)) { printf("    FALLO: " __VA_ARGS__); printf("\n"); ++fails; } } while (0)
 
-static uint32_t game_dcb_mark[4] = { 0xC0001000u, 0, 0, 0 };   // NOP con un dword: "DCB del juego"
+// "DCB del juego": un NOP corto y, como en la consola, la cola de flip de
+// DrawCommandBuffer::prepareFlip (NOP de 64 dwords con la marca 0x687507xx)
+#define GAME_SZ (68 * 4)
+static uint32_t game_dcb_mark[68] = { 0xC0021000u, 0, 0, 0, 0xC03E1000u, 0x68750777u };
+static int tail_ok(const uint32_t* d, uint32_t bytes)
+{
+    uint32_t n = bytes / 4;
+    return n >= 64 && d[n - 64] == 0xC03E1000u && (d[n - 63] >> 8) == 0x687507u;
+}
 
 static void* sim_alloc(size_t len, size_t align)
 {
@@ -139,13 +147,21 @@ static void process(const nx_submit_t* s)
     }
 }
 
-static int sim_submit(const nx_submit_t* s) { process(s); return 0; }
+static int sim_submit(const nx_submit_t* s)
+{
+    for (uint32_t k = 0; k < s->count; ++k) if (s->dcb[k] != (void*)game_dcb_mark) C.plain_with_ours++;
+    process(s);
+    return 0;
+}
 
 static int cpu_flips;
 
 static int sim_submit_flip(const nx_submit_t* s)
 {
     if (s->cpu_flip && s->count == 0) cpu_flips++;
+    // todo flip de Gnm: el ultimo DCB termina en la cola de flip (si no, el sistema
+    // escribe sobre las ultimas instrucciones de ese DCB)
+    if (s->count && !tail_ok((const uint32_t*)s->dcb[s->count - 1], s->dcb_sz[s->count - 1])) C.bad_tail++;
     process(s);
     C.flips++;
     if (s->index >= 16 || !C.registered[s->index]) C.bad_flips++;
@@ -248,7 +264,7 @@ static uint32_t pad_buttons;
 static void play(const game_t* g, int frames, int workload)
 {
     void* dcb[1] = { game_dcb_mark };
-    uint32_t sz[1] = { 8 };
+    uint32_t sz[1] = { GAME_SZ };
     for (int f = 0; f < frames; ++f) {
         uint32_t b = pad_buttons;
         uint8_t st[4] = { 10, 20, 30, 40 }, tr[2] = { 5, 6 };
@@ -281,6 +297,8 @@ static void common_checks(void)
 {
     CHECK(C.bad_flips == 0, "%d flips a indices no registrados", C.bad_flips);
     CHECK(C.bad_dcbs == 0, "%d DCB mal formados", C.bad_dcbs);
+    CHECK(C.bad_tail == 0, "%d flips sin la cola de flip al final", C.bad_tail);
+    CHECK(C.plain_with_ours == 0, "%d DCB propios enviados sin flip", C.plain_with_ours);
 }
 
 int main(int argc, char** argv)
@@ -437,7 +455,7 @@ int main(int argc, char** argv)
     boot(&bb, 0);
     play(&bb, 1000, 1);
     void* dcb[3] = { game_dcb_mark, game_dcb_mark, game_dcb_mark };
-    uint32_t sz[3] = { 8, 8, 8 };
+    uint32_t sz[3] = { GAME_SZ, GAME_SZ, GAME_SZ };
     srand(1);
     for (int k = 0; k < 2000; ++k) {
         nx_submit_t s = { (uint32_t)(rand() % 3), dcb, sz, NULL, NULL, (uint32_t)(rand() % 3),
@@ -503,7 +521,7 @@ int main(int argc, char** argv)
     game_t g14 = bb; g14.nbuf = 3;
     for (int f = 0; f < 2000; ++f) {   // ahora presenta en los indices 4..6
         void* dcb1[1] = { game_dcb_mark };
-        uint32_t sz1[1] = { 8 };
+        uint32_t sz1[1] = { GAME_SZ };
         nx_submit_t s14 = { 1, dcb1, sz1, NULL, NULL, 0, (uint32_t)(4 + f % 3), 1, f, 0, 0, 0 };
         nx_engine_on_submit_flip(&s14);
         C.clock_us += 33333;
@@ -711,6 +729,27 @@ int main(int argc, char** argv)
         nx_config_t c;
         nx_config_defaults(&c);
         CHECK(c.warmup_flips == 1200, "warmup por defecto (%d)", c.warmup_flips);
+    }
+
+    // 25. cola de flip: GTA V usa la marca 0x68750778 (anda igual); un juego
+    //     cuyo ultimo DCB no termina en la cola pasa intacto (nunca se toca)
+    {
+        game_t g25 = bb; g25.title = "CUSA00411";
+        boot(&g25, 0);
+        game_dcb_mark[5] = 0x68750778u;
+        play(&g25, 2400, 0);
+        report("25a. GTA V: cola con 0x68750778");
+        CHECK(I()->full_ready && I()->our_jobs > 1000, "con la marca de GTA V deberia activarse");
+        common_checks();
+        game_dcb_mark[5] = 0x68750777u;
+        boot(&g25, 0);
+        game_dcb_mark[4] = 0xC0001000u;   // sin cola
+        int f0 = C.flips;
+        play(&g25, 2400, 0);
+        game_dcb_mark[4] = 0xC03E1000u;
+        report("25b. ultimo DCB sin cola de flip");
+        CHECK(I()->our_jobs == 0 && C.flips == f0 + 2400, "sin cola no deberia tocar nada (trabajos %llu)",
+              (unsigned long long)I()->our_jobs);
     }
 
     // 10. juego que arranca en un proceso que no es un juego

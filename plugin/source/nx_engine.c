@@ -84,7 +84,7 @@ static struct {
     // recursos propios
     uint8_t* base_mem;          // DCBs + OSD (pocos KiB)
     uint32_t* dcb[2];
-    uint32_t* nop_dcb;
+    uint32_t* tail[2];          // copia de la "cola de flip" (64 dwords) para los flips extra
     uint8_t* osd_text[2];       // menu, contador
     uint8_t* osd_attr[2];       // color de cada celda (paleta de shaders/osd.cl)
     uint8_t* osd_font;          // atlas suavizado (nx_osd_font.h)
@@ -168,9 +168,9 @@ static void logf_(const char* fmt, ...)
     unlock_log();
 }
 
-enum { WHY_STATE, WHY_NOBASE, WHY_HANDLE, WHY_INDEX, WHY_COUNT, WHY_NOTHING, WHY_STALL, WHY_N };
+enum { WHY_STATE, WHY_NOBASE, WHY_HANDLE, WHY_INDEX, WHY_COUNT, WHY_NOTHING, WHY_STALL, WHY_TAIL, WHY_N };
 static const char* const WHY_NAME[WHY_N] = { "estado", "sin_memoria_menu", "otro_handle", "indice_desconocido",
-                                             "count_raro", "nada_que_hacer", "gpu_atrasada" };
+                                             "count_raro", "nada_que_hacer", "gpu_atrasada", "sin_cola_de_flip" };
 
 // los textos del motor son Latin-1 (los usa el menu); las notificaciones, UTF-8
 static void notify(const char* msg)
@@ -269,6 +269,7 @@ void nx_engine_init(const nx_platform_t* pf, const char* title_id)
     }
     guard_check();
     E.pro = pf->is_pro ? pf->is_pro() != 0 : 0;
+    nx_desc_neo = E.pro;
     E.info.temp_c = -1;
     E.info.state = NX_ST_WAIT_BUFFERS;
     set_status(E.info.safe_mode ? "modo seguro" : "esperando el juego");
@@ -359,11 +360,37 @@ int nx_engine_on_set_flip_rate(int handle, int rate)
     return rate;
 }
 
+// ------------------------------------------------------------- cola de flip
+// sceGnmSubmitAndFlipCommandBuffers exige que el ultimo DCB termine en el
+// paquete que deja DrawCommandBuffer::prepareFlip: un NOP de 64 dwords con la
+// marca 0x687507xx en el segundo (0x68750777; GTA V usa 0x68750778). El sistema
+// lo reescribe al presentar (la escritura de fin de trabajo que espera el flip).
+// Igual que VCFG: el juego se envia sin esos 64 dwords, nuestro DCB va despues
+// en el MISMO envio y termina con una copia de la cola. Antes nuestro DCB iba
+// en un envio aparte sin cola y el sistema escribia sobre sus ultimas
+// instrucciones (el label no llegaba: "carga alta" y la GPU colgada).
+#define TAIL_HDR 0xC03E1000u   // NOP tipo 3 de 63 dwords de cuerpo
+static void make_tail(uint32_t* t)
+{
+    t[0] = TAIL_HDR;
+    t[1] = 0x68750777u;
+    for (int i = 2; i < NOP_DWORDS; ++i) t[i] = 0;
+}
+
+static const uint32_t* find_tail(const nx_submit_t* s)
+{
+    if (!s->count || !s->dcb || !s->dcb_sz || !s->dcb[s->count - 1]) return NULL;
+    uint32_t nd = s->dcb_sz[s->count - 1] / 4;
+    if (nd < NOP_DWORDS) return NULL;
+    const uint32_t* t = (const uint32_t*)s->dcb[s->count - 1] + (nd - NOP_DWORDS);
+    return t[0] == TAIL_HDR && (t[1] >> 8) == 0x687507u ? t : NULL;
+}
+
 // ------------------------------------------------------------- reservas
 static int alloc_base(void)
 {
     size_t osd_sz = nx_osd_mem_size();
-    size_t need = (size_t)(2 * DCB_DWORDS + NOP_DWORDS) * 4 + 4 * 4096 + sizeof nx_osd_font + osd_sz + 8192;
+    size_t need = (size_t)(2 * DCB_DWORDS + 2 * NOP_DWORDS) * 4 + 4 * 4096 + sizeof nx_osd_font + osd_sz + 8192;
     // la base son pocos KiB (menu + DCBs): alcanza con dejar 32 MiB libres
     size_t pool = E.pf->pool_free ? E.pf->pool_free(1) : 0;
     if (pool < need && E.pf->avail_direct() < need + 32u * 1048576) return 0;
@@ -373,8 +400,10 @@ static int alloc_base(void)
 #define ALIGN256(q) (uint8_t*)(((uintptr_t)(q) + 255) & ~(uintptr_t)255)
     E.dcb[0] = (uint32_t*)p; p += DCB_DWORDS * 4;
     E.dcb[1] = (uint32_t*)p; p += DCB_DWORDS * 4;
-    E.nop_dcb = (uint32_t*)p; p += NOP_DWORDS * 4;
-    for (int i = 0; i < NOP_DWORDS; ++i) E.nop_dcb[i] = 0x80000000u;
+    for (int k = 0; k < 2; ++k) {
+        E.tail[k] = (uint32_t*)p; p += NOP_DWORDS * 4;
+        make_tail(E.tail[k]);
+    }
     p = ALIGN256(p);
     E.label_cpu = (volatile uint32_t*)p; E.label_gpu = (uint64_t)(uintptr_t)p; *E.label_cpu = 0; p += 256;
     E.osd_text[0] = p; p += 4096;
@@ -702,7 +731,7 @@ static int passthrough_why(const nx_submit_t* s, int why)
 
 static int flip_index(const nx_submit_t* game, int index, uint32_t mode)
 {
-    void* d[1] = { E.nop_dcb };
+    void* d[1] = { E.tail[E.slot] };
     uint32_t sz[1] = { NOP_DWORDS * 4 };
     nx_submit_t f = { 1, d, sz, NULL, NULL, game->handle, (uint32_t)index, mode, game->arg, 0, 0, 0 };
     return E.pf->submit_flip(&f);
@@ -902,11 +931,18 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
             : !E.base_mem ? WHY_NOBASE
             : (int)s->handle != E.handle ? WHY_HANDLE
             : (gi < 0 || gi >= 16 || !((E.game_mask >> gi) & 1)) ? WHY_INDEX
-            : ((s->count == 0 && !s->cpu_flip) || s->count > 64) ? WHY_COUNT : -1;
+            : ((s->count == 0 && !s->cpu_flip) || s->count > 64) ? WHY_COUNT
+            : (!s->cpu_flip && !find_tail(s)) ? WHY_TAIL : -1;
     if (why >= 0) {
         if (why != WHY_STATE && !E.why[why]) {
             logf_("[flip] primer fotograma sin tocar por %s (handle=%u idx=%u count=%u)\n", WHY_NAME[why],
                   s->handle, s->index, s->count);
+            if (why == WHY_TAIL && s->count && s->dcb_sz && s->dcb && s->dcb[s->count - 1]) {
+                uint32_t nd = s->dcb_sz[s->count - 1] / 4;
+                const uint32_t* w = (const uint32_t*)s->dcb[s->count - 1];
+                logf_("[flip] ultimo DCB %u dwords; final: %08x %08x %08x %08x\n", nd, nd >= 64 ? w[nd - 64] : 0,
+                      nd >= 63 ? w[nd - 63] : 0, nd >= 2 ? w[nd - 2] : 0, nd >= 1 ? w[nd - 1] : 0);
+            }
             log_flush();
         }
         E.prev_idx = -1;
@@ -970,11 +1006,9 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
         maybe_level_up();
     }
 
-    // 1. el trabajo del juego, sin flip (en un flip de CPU ya lo envio el juego)
-    int rc = s->count ? E.pf->submit(s) : 0;
-    if (rc != 0) return rc;
-
-    // 2. nuestro DCB
+    // nuestro DCB (va en el mismo envio que el trabajo del juego, despues)
+    const uint32_t* gtail = s->cpu_flip ? NULL : find_tail(s);
+    int rc;
     if (want_fg && E.prev_idx < 0) want_fg = 0;   // falta el fotograma anterior: este va sin FG
     int m = (int)(E.seq & 1);
     nx_osd_t menu = { 0 }, fps = { 0 };
@@ -1000,7 +1034,7 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
     E.last_fg = fg_mode;
     int enhance_first = want_fg && want_post && E.Wo == E.W;
     pm4_t c;
-    pm4_init(&c, E.dcb[sl], DCB_DWORDS);
+    pm4_init(&c, E.dcb[sl], DCB_DWORDS - NOP_DWORDS);   // los ultimos 64: la cola de flip
     nx_job_t job = {
         .prev = want_fg ? &E.game_img[E.prev_idx] : NULL,
         .cur = &E.game_img[gi],
@@ -1027,24 +1061,56 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
         logf_("[engine] build = %d: degradado\n", br);
         E.info.state = NX_ST_DEGRADED;
         set_status("error interno: desactivado");
-        // el juego ya se envio sin flip: solo falta presentar su fotograma
-        return flip_index(s, (int)s->index, s->mode);
+        return E.pf->submit_flip(s);   // nada se envio todavia: el fotograma del juego tal cual
     }
+    // cola de flip al final de nuestro DCB y copia para el flip extra
+    if (gtail) {
+        memcpy(E.dcb[sl] + c.n, gtail, NOP_DWORDS * 4);
+        memcpy(E.tail[sl], gtail, NOP_DWORDS * 4);
+    } else {
+        make_tail(E.dcb[sl] + c.n);
+        make_tail(E.tail[sl]);
+    }
+    c.n += NOP_DWORDS;
     E.seq++;
     E.slot_seq[sl] = E.seq;
     E.info.our_jobs++;
-    void* d[1] = { E.dcb[sl] };
-    uint32_t dsz[1] = { (uint32_t)(c.n * 4) };
+    // un solo envio: los DCB del juego (el ultimo sin su cola) + el nuestro con la cola
+    void* d[65];
+    uint32_t dsz[65];
+    void* cb[65];
+    uint32_t cbsz[65];
+    uint32_t n = 0;
+    for (uint32_t k = 0; k < s->count; ++k) {
+        d[n] = s->dcb[k];
+        dsz[n] = s->dcb_sz[k];
+        cb[n] = s->ccb ? s->ccb[k] : NULL;
+        cbsz[n] = s->ccb_sz ? s->ccb_sz[k] : 0;
+        ++n;
+    }
+    if (n) {
+        dsz[n - 1] -= NOP_DWORDS * 4;
+        if (!dsz[n - 1]) --n;   // el ultimo era solo la cola: lo reemplaza el nuestro (y su CCB se descarta)
+    }
+    d[n] = E.dcb[sl];
+    dsz[n] = (uint32_t)(c.n * 4);
+    cb[n] = NULL;
+    cbsz[n] = 0;
+    ++n;
+    int has_ccb = s->ccb != NULL;
     int real_idx = job.out_real ? E.real_index[m] : (int)s->index;
+    nx_submit_t all = { n, d, dsz, has_ccb ? cb : NULL, has_ccb ? cbsz : NULL, s->handle, 0, s->mode, s->arg,
+                        s->workload, s->for_workload, 0 };
     if (job.fg) {
         set_rate_forced(1);
-        nx_submit_t mid = { 1, d, dsz, NULL, NULL, s->handle, (uint32_t)E.mid_index[m], 1, s->arg, 0, 0, 0 };
-        rc = E.pf->submit_flip(&mid);
+        all.index = (uint32_t)E.mid_index[m];
+        all.mode = 1;
+        rc = E.pf->submit_flip(&all);
         flip_index(s, real_idx, 1);
     } else {
         set_rate_forced(0);
-        nx_submit_t one = { 1, d, dsz, NULL, NULL, s->handle, (uint32_t)real_idx, s->mode, s->arg, 0, 0, 0 };
-        rc = E.pf->submit_flip(&one);
+        all.index = (uint32_t)real_idx;
+        rc = E.pf->submit_flip(&all);
     }
     E.prev_idx = gi;
     E.prev_real_valid = job.out_real != NULL;
