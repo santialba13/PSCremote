@@ -5,7 +5,7 @@
 CC = clang
 CFLAGS ?= -O2 -Wall -Wextra
 PORTABLE = ../source/pm4.c ../source/gcn_desc.c ../source/nx_pipeline.c ../source/nx_dispatch.c ../source/nx_osd.c
-HEADERS = ../include/nx_shaders.h ../include/nxflow_weights.h ../include/nxsr_weights.h ../include/nxsr_hq_weights.h ../include/nxsrl_weights.h ../include/nxre_weights.h
+HEADERS = ../include/nx_shaders.h ../include/nxsr_weights.h ../include/nxsr_hq_weights.h ../include/nxsrl_weights.h ../include/nxre_weights.h
 
 all: host_test gpu_emu console_sim
 

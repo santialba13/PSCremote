@@ -719,7 +719,7 @@ static void build_menu_text(void)
         unsigned f = E.fx_active;
         int n = snprintf(l, sizeof l, "%s", E.info.level > 0 ? "carga: " : "activo: ");
         const char* sep = "";
-        if (f & (FX_FG_VCFG | FX_FG_IA)) { n += snprintf(l + n, sizeof l - (size_t)n, "%s", f & FX_FG_IA ? "IA" : "VCFG"); sep = "+"; }
+        if (f & (FX_FG_VCFG | FX_FG_IA)) { n += snprintf(l + n, sizeof l - (size_t)n, "%s", f & FX_FG_IA ? "NXFG3" : "VCFG"); sep = "+"; }
         if (f & FX_RE) { n += snprintf(l + n, sizeof l - (size_t)n, "%sREAL", sep); sep = "+"; }
         if (f & FX_EASU) { n += snprintf(l + n, sizeof l - (size_t)n, "%sEASU", sep); sep = "+"; }
         if (f & FX_SR) { n += snprintf(l + n, sizeof l - (size_t)n, "%sNXSR%s", sep, E.info.lite == 2 ? "-LC" : E.info.lite ? "-L" : ""); sep = "+"; }
@@ -736,7 +736,7 @@ static void build_menu_text(void)
     // interruptor general
     osd_item(t, a, 2 + ROW_ALL, "Todos los efectos", E.cfg.effects ? "ON" : "OFF", E.cfg.effects ? A_ON : A_ERROR, 0);
     osd_item(t, a, 2 + ROW_FG, "Generaci\xf3n de fotogramas",
-             E.cfg.framegen == 2 ? "IA NXFG-2" : E.cfg.framegen ? "VCFG" : "OFF", E.cfg.framegen ? A_ON : A_OFF, dim);
+             E.cfg.framegen == 2 ? "NXFG-3" : E.cfg.framegen ? "VCFG" : "OFF", E.cfg.framegen ? A_ON : A_OFF, dim);
     osd_item(t, a, 2 + ROW_RE, "Realismo IA (NXRE)", sr_names[E.cfg.re & 3], E.cfg.re ? A_ACCENT : A_OFF, pdim);
     osd_item(t, a, 2 + ROW_SR, "Reescalado IA (NXSR)", sr_names[E.cfg.sr & 3], E.cfg.sr ? A_ACCENT : A_OFF, pdim);
     // modelo: lo que eligio el usuario y lo que se usa de verdad
@@ -992,7 +992,7 @@ static void sr_choice(int sr, int* hq, int* lite)
 // escalones de la calidad dinamica, de lo mas pesado a lo mas liviano: primero el
 // modelo pesado pasa a NXSR-L, despues SMAA, el reescalado, la nitidez, el realismo
 // (el mas barato y el que mas se ve) y la generacion
-// ia: generacion IA con la presentacion de VCFG; su escalon la cambia por la de VCFG
+// ia: generacion propia (NXFG-3) con la presentacion de VCFG; su escalon la cambia por la de VCFG
 // (nunca se apaga la generacion en ese camino: fg = NULL)
 static void quality_ladder(int* fg, int* ia, int* sr, int* hq, int* lite, int* aa, int* rcas, int* re)
 {
@@ -1283,7 +1283,7 @@ static int fg8_frame(const nx_submit_t* s, int gi)
     set_rate_forced(1);
     uint32_t seq = ++E.fg8_seq;
     int m = E.fg8_midk;
-    int ia = E.cfg.framegen == 2 && E.info.full_ready;   // generacion propia (NXFG-2) con la presentacion de VCFG
+    int ia = E.cfg.framegen == 2 && E.info.full_ready;   // generacion propia (NXFG-3) con la presentacion de VCFG
     // post-proceso del real (reescalado, SMAA, nitidez), con la calidad dinamica: el
     // ultimo escalon cambia la IA por la generacion de VCFG; la generacion no se apaga
     int sr = 0, hq = 0, lite = 0, aa = 0, rcas = 0, re = 0;
@@ -1298,8 +1298,8 @@ static int fg8_frame(const nx_submit_t* s, int gi)
     quality_ladder(NULL, &ia, &sr, &hq, &lite, &aa, &rcas, &re);
     if (want_ia && !ia && !E.ia_fallback_said) {
         E.ia_fallback_said = 1;
-        notify("VCFG-NX: la generacion IA no entra en la GPU con este juego: usa la de VCFG");
-        stage("generacion IA -> VCFG por carga (nivel %d)", E.info.level);
+        notify("VCFG-NX: la generacion NXFG-3 no entra en la GPU con este juego: usa la de VCFG");
+        stage("generacion NXFG-3 -> VCFG por carga (nivel %d)", E.info.level);
     }
     E.info.hq = hq;
     E.info.lite = lite;
@@ -1339,7 +1339,7 @@ static int fg8_frame(const nx_submit_t* s, int gi)
         br = nx_fg8_build(&E.fg8, &c, k, &j);
     } else {
         // espera de pantalla de VCFG y la cadena propia: piramides + block-matching (LDS)
-        // + NXFG-2 + warp, escribiendo directo en el intermedio
+        // + NXFG-3 (eleccion a 1/4 + un warp), escribiendo directo en el intermedio
         nx_fg8_wait_mid(&c, &j);
         if (repeat) {   // sin fotograma anterior: el intermedio repite el actual
             br = nx_osd_copy(&E.osd, &c, 2 + k, C, &E.fg8_mid[m]) != 0 ? -4 : 0;

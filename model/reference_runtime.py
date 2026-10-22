@@ -234,3 +234,53 @@ def cand_warp(i0, i1, low, s, sigma=None, eps=1e-3):
         m = 1 / (1 + np.exp(-up[..., 4:5]))
         out = np.where(coh[..., None], m * a + (1 - m) * b, out)
     return out
+
+
+# ------------------------------------------------------------------ NXFG-3
+def interpolate3(i0, i1, bm=None, scene_cut=0.12, sigma=0.05, prior=0.6):
+    """NXFG-3 (model/net3.py) en NumPy: referencia exacta de fg3_select + fg3_warp.
+    i0, i1 con alto/ancho multiplos de 32; bm: model/bm2.motion o None."""
+    import bm2
+    if bm is None:
+        bm = np.concatenate(bm2.motion(bm2.pyramid(i0), bm2.pyramid(i1)), -1)
+    H, W, _ = i0.shape
+    if bm[..., 2].mean() > scene_cut:
+        return i1.copy()
+    v = bm[..., 1::-1] / 8.0
+    low = upsample5(np.concatenate([-v, v, np.zeros_like(v[..., :1])], -1), 2)   # malla 1/8
+    hl, wl = low.shape[:2]
+    q0, q1 = avgpool(i0, 4), avgpool(i1, 4)
+    h, w = q0.shape[:2]
+    gy = (np.arange(h) + 0.5) * 0.5 - 0.5
+    gx = (np.arange(w) + 0.5) * 0.5 - 0.5
+    cy = np.floor(gy + 0.5).astype(int); cx = np.floor(gx + 0.5).astype(int)
+    Fs, errs, pws = [], [], []
+    for dy in (-1, 0, 1):
+        for dx in (-1, 0, 1):
+            c = low[np.clip(cy + dy, 0, hl - 1)][:, np.clip(cx + dx, 0, wl - 1)]
+            d2 = (gy - (cy + dy))[:, None] ** 2 + (gx - (cx + dx))[None, :] ** 2
+            pws.append(np.exp(-d2 / (2 * prior * prior)))
+            F0, F1 = c[..., 0:2] * 2, c[..., 2:4] * 2
+            errs.append(np.abs(warp(q0, F0) - warp(q1, F1)).sum(-1))
+            Fs.append(np.concatenate([F0, F1], -1) * 4)
+    E = np.stack(errs)
+    wt = np.stack(pws) * np.exp(-(E - E.min(0)) / sigma)
+    wt /= wt.sum(0)
+    F = resize_bilinear((wt[..., None] * np.stack(Fs)).sum(0), H, W)
+    F0, F1 = F[..., 0:2], F[..., 2:4]
+    a, b = warp(i0, F0), warp(i1, F1)
+    S = static_src_mask(i0, i1)
+    yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
+
+    def half(F):
+        xs = np.clip(np.floor((xx + F[..., 0]) * 0.5).astype(int), 0, W // 2 - 1)
+        ys = np.clip(np.floor((yy + F[..., 1]) * 0.5).astype(int), 0, H // 2 - 1)
+        return S[ys, xs]
+    e = np.abs(a - b).sum(-1)
+    dis = np.clip((e - 0.06) / 0.12, 0, 1)
+    r0 = (1 - half(F0) * (np.abs(F0).sum(-1) > 1.0) * dis)[..., None]
+    r1 = (1 - half(F1) * (np.abs(F1).sum(-1) > 1.0) * dis)[..., None]
+    wa, wb = 0.5 * r0, 0.5 * r1
+    mix = (wa * a + wb * b + 1e-3 * 0.5 * (a + b)) / (wa + wb + 1e-3)
+    st = static_weight(i0, i1, OPTS["static_tau"])
+    return st * (0.5 * (i0 + i1)) + (1 - st) * mix

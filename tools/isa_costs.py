@@ -107,7 +107,7 @@ if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "--estimate":
     # python3 tools/isa_costs.py --estimate [W H]
     W = int(sys.argv[2]) if len(sys.argv) > 2 else 1920
     H = int(sys.argv[3]) if len(sys.argv) > 3 else 1080
-    NAMES = {0: "generacion IA (NXFG-2)", 6: "generacion sin red", 7: "FSR+", 2: "IA + SMAA (SMAA)",
-             3: "NXSR Clasico", 5: "NXSR Calidad (viejo)", 8: "NXSR-L Ligero", 9: "IA + NXSR-L + SMAA",
-             10: "NXSR-L Calidad", 11: "NXRE realismo", 12: "todo (IA+NXRE+SMAA+NXSR-L+FSR+)"}
+    NAMES = {0: "generacion NXFG-3", 6: "generacion sin red", 7: "FSR+", 2: "NXFG-3 + SMAA",
+             3: "NXSR Clasico", 5: "NXSR Calidad (viejo)", 8: "NXSR-L Ligero", 9: "NXFG-3 + NXSR-L + SMAA",
+             10: "NXSR-L Calidad", 11: "NXRE realismo", 12: "todo (NXFG-3+NXRE+SMAA+NXSR-L+FSR+)"}
     estimate(W, H, [0, 6, 7, 3, 5, 8, 10, 11, 2, 9, 12], NAMES)

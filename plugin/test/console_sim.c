@@ -975,6 +975,28 @@ int main(int argc, char** argv)
         sim_write("/data/vcfg_nx/config.ini", "warmup_flips = 600\nframegen = 0\n", 32);
     }
 
+    // 34. lo que pediste en la 2.77: generacion NXFG-3 + realismo NXRE con un juego pesado
+    //     (28 ms de GPU de los 33 que hay a 30 fps): entra sin bajar nada
+    {
+        const char* c34 = "warmup_flips = 600\nframegen = 2\nre = 2\nsr = 0\naa = 0\nrcas = 0\n";
+        sim_write("/data/vcfg_nx/config.ini", c34, strlen(c34));
+        boot(&bb, 1);
+        C.game_cost_us = 28000; C.ns_per_kinst = 100; C.flip_wait_us = 2000;
+        C.notifies = 0; C.last_notify[0] = 0;
+        play(&bb, 6000, 0);
+        int m0 = C.mid_flips;
+        play(&bb, 1000, 0);
+        printf("  34. NXFG-3 + realismo, juego de 28 ms: GPU propia %.1f ms, nivel -%d de %d, intermedios %d/1000\n",
+               (double)I()->gpu_ms, I()->level, I()->level_max, C.mid_flips - m0);
+        CHECK(I()->level == 0, "bajo la calidad (nivel -%d, %s)", I()->level, C.last_notify);
+        CHECK(!C.notifies || !strstr(C.last_notify, "carga"), "aviso: %s", C.last_notify);
+        CHECK(C.mid_flips - m0 > 950, "faltan intermedios (%d)", C.mid_flips - m0);
+        CHECK(I()->gpu_ms < 6.0f, "NXFG-3 + NXRE (con las copias de la presentacion) deberia costar menos de 6 ms (%.1f)", (double)I()->gpu_ms);
+        common_checks();
+        C.flip_wait_us = 0; C.ns_per_kinst = 0; C.game_cost_us = 0;
+        sim_write("/data/vcfg_nx/config.ini", "warmup_flips = 600\nframegen = 0\n", 32);
+    }
+
     // 10. juego que arranca en un proceso que no es un juego
     game_t sh = bb; sh.title = "NPXS20001";
     boot(&sh, 0);

@@ -34,10 +34,9 @@ typedef struct {
     nx_arena_t arena;
     int shader[48];     // indice en nx_shaders[] por kernel usado
     uint64_t shader_gpu[48];
-    uint64_t w_gpu[24], b_gpu[24];
     // tensores
-    uint64_t luma[2][4], a8[2], a16[2];
-    uint64_t vec[4], vtmp, flowG, deltaG, flow8, delta8, lvl_in, hA, hB, hR, up, scene, smask, smask_e;
+    uint64_t luma[2][4], a4[2];   // a4: promedios 4x4 (NXFG-3), por paridad
+    uint64_t vec[4], vtmp, flowG, flow8, fq, scene, smask, smask_e;
     uint64_t tmp_img, tmp_img2, tmp_aa;   // imagenes intermedias para el post-proceso
     uint64_t smaa_edges, smaa_weights, smaa_area, smaa_search, nxsr_w, nxsr_hq_w;
     uint64_t srl_w[2][8], srl_b[2][8], srl_feat, srl_h[3], srl_g;   // NXSR-L: [0] Ligero, [1] Calidad

@@ -98,6 +98,8 @@ CONV_DECL(conv3x3_5_12) CONV_DECL(conv3x3_12_12) CONV_DECL(conv3x3_12_3)
 CONV_DECL(conv3x3_5_16) CONV_DECL(conv3x3_16_16) CONV_DECL(conv3x3_16_3)
 CONV_DECL(conv3x3_3_16) CONV_DECL(conv3x3_16_24) CONV_DECL(conv3x3_24_96)
 void re_ema(P, P, int, float);
+void fg3_select(P, P, int, int, P, int, int, P);
+void fg3_warp(P, P, P, P, int, int, P, P, P, int, int);
 void re_apply(P, P, int, int, P, int, int, float, float, float, float, float);
 void wg_srl_feat(P, int, int, P, int, int);
 void srl_act(P, int);
@@ -153,6 +155,8 @@ static void call(const char* n)
     else if (IS("conv3x3_3_16")) CONV(conv3x3_3_16);
     else if (IS("conv3x3_16_24")) CONV(conv3x3_16_24);
     else if (IS("conv3x3_24_96")) CONV(conv3x3_24_96);
+    else if (IS("fg3_select")) fg3_select(ap(0), ap(1), ai(2), ai(3), ap(4), ai(5), ai(6), ap(7));
+    else if (IS("fg3_warp")) fg3_warp(ap(0), ap(1), ap(2), ap(3), ai(4), ai(5), ap(6), ap(7), ap(8), ai(9), ai(10));
     else if (IS("re_ema")) re_ema(ap(0), ap(1), ai(2), af(3));
     else if (IS("re_apply")) re_apply(ap(0), ap(1), ai(2), ai(3), ap(4), ai(5), ai(6), af(7), af(8), af(9), af(10), af(11));
     else if (IS("wg_srl_feat")) wg_srl_feat(ap(0), ai(1), ai(2), ap(3), ai(4), ai(5));

@@ -60,7 +60,7 @@
 #define LOG_DIR ROOT "/data/GoldHEN/vcfg_nx"   // registros del plugin (desde 2.55)
 #define TITLE_ID "VCNX00001"
 #define CONTENT_ID "IV0000-VCNX00001_00-VCFGNXINSTALL000"
-#define VERSION "2.7.6"
+#define VERSION "2.7.7"
 
 #define W 1920
 #define H 1080
@@ -608,7 +608,7 @@ static const char* ROW_LABEL[R_COUNT] = {
 static const char* ROW_HELP[R_COUNT] = {
     "Agrega o quita VCFG-NX de plugins.ini para este juego.",
     "Por defecto: sigue los ajustes generales. Propios: este juego guarda los suyos.",
-    "Genera un fotograma intermedio: 30 fps se ven como 60. Se apaga solo si el juego ya va a m\xe1s de 48.",
+    "VCFG: el motor cl\xe1sico. NXFG-3: el propio, m\xe1s liviano (entra junto con el realismo). 30 fps se ven como 60.",
     "Red que cambia luz y color por zonas para que la imagen se vea como una foto real (aprendida de GTA V).",
     "Recupera detalle sin agregar grano ni halos: la salida queda acotada a los p\xedxeles vecinos.",
     "Ligero y Calidad (NXSR-L) se combinan con la generaci\xf3n; Cl\xe1sico usa unas 3 veces m\xe1s GPU.",
@@ -620,7 +620,7 @@ static const char* ROW_HELP[R_COUNT] = {
     "Muestra los FPS y la temperatura en una esquina.",
 };
 
-static int is_switch(int row) { return row == R_ENABLED || row == R_FG || row == R_AA || row == R_DYN || row == R_ECO || row == R_FPS; }
+static int is_switch(int row) { return row == R_ENABLED || row == R_AA || row == R_DYN || row == R_ECO || row == R_FPS; }
 
 static int temp_index(int t)
 {
@@ -644,6 +644,7 @@ static int row_on(const nx_config_t* c, int row)
 static void value_text(const nx_config_t* c, int row, char* out, size_t n)
 {
     switch (row) {
+    case R_FG: snprintf(out, n, "%s", c->framegen == 2 ? "NXFG-3" : c->framegen ? "VCFG" : "OFF"); break;
     case R_RE: snprintf(out, n, "%s", SR_N[c->re & 3]); break;
     case R_SR: snprintf(out, n, "%s", SR_N[c->sr & 3]); break;
     case R_MODEL: snprintf(out, n, "%s", MD_N[c->sr_model % 3]); break;
@@ -656,7 +657,7 @@ static void value_text(const nx_config_t* c, int row, char* out, size_t n)
 static void change(nx_config_t* c, int row, int dir)
 {
     switch (row) {
-    case R_FG: c->framegen = !c->framegen; break;
+    case R_FG: c->framegen = (c->framegen + (dir > 0 ? 1 : 2)) % 3; break;   // OFF, VCFG, NXFG-3
     case R_RE: c->re = (c->re + (dir > 0 ? 1 : 3)) % 4; break;
     case R_SR: c->sr = (c->sr + (dir > 0 ? 1 : 3)) % 4; break;
     case R_MODEL: c->sr_model = (c->sr_model + (dir > 0 ? 1 : 2)) % 3; break;
@@ -897,7 +898,7 @@ static void summary(const nx_config_t* c, char* out, size_t n)
     char t[16];
     value_text(c, R_TEMP, t, sizeof t);
     snprintf(out, n, "Fotogramas %s   \xb7   Realismo %s   \xb7   NXSR %s (%s)   \xb7   SMAA %s   \xb7   Din\xe1mica %s   \xb7   Ahorro %s   \xb7   L\xedmite %s",
-             c->framegen ? "ON" : "OFF", SR_N[c->re & 3], SR_N[c->sr & 3], MD_N[c->sr_model % 3], c->aa ? "ON" : "OFF",
+             c->framegen == 2 ? "NXFG-3" : c->framegen ? "VCFG" : "OFF", SR_N[c->re & 3], SR_N[c->sr & 3], MD_N[c->sr_model % 3], c->aa ? "ON" : "OFF",
              c->dynamic ? "ON" : "OFF", c->eco ? "ON" : "OFF", t);
 }
 

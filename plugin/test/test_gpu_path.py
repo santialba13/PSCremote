@@ -2,10 +2,10 @@
 .cl) contra el modelo de referencia en NumPy, sobre fotogramas reales.
 
   make -C plugin/test all
-  python3 plugin/test/test_gpu_path.py video.mp4 weights/nxfg2.pkl [--frame 10]
+  python3 plugin/test/test_gpu_path.py video.mp4 [--frame 10]
 
-Los pesos tienen que ser los mismos que se exportaron a plugin/include/nxflow_weights.h
-(NXFG-2, model/net2.py). Compara la generacion IA, la rapida (modo 6) y RCAS.
+Compara la generacion NXFG-3 (model/net3.py, referencia NumPy: reference_runtime.interpolate3),
+la rapida (modo 6), RCAS y FSR+.
 """
 import argparse
 import os
@@ -31,7 +31,7 @@ def psnr(a, b):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("video")
-    ap.add_argument("weights")
+    ap.add_argument("weights", nargs="?", help="(sin uso desde NXFG-3)")
     ap.add_argument("--frame", type=int, default=10)
     ap.add_argument("--emu", default=os.path.join(ROOT, "plugin", "test", "gpu_emu"))
     a = ap.parse_args()
@@ -39,8 +39,7 @@ def main():
     fr = data.decode_video(a.video)
     f0, gt, f1 = fr[a.frame], fr[a.frame + 1], fr[a.frame + 2]
     H, W = f0.shape[:2]
-    with open(a.weights, "rb") as f:
-        params = pickle.load(f)
+    params = None
 
     with tempfile.TemporaryDirectory() as td:
         paths = [os.path.join(td, n) for n in ("f0", "f1", "mid", "mid_rcas", "real_rcas", "mid_fast", "x", "plus")]
@@ -58,7 +57,7 @@ def main():
 
     i0 = rr.np.pad(f0.astype(np.float32) / 255, ((0, (-H) % 32), (0, (-W) % 32), (0, 0)), mode="edge")
     i1 = rr.np.pad(f1.astype(np.float32) / 255, ((0, (-H) % 32), (0, (-W) % 32), (0, 0)), mode="edge")
-    ref = np.clip(rr.interpolate2(params, i0, i1)[:H, :W], 0, 1)
+    ref = np.clip(rr.interpolate3(i0, i1)[:H, :W], 0, 1)
     ref_u8 = np.round(ref * 255) / 255
     ref_fast = np.round(np.clip(rr.interpolate2(params, i0, i1, fast=True)[:H, :W], 0, 1) * 255) / 255
     g = gt.astype(np.float32) / 255

@@ -22,11 +22,11 @@ sys.path.insert(0, os.path.join(ROOT, "model"))
 import data  # noqa: E402
 
 MODES = [
-    (0, "generacion IA (NXFG-2)", True, False),
+    (0, "generacion NXFG-3", True, False),
     (6, "generacion rapida (sin red)", True, False),
-    (1, "IA + nitidez RCAS", True, True),
+    (1, "NXFG-3 + nitidez RCAS", True, True),
     (7, "nitidez FSR+ (RCAS + detalle)", False, True),
-    (2, "IA + SMAA", True, True),
+    (2, "NXFG-3 + SMAA", True, True),
     (3, "NXSR Rapido", False, True),
     (5, "NXSR Calidad", False, True),
     (4, "IA sobre reales procesados con NXSR", True, True),

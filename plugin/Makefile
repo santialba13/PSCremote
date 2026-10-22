@@ -22,7 +22,7 @@ OBJS := $(patsubst source/%.c,$(OUT)/%.o,$(SRCS))
 
 all: $(TARGET)
 
-$(OUT)/%.o: source/%.c include/nx_shaders.h include/nxflow_weights.h
+$(OUT)/%.o: source/%.c include/nx_shaders.h
 	@mkdir -p $(OUT)
 	clang $(CFLAGS) -c -o $@ $<
 

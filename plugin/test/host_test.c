@@ -45,6 +45,8 @@ typedef struct { uint64_t src; int32_t W, H; uint64_t out; int32_t wc, hc; } ka_
 typedef struct { uint64_t g; int32_t n; } ka_srl_act_t;
 typedef struct { uint64_t src, dst; int32_t W, H; uint64_t g; int32_t wc, hc; float k, margin; } ka_srl_apply_t;
 typedef struct { uint64_t g, state; int32_t n; float a; } ka_re_ema_t;
+typedef struct { uint64_t q0, q1; int32_t H, W; uint64_t low5; int32_t hl, wl; uint64_t out; } ka_fg3_select_t;
+typedef struct { uint64_t f0, f1, samp, fq; int32_t hq, wq; uint64_t flag, smask, dst; int32_t H, W; } ka_fg3_warp_t;
 typedef struct { uint64_t src, dst; int32_t W, H; uint64_t grid; int32_t gw, gh; float m0, m1, m2, mc, s; } ka_re_apply_t;
 
 #define O(t, f) (int)offsetof(t, f)
@@ -101,6 +103,11 @@ static const layout_t layouts[] = {
     { "wg_srl_apply", 9, { O(ka_srl_apply_t, src), O(ka_srl_apply_t, dst), O(ka_srl_apply_t, W), O(ka_srl_apply_t, H),
         O(ka_srl_apply_t, g), O(ka_srl_apply_t, wc), O(ka_srl_apply_t, hc), O(ka_srl_apply_t, k),
         O(ka_srl_apply_t, margin) } },
+    { "fg3_select", 8, { O(ka_fg3_select_t, q0), O(ka_fg3_select_t, q1), O(ka_fg3_select_t, H), O(ka_fg3_select_t, W),
+        O(ka_fg3_select_t, low5), O(ka_fg3_select_t, hl), O(ka_fg3_select_t, wl), O(ka_fg3_select_t, out) } },
+    { "fg3_warp", 11, { O(ka_fg3_warp_t, f0), O(ka_fg3_warp_t, f1), O(ka_fg3_warp_t, samp), O(ka_fg3_warp_t, fq),
+        O(ka_fg3_warp_t, hq), O(ka_fg3_warp_t, wq), O(ka_fg3_warp_t, flag), O(ka_fg3_warp_t, smask), O(ka_fg3_warp_t, dst),
+        O(ka_fg3_warp_t, H), O(ka_fg3_warp_t, W) } },
     { "re_ema", 4, { O(ka_re_ema_t, g), O(ka_re_ema_t, state), O(ka_re_ema_t, n), O(ka_re_ema_t, a) } },
     { "re_apply", 12, { O(ka_re_apply_t, src), O(ka_re_apply_t, dst), O(ka_re_apply_t, W), O(ka_re_apply_t, H),
         O(ka_re_apply_t, grid), O(ka_re_apply_t, gw), O(ka_re_apply_t, gh), O(ka_re_apply_t, m0), O(ka_re_apply_t, m1),

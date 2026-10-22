@@ -1,4 +1,4 @@
-# VCFG-NX 2.76: frame generation + realismo IA (NXRE) + reescalado IA (NXSR) para PS4 (GoldHEN)
+# VCFG-NX 2.77: frame generation (VCFG / NXFG-3) + realismo IA (NXRE) + reescalado IA (NXSR) para PS4 (GoldHEN)
 
 Rediseño del **VCFG v2.14** (generador de fotogramas en beta de la comunidad
 de GoldHEN) que además incorpora un **modelo de reescalado/realce propio,
@@ -6,12 +6,12 @@ NXSR**, como alternativa a GNMScale pero sin el granulado que este agrega.
 Todo con la interfaz de VCFG: app instaladora con lista de juegos y menú en
 pantalla con **L3+R3**.
 
-**Descarga:** [`dist/VCFG-NX_v2.76.pkg`](dist/VCFG-NX_v2.76.pkg) (fPKG, app) ·
+**Descarga:** [`dist/VCFG-NX_v2.77.pkg`](dist/VCFG-NX_v2.77.pkg) (fPKG, app) ·
 [`dist/vcfg_nx.prx`](dist/vcfg_nx.prx) (plugin suelto) · [`dist/SHA256SUMS.txt`](dist/SHA256SUMS.txt)
 
 | servicio | qué hace |
 |---|---|
-| **Generación de fotogramas** | 30 → 60 fps. **VCFG** (el motor clásico de VCFG, MIT) o **IA** (NXFG-2, propia: movimiento de 4 niveles, red chica, elección de vector por píxel y protecciones anti-parpadeo) |
+| **Generación de fotogramas** | 30 → 60 fps. **VCFG** (el motor clásico de VCFG, MIT) o **NXFG-3** (propia: movimiento de 4 niveles, elección de vector a 1/4 entre 9 candidatos, un warp por píxel y protecciones anti-parpadeo; ~34 % más liviana que NXFG-2, entra junto con el realismo) |
 | **Realismo IA (NXRE)** | red propia que cambia luz y color por zona y por nivel de brillo para que la imagen se vea como una foto real (aprendida de GTA V convertido a fotorrealista); ~1-2 ms a 1080p, sin parpadeos |
 | **Reescalado IA (NXSR)** | red de 16 canales que reconstruye detalle (TAA borroso, render a menos resolución) y **nunca agrega grano ni halos**: su salida queda acotada al rango de los píxeles vecinos |
 | SMAA 1x | antialiasing de bordes |
@@ -61,12 +61,68 @@ botones mientras está abierto):
 * **Modelo IA**: izquierda/derecha cambia entre **Ligero** (NXSR-L), **Clásico**
   (el NXSR Rápido de antes, caro) y **Calidad** (NXSR-L Calidad); con modo ahorro,
   "Ligero (ahorro)".
-* **Generación**: **VCFG** (motor clásico de VCFG) o **IA NXFG-2** (la propia).
+* **Generación**: **VCFG** (motor clásico de VCFG) o **NXFG-3** (la propia). También en la app.
 * **Realismo IA (NXRE)**: OFF / Suave / Normal / Fuerte (Normal por defecto).
 * Generación de fotogramas, NXSR (Suave / Normal / Fuerte), modo ahorro, SMAA,
   nitidez FSR+, contador de FPS (con temperatura) y comparar (con línea divisoria).
 * Arriba se ven los FPS, la temperatura y el estado (activo, calidad dinámica,
   calor). **Guardar** deja todo para ese juego; **O** cierra.
+
+## Novedades de la 2.77
+
+Pediste que la generación de fotogramas propia entre junto con el realismo sin bajar
+carga, y un generador nuevo y mejorado. Esto es lo que se midió y lo que quedó.
+
+**Datos de GTA V para la generación.** El mismo video público de la 2.76 tiene GTA V
+real a 30 fps en la mitad izquierda: de ahí salen tripletes (i, i+1, i+2) y se genera
+el del medio a partir de los otros dos (`model/eval3.py`). Es el doble de movimiento
+que en el uso real (30 → 60), así que es una prueba exigente. Además de PSNR se mide
+**"fallas"**: % de píxeles con error visible (> 48/255: bloques rotos, desgarros).
+
+**Lo que NO funcionó (y por eso no está):**
+
+- Las redes de NXFG-2 (niveles A y B) en GTA V: +0,04 dB. Prácticamente nada.
+- Una red nueva que decide de qué fotograma real sale cada píxel en las oclusiones
+  (alrededor del personaje o del auto, que se mueven distinto que el fondo): no
+  aprendió nada en GTA V, y aun una decisión perfecta a 1/4 de resolución valdría
+  ~+0,9 dB.
+- Más candidatos, bloques más finos (8 px), un movimiento global de cámara
+  (modelo cuadrático) o cambiar la temperatura de la elección: ±0,05 dB.
+
+Conclusión: con lo que puede pagar la GPU de la PS4 junto al juego, la generación por
+bloques está en su techo de calidad (VCFG, NXFG-2 y NXFG-3 quedan a ±0,1 dB). No
+metí una red que no mejora nada medible.
+
+**NXFG-3** (`model/net3.py`, `fg3_select` y `fg3_warp` en `shaders/nxflow.cl`):
+
+- Mismo movimiento (bloques a 1/16, 4 niveles, sub-pixel), sin las redes A/B.
+- **Elección de vector a 1/4 de resolución** entre los 9 vectores vecinos de la
+  malla 1/8 (por cercanía y por cuánto coinciden sus dos muestras) y **un solo warp
+  por píxel** a resolución completa (2 muestras en vez de 8), con las mismas
+  protecciones: anti-fantasmas de HUD, píxeles quietos, corte de escena.
+- Resultados (`docs/resultados_fg3.md`):
+
+  | conjunto | VCFG (bloques) | NXFG-2 | **NXFG-3** |
+  |---|---|---|---|
+  | GTA V (PSNR / fallas) | 26,99 / 2,03 % | 26,95 / 1,88 % | **26,92 / 1,94 %** |
+  | video real | 37,95 / 0,53 % | 37,73 / 0,51 % | **37,84 / 0,55 %** |
+  | sintético tipo juego (HUD, sprites) | 24,44 / 4,91 % | 24,75 / 4,13 % | **24,56 / 4,51 %** |
+  | error en píxeles quietos, HUD (GTA V / sintético) | 0,02 / 2,00 | 0,00 / 0,18 | **0,00 / 0,18** |
+
+  Igual que NXFG-2 en GTA V y en video real (un poco menos en el sintético, donde las
+  redes de NXFG-2 habían sido entrenadas), y sin los fantasmas de HUD del motor por
+  bloques.
+- **Costo a 1080p: ~26 M instrucciones de GPU (NXFG-2: ~39 M, −34 %)**, menos que la
+  generación "rápida" vieja (~32 M). **NXFG-3 + realismo ≈ 40 M, lo mismo que antes
+  costaba NXFG-2 solo.** En el simulador, con un juego que usa 28 ms de GPU de los
+  33 que hay a 30 fps: nivel 0, sin avisos, 1000 de 1000 intermedios (escenario 34).
+- Menú y app: Generación **OFF / VCFG / NXFG-3**. VCFG sigue por defecto (es la que
+  ya probaste en la consola).
+
+**Pruebas.** NXFG-3 en el emulador de PC contra la referencia NumPy (máx. 1/255) y en
+el emulador del código máquina GCN (idéntico, también todo a la vez); sin memoria
+scratch; simulador de consola con todos los escenarios; app de punta a punta. **Sigue
+sin probarse en una PS4.**
 
 ## Novedades de la 2.76
 

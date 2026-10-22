@@ -468,3 +468,116 @@ NX_KERNEL void warp_blend(tdesc_t frame0, tdesc_t frame1, tdesc_t lin_sampler,
     float st = nx_clampf(1.0f - d * (1.0f / NXFG_STATIC_TAU), 0.0f, 1.0f);
     nx_store(dst, x, y, st * (0.5f * (p0 + p1)) + (1.0f - st) * mix);
 }
+
+// ---------------------------------------------------------------- NXFG-3
+// (model/net3.py) eleccion de vector a 1/4 y un solo warp por pixel.
+
+// warp bilineal de un tensor RGB (3 canales) como net.warp de JAX: la coordenada se
+// acota a [0, W-1] y despues se interpola (el vecino +1 tambien acotado)
+static float3 fg3_tex(__global const float* t, int H, int W, float x, float y)
+{
+    x = nx_clampf(x, 0.0f, W - 1.0f);
+    y = nx_clampf(y, 0.0f, H - 1.0f);
+    float fx0 = nx_floor(x), fy0 = nx_floor(y);
+    float fx = x - fx0, fy = y - fy0;
+    int x0 = (int)fx0, y0 = (int)fy0;
+    int x1 = x0 + 1 < W ? x0 + 1 : W - 1, y1 = y0 + 1 < H ? y0 + 1 : H - 1;
+    __global const float* a = t + (y0 * W + x0) * 3;
+    __global const float* b = t + (y0 * W + x1) * 3;
+    __global const float* c = t + (y1 * W + x0) * 3;
+    __global const float* d = t + (y1 * W + x1) * 3;
+    float3 r;
+    r.x = (a[0] * (1 - fx) + b[0] * fx) * (1 - fy) + (c[0] * (1 - fx) + d[0] * fx) * fy;
+    r.y = (a[1] * (1 - fx) + b[1] * fx) * (1 - fy) + (c[1] * (1 - fx) + d[1] * fx) * fy;
+    r.z = (a[2] * (1 - fx) + b[2] * fx) * (1 - fy) + (c[2] * (1 - fx) + d[2] * fx) * fy;
+    return r;
+}
+
+static float4 fg3_ld4(__global const float* p) { return (float4)(p[0], p[1], p[2], p[3]); }
+
+#define FG3_SIGMA 0.05f    // net3.SEL_SIGMA
+#define FG3_PRIOR 0.6f     // net3.SEL_PRIOR (celdas de la malla 1/8)
+
+// Por pixel de 1/4 (q0, q1: promedios 4x4, H x W x 3): los 9 vectores de la malla 1/8
+// (low5) alrededor, pesados por cercania y por lo bien que coinciden sus dos muestras
+// (softmin) -> flujo elegido (f0x, f0y, f1x, f1y) en px de resolucion completa.
+NX_KERNEL void fg3_select(__global const float* q0, __global const float* q1, int H, int W,
+                          __global const float* low5, int hl, int wl, __global float* out)
+{
+    int x = GID_X, y = GID_Y;
+    if (x >= W || y >= H) return;
+    float gy = (y + 0.5f) * 0.5f - 0.5f, gx = (x + 0.5f) * 0.5f - 0.5f;   // 2 px de 1/4 por celda
+    int cy = (int)nx_floor(gy + 0.5f), cx = (int)nx_floor(gx + 0.5f);
+    float er[9], pw[9], F[9][4];
+    float emin = 3.0e38f;
+    for (int k = 0; k < 9; ++k) {
+        int dy = k / 3 - 1, dx = k % 3 - 1;
+        int yy = nx_clampi(cy + dy, 0, hl - 1), xx = nx_clampi(cx + dx, 0, wl - 1);
+        __global const float* c = low5 + (yy * wl + xx) * 5;
+        float ey = gy - (float)(cy + dy), ex = gx - (float)(cx + dx);
+        pw[k] = __builtin_exp2f(-(ey * ey + ex * ex) * (1.44269504f / (2.0f * FG3_PRIOR * FG3_PRIOR)));
+        F[k][0] = 2.0f * c[0]; F[k][1] = 2.0f * c[1]; F[k][2] = 2.0f * c[2]; F[k][3] = 2.0f * c[3];
+        float3 a = fg3_tex(q0, H, W, x + F[k][0], y + F[k][1]);
+        float3 b = fg3_tex(q1, H, W, x + F[k][2], y + F[k][3]);
+        er[k] = (nx_absf(a.x - b.x) + nx_absf(a.y - b.y)) + nx_absf(a.z - b.z);
+        emin = nx_minf(emin, er[k]);
+    }
+    float acc[4] = { 0.0f, 0.0f, 0.0f, 0.0f }, ws = 0.0f;
+    for (int k = 0; k < 9; ++k) {
+        float wk = pw[k] * __builtin_exp2f(-(er[k] - emin) * (1.44269504f / FG3_SIGMA));
+        for (int j = 0; j < 4; ++j) acc[j] += wk * F[k][j];
+        ws += wk;
+    }
+    __global float* o = out + (y * W + x) * 4;
+    for (int j = 0; j < 4; ++j) o[j] = acc[j] * (4.0f / ws);   // px de 1/4 -> px completos
+}
+
+// Warp de los dos reales con el flujo elegido (bilineal half-pixel desde 1/4), con las
+// protecciones de warp_blend: corte de escena, anti-fantasmas de HUD, pixel quieto.
+NX_KERNEL void fg3_warp(tdesc_t frame0, tdesc_t frame1, tdesc_t lin_sampler,
+                        __global const float* fq, int hq, int wq,
+                        __global const float* flag, __global const float* smask,
+                        tdesc_t dst, int H, int W)
+{
+    int x = GID_X, y = GID_Y;
+    if (x >= W || y >= H) return;
+    float4 p1 = nx_load(frame1, x, y);
+    if (flag && flag[0] > 0.5f) { nx_store(dst, x, y, p1); return; }
+    float sy = (y + 0.5f) * 0.25f - 0.5f, sx = (x + 0.5f) * 0.25f - 0.5f;
+    float fly = nx_floor(sy), flx = nx_floor(sx);
+    float ty = sy - fly, tx = sx - flx;
+    int ya = nx_clampi((int)fly, 0, hq - 1), yb = nx_clampi((int)fly + 1, 0, hq - 1);
+    int xa = nx_clampi((int)flx, 0, wq - 1), xb = nx_clampi((int)flx + 1, 0, wq - 1);
+    float4 A = fg3_ld4(fq + (ya * wq + xa) * 4), B = fg3_ld4(fq + (ya * wq + xb) * 4);
+    float4 C = fg3_ld4(fq + (yb * wq + xa) * 4), D = fg3_ld4(fq + (yb * wq + xb) * 4);
+    float4 F = (A * (1 - tx) + B * tx) * (1 - ty) + (C * (1 - tx) + D * tx) * ty;
+    float f0x = F.x, f0y = F.y, f1x = F.z, f1y = F.w;
+    float u0 = nx_clampf(x + f0x, 0.0f, W - 1.0f) + 0.5f, v0 = nx_clampf(y + f0y, 0.0f, H - 1.0f) + 0.5f;
+    float u1 = nx_clampf(x + f1x, 0.0f, W - 1.0f) + 0.5f, v1 = nx_clampf(y + f1y, 0.0f, H - 1.0f) + 0.5f;
+    float4 a = nx_sample(frame0, lin_sampler, u0, v0);
+    float4 b = nx_sample(frame1, lin_sampler, u1, v1);
+    int W2 = ((W + 31) & ~31) / 2, H2 = ((H + 31) & ~31) / 2;   // la luma de media resolucion (rellena a 32)
+    float r0 = 1.0f, r1 = 1.0f;
+    if (smask) {
+        if (nx_absf(f0x) + nx_absf(f0y) > 1.0f) {
+            int hx = nx_clampi((int)nx_floor((x + f0x) * 0.5f), 0, W2 - 1);
+            int hy = nx_clampi((int)nx_floor((y + f0y) * 0.5f), 0, H2 - 1);
+            r0 = 1.0f - smask[hy * W2 + hx];
+        }
+        if (nx_absf(f1x) + nx_absf(f1y) > 1.0f) {
+            int hx = nx_clampi((int)nx_floor((x + f1x) * 0.5f), 0, W2 - 1);
+            int hy = nx_clampi((int)nx_floor((y + f1y) * 0.5f), 0, H2 - 1);
+            r1 = 1.0f - smask[hy * W2 + hx];
+        }
+    }
+    float er = (nx_absf(a.x - b.x) + nx_absf(a.y - b.y)) + nx_absf(a.z - b.z);
+    float dis = nx_clampf((er - 0.06f) * (1.0f / 0.12f), 0.0f, 1.0f);
+    r0 = 1.0f - (1.0f - r0) * dis;
+    r1 = 1.0f - (1.0f - r1) * dis;
+    float wa = 0.5f * r0, wb = 0.5f * r1;
+    float4 mix = (wa * a + wb * b + NXFG_MIX_EPS * 0.5f * (a + b)) * (1.0f / (wa + wb + NXFG_MIX_EPS));
+    float4 p0 = nx_load(frame0, x, y);
+    float d = (nx_absf(p0.x - p1.x) + nx_absf(p0.y - p1.y) + nx_absf(p0.z - p1.z)) * (1.0f / 3.0f);
+    float st = nx_clampf(1.0f - d * (1.0f / NXFG_STATIC_TAU), 0.0f, 1.0f);
+    nx_store(dst, x, y, st * (0.5f * (p0 + p1)) + (1.0f - st) * mix);
+}
