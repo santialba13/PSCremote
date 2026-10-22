@@ -33,6 +33,8 @@ MODES = [
     (8, "NXSR-L (ligero)", False, True),
     (10, "NXSR-L Calidad", False, True),
     (9, "IA + NXSR-L + SMAA (reales procesados)", True, True),
+    (11, "NXRE realismo", False, True),
+    (12, "todo: IA + NXRE + SMAA + NXSR-L + FSR+", True, True),
 ]
 
 

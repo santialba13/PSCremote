@@ -67,6 +67,10 @@ CONV3X3(conv3x3_12_3, 12, 3)
 CONV3X3(conv3x3_5_16, 5, 16)     // guia de NXSR-L Calidad
 CONV3X3(conv3x3_16_16, 16, 16)
 CONV3X3(conv3x3_16_3, 16, 3)
+// NXRE (sr/net_re.py): red a ~128 x 72 que arma la malla de realismo
+CONV3X3(conv3x3_3_16, 3, 16)
+CONV3X3(conv3x3_16_24, 16, 24)
+CONV3X3(conv3x3_24_96, 24, 96)
 
 // ------------------------------------------------- utilidades de tensores
 // Promedio fxf (f = 4 u 8) del fotograma del juego -> RGB a 1/f. Lee fuera de

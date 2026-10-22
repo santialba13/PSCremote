@@ -60,7 +60,7 @@
 #define LOG_DIR ROOT "/data/GoldHEN/vcfg_nx"   // registros del plugin (desde 2.55)
 #define TITLE_ID "VCNX00001"
 #define CONTENT_ID "IV0000-VCNX00001_00-VCFGNXINSTALL000"
-#define VERSION "2.7.5"
+#define VERSION "2.7.6"
 
 #define W 1920
 #define H 1080
@@ -598,9 +598,10 @@ static const char* MD_N[] = { "Ligero", "Cl\xe1sico", "Calidad" };
 static const int TEMPS[] = { 0, 70, 75, 80, 85, 90 };
 #define NTEMPS 6
 
-enum { R_ENABLED, R_MODE, R_FG, R_SR, R_MODEL, R_AA, R_RCAS, R_DYN, R_ECO, R_TEMP, R_FPS, R_COUNT };
+enum { R_ENABLED, R_MODE, R_FG, R_RE, R_SR, R_MODEL, R_AA, R_RCAS, R_DYN, R_ECO, R_TEMP, R_FPS, R_COUNT };
 static const char* ROW_LABEL[R_COUNT] = {
-    "VCFG-NX en este juego", "Ajustes", "Generaci\xf3n de fotogramas (30 \xbb 60)", "Reescalado IA (NXSR)",
+    "VCFG-NX en este juego", "Ajustes", "Generaci\xf3n de fotogramas (30 \xbb 60)", "Realismo IA (NXRE)",
+    "Reescalado IA (NXSR)",
     "Modelo IA", "Antialiasing SMAA", "Nitidez FSR1 (RCAS)", "Calidad din\xe1mica",
     "Modo ahorro (menos calor)", "L\xedmite de temperatura", "Contador de FPS",
 };
@@ -608,12 +609,13 @@ static const char* ROW_HELP[R_COUNT] = {
     "Agrega o quita VCFG-NX de plugins.ini para este juego.",
     "Por defecto: sigue los ajustes generales. Propios: este juego guarda los suyos.",
     "Genera un fotograma intermedio: 30 fps se ven como 60. Se apaga solo si el juego ya va a m\xe1s de 48.",
+    "Red que cambia luz y color por zonas para que la imagen se vea como una foto real (aprendida de GTA V).",
     "Recupera detalle sin agregar grano ni halos: la salida queda acotada a los p\xedxeles vecinos.",
-    "Auto: Calidad en PS4 Pro y R\xe1pido en PS4 normal. Calidad usa unas 3 veces m\xe1s GPU.",
+    "Ligero y Calidad (NXSR-L) se combinan con la generaci\xf3n; Cl\xe1sico usa unas 3 veces m\xe1s GPU.",
     "Suaviza los bordes dentados (SMAA 1x).",
-    "Nitidez cl\xe1sica de AMD; solo se usa con NXSR apagado.",
+    "Nitidez de AMD con realce de detalle (FSR+); tambi\xe9n despu\xe9s del reescalado.",
     "Si la GPU no da abasto baja un escal\xf3n en vez de trabar el juego, y despu\xe9s vuelve a subir.",
-    "Modelo R\xe1pido, sin SMAA y l\xedmite de temperatura de 75\xb0" "C.",
+    "Modelo Ligero y l\xedmite de temperatura de 75\xb0" "C.",
     "Por encima baja la calidad; 6\xb0" "C m\xe1s pausa los efectos hasta que enfr\xed" "e.",
     "Muestra los FPS y la temperatura en una esquina.",
 };
@@ -642,6 +644,7 @@ static int row_on(const nx_config_t* c, int row)
 static void value_text(const nx_config_t* c, int row, char* out, size_t n)
 {
     switch (row) {
+    case R_RE: snprintf(out, n, "%s", SR_N[c->re & 3]); break;
     case R_SR: snprintf(out, n, "%s", SR_N[c->sr & 3]); break;
     case R_MODEL: snprintf(out, n, "%s", MD_N[c->sr_model % 3]); break;
     case R_RCAS: snprintf(out, n, "%s", RC_N[c->rcas & 3]); break;
@@ -654,6 +657,7 @@ static void change(nx_config_t* c, int row, int dir)
 {
     switch (row) {
     case R_FG: c->framegen = !c->framegen; break;
+    case R_RE: c->re = (c->re + (dir > 0 ? 1 : 3)) % 4; break;
     case R_SR: c->sr = (c->sr + (dir > 0 ? 1 : 3)) % 4; break;
     case R_MODEL: c->sr_model = (c->sr_model + (dir > 0 ? 1 : 2)) % 3; break;
     case R_AA: c->aa = !c->aa; break;
@@ -892,8 +896,8 @@ static void summary(const nx_config_t* c, char* out, size_t n)
 {
     char t[16];
     value_text(c, R_TEMP, t, sizeof t);
-    snprintf(out, n, "Fotogramas %s   \xb7   NXSR %s (%s)   \xb7   SMAA %s   \xb7   Din\xe1mica %s   \xb7   Ahorro %s   \xb7   L\xedmite %s",
-             c->framegen ? "ON" : "OFF", SR_N[c->sr & 3], MD_N[c->sr_model % 3], c->aa ? "ON" : "OFF",
+    snprintf(out, n, "Fotogramas %s   \xb7   Realismo %s   \xb7   NXSR %s (%s)   \xb7   SMAA %s   \xb7   Din\xe1mica %s   \xb7   Ahorro %s   \xb7   L\xedmite %s",
+             c->framegen ? "ON" : "OFF", SR_N[c->re & 3], SR_N[c->sr & 3], MD_N[c->sr_model % 3], c->aa ? "ON" : "OFF",
              c->dynamic ? "ON" : "OFF", c->eco ? "ON" : "OFF", t);
 }
 

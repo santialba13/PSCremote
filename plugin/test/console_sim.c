@@ -406,7 +406,7 @@ int main(int argc, char** argv)
     for (int k = 0; k < C.npend; ++k) C.pend[k].at = C.clock_us;
     play(&bb, 5600, 0);
     CHECK(I()->state == NX_ST_RUN, "no reintento tras la pausa");
-    play(&bb, 6000, 0);
+    play(&bb, 12000, 0);
     report("3b. GPU trabada -> pausa -> reintento");
     CHECK(I()->level == 0, "no recupero toda la calidad tras el reintento (nivel -%d)", I()->level);
     common_checks();
@@ -441,7 +441,7 @@ int main(int argc, char** argv)
     nx_engine_on_pad(&b, st, tr);
     CHECK(b == 0 && st[0] == 0x80 && tr[0] == 0, "el juego recibio input con el menu abierto");
     pad_buttons = 0; play(&bb, 1, 0);
-    for (int k = 0; k < 3; ++k) { pad_buttons = 0x0040; play(&bb, 1, 0); pad_buttons = 0; play(&bb, 1, 0); }
+    for (int k = 0; k < 4; ++k) { pad_buttons = 0x0040; play(&bb, 1, 0); pad_buttons = 0; play(&bb, 1, 0); }
     {   // grilla del menu (fila "Modelo IA" elegida) para gpu_emu osd
         FILE* mf = fopen("menu_grid.bin", "wb");
         if (mf && I()->menu_text) {
@@ -450,11 +450,11 @@ int main(int argc, char** argv)
         }
         if (mf) fclose(mf);
     }
-    CHECK(I()->menu_row == 3, "fila del menu (%d)", I()->menu_row);
+    CHECK(I()->menu_row == 4, "fila del menu (%d)", I()->menu_row);
     pad_buttons = 0x0020; play(&bb, 1, 0); pad_buttons = 0; play(&bb, 1, 0);   // derecha: modelo Auto -> Rapido
-    for (int k = 0; k < 3; ++k) { pad_buttons = 0x0010; play(&bb, 1, 0); pad_buttons = 0; play(&bb, 1, 0); }
+    for (int k = 0; k < 4; ++k) { pad_buttons = 0x0010; play(&bb, 1, 0); pad_buttons = 0; play(&bb, 1, 0); }
     pad_buttons = 0x4000; play(&bb, 1, 0); pad_buttons = 0; play(&bb, 1, 0);   // X en "Todos los efectos": OFF
-    for (int k = 0; k < 9; ++k) { pad_buttons = 0x0040; play(&bb, 1, 0); pad_buttons = 0; play(&bb, 1, 0); }
+    for (int k = 0; k < 10; ++k) { pad_buttons = 0x0040; play(&bb, 1, 0); pad_buttons = 0; play(&bb, 1, 0); }
     pad_buttons = 0x4000; play(&bb, 1, 0); pad_buttons = 0; play(&bb, 1, 0);   // X en "Guardar"
     file_t* ini = find_file("/data/vcfg_nx/CUSA00207.ini");
     CHECK(ini && strstr(ini->data, "effects = 0") && strstr(ini->data, "framegen = 0") && strstr(ini->data, "sr_model = 1"),
@@ -846,7 +846,7 @@ int main(int argc, char** argv)
     //     juego, un envio con el trabajo del juego + el nuestro y flip al intermedio, y
     //     despues el flip del real al buffer del juego (los dos terminan en la cola)
     {
-        const char* c28 = "warmup_flips = 600\nframegen = 1\nsr = 0\naa = 0\nrcas = 0\n";
+        const char* c28 = "warmup_flips = 600\nframegen = 1\nsr = 0\naa = 0\nrcas = 0\nre = 0\n";
         sim_write("/data/vcfg_nx/config.ini", c28, strlen(c28));
         boot(&bb, 1);
         int rc0 = rate_calls;
@@ -940,6 +940,38 @@ int main(int argc, char** argv)
         CHECK(I()->gpu_ms < 9.0f, "no bajo la carga lo suficiente (%.1f ms)", (double)I()->gpu_ms);
         common_checks();
         C.flip_wait_us = 0; C.ns_per_kinst = 0;
+        sim_write("/data/vcfg_nx/config.ini", "warmup_flips = 600\nframegen = 0\n", 32);
+    }
+
+    // 33. todo a la vez (2.76): IA + realismo NXRE + NXSR-L + SMAA + FSR+ con un juego
+    //     tipo GTA V (20 ms de GPU por fotograma): entra todo, sin "carga alta"
+    {
+        const char* c33 = "warmup_flips = 600\nframegen = 2\nre = 2\nsr = 2\naa = 1\nrcas = 1\n";
+        sim_write("/data/vcfg_nx/config.ini", c33, strlen(c33));
+        boot(&bb, 1);
+        C.game_cost_us = 20000; C.ns_per_kinst = 100; C.flip_wait_us = 2000;
+        C.notifies = 0; C.last_notify[0] = 0;
+        play(&bb, 6000, 0);
+        int m0 = C.mid_flips;
+        play(&bb, 1000, 0);
+        printf("  33. todo a la vez (juego 20 ms): GPU propia %.1f ms, nivel -%d de %d, intermedios %d/1000, efectos 0x%x\n",
+               (double)I()->gpu_ms, I()->level, I()->level_max, C.mid_flips - m0, I()->menu_open);
+        CHECK(I()->level == 0, "bajo la calidad sin que el juego lo necesite (nivel -%d, %s)", I()->level, C.last_notify);
+        CHECK(!strstr(C.last_notify, "carga alta"), "aviso de carga alta: %s", C.last_notify);
+        CHECK(C.mid_flips - m0 > 950, "faltan intermedios (%d)", C.mid_flips - m0);
+        CHECK(I()->lite == 1, "deberia usar NXSR-L");
+        common_checks();
+        // el mismo juego con 26 ms de GPU: ya no entra todo; baja escalones pero la
+        // generacion sigue
+        C.game_cost_us = 26000;
+        play(&bb, 6000, 0);
+        m0 = C.mid_flips;
+        play(&bb, 1000, 0);
+        printf("      ...juego de 26 ms: GPU propia %.1f ms, nivel -%d de %d, intermedios %d/1000\n",
+               (double)I()->gpu_ms, I()->level, I()->level_max, C.mid_flips - m0);
+        CHECK(C.mid_flips - m0 > 900, "la carga apago la generacion (%d)", C.mid_flips - m0);
+        common_checks();
+        C.flip_wait_us = 0; C.ns_per_kinst = 0; C.game_cost_us = 0;
         sim_write("/data/vcfg_nx/config.ini", "warmup_flips = 600\nframegen = 0\n", 32);
     }
 

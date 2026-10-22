@@ -41,6 +41,10 @@ typedef struct {
     uint64_t tmp_img, tmp_img2, tmp_aa;   // imagenes intermedias para el post-proceso
     uint64_t smaa_edges, smaa_weights, smaa_area, smaa_search, nxsr_w, nxsr_hq_w;
     uint64_t srl_w[2][8], srl_b[2][8], srl_feat, srl_h[3], srl_g;   // NXSR-L: [0] Ligero, [1] Calidad
+    // NXRE (realismo): red a ~128 x 72 -> malla re_gh x re_gw x D x 12; re_state es la
+    // malla promediada entre fotogramas (persiste entre trabajos)
+    uint64_t re_w[8], re_b[8], re_lo, re_t[4], re_grid, re_state;
+    int re_f, re_hl, re_wl, re_h[5], re_w_[5], re_gh, re_gw, re_valid;
     uint64_t kernarg_base[NX_PIPE_SLOTS], desc_base[NX_PIPE_SLOTS];   // por slot (piramides: por paridad)
     uint64_t label_gpu;
     volatile uint32_t* label_cpu;
@@ -65,6 +69,7 @@ typedef struct {
     int sr_hq;                  // 1 = modelo Calidad (wg_nxsr_hq), 0 = Rapido
     int sr_lite;                // NXSR-L (guia a 1/8, se combina con la generacion): 1 = Ligero, 2 = Calidad
     int rcas;                   // nitidez RCAS
+    float re;                   // NXRE (realismo por IA): intensidad 0..1 (0 = apagado)
     int enhance_first;          // FG sobre los reales ya procesados (misma resolucion)
     const nx_image_t* prev_real;  // real procesado del fotograma anterior
     int prev_real_valid;

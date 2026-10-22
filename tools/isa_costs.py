@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.join(ROOT, "model"))
 import data  # noqa: E402
 import gcn_isa_emu as g  # noqa: E402
 
-MODES = [0, 1, 2, 3, 5, 6, 7, 8, 9, 10]
+MODES = [0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12]
 
 
 def main():
@@ -109,5 +109,5 @@ if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "--estimate":
     H = int(sys.argv[3]) if len(sys.argv) > 3 else 1080
     NAMES = {0: "generacion IA (NXFG-2)", 6: "generacion sin red", 7: "FSR+", 2: "IA + SMAA (SMAA)",
              3: "NXSR Clasico", 5: "NXSR Calidad (viejo)", 8: "NXSR-L Ligero", 9: "IA + NXSR-L + SMAA",
-             10: "NXSR-L Calidad"}
-    estimate(W, H, [0, 6, 7, 3, 5, 8, 10, 2, 9], NAMES)
+             10: "NXSR-L Calidad", 11: "NXRE realismo", 12: "todo (IA+NXRE+SMAA+NXSR-L+FSR+)"}
+    estimate(W, H, [0, 6, 7, 3, 5, 8, 10, 11, 2, 9, 12], NAMES)

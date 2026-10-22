@@ -95,7 +95,7 @@ int main(void)
     press(ORBIS_PAD_BUTTON_CROSS, 1);                 // Alpha: ON
     press(ORBIS_PAD_BUTTON_RIGHT, 1);                 // beta
     press(ORBIS_PAD_BUTTON_SQUARE, 1);                // sus ajustes
-    press(ORBIS_PAD_BUTTON_DOWN, 3);                  // NXSR
+    press(ORBIS_PAD_BUTTON_DOWN, 4);                  // NXSR (debajo de Realismo IA)
     press(ORBIS_PAD_BUTTON_RIGHT, 1);                 // Normal -> Fuerte (pasa a propios)
     press(ORBIS_PAD_BUTTON_DOWN, 5);                  // Modo ahorro
     press(ORBIS_PAD_BUTTON_RIGHT, 1);                 // ON
@@ -105,7 +105,7 @@ int main(void)
     press(ORBIS_PAD_BUTTON_SQUARE, 1);                // volver a por defecto
     press(ORBIS_PAD_BUTTON_CIRCLE, 1);
     press(ORBIS_PAD_BUTTON_TRIANGLE, 1);              // ajustes por defecto
-    press(ORBIS_PAD_BUTTON_DOWN, 3);                  // SMAA
+    press(ORBIS_PAD_BUTTON_DOWN, 4);                  // SMAA
     press(ORBIS_PAD_BUTTON_RIGHT, 1);                 // OFF
     press(ORBIS_PAD_BUTTON_CIRCLE, 1);
     press(ORBIS_PAD_BUTTON_CIRCLE, 1);                // Salir...

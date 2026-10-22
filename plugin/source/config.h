@@ -3,6 +3,7 @@
 typedef struct {
     int effects;           // interruptor general: 0 = todos los efectos apagados (sin perder los ajustes)
     int framegen;          // 1 = generar fotogramas intermedios (30 -> 60)
+    int re;                // realismo IA NXRE: 0 off, 1 suave, 2 normal, 3 fuerte
     int sr;                // reescalado IA NXSR: 0 off, 1 suave, 2 normal, 3 fuerte
     int sr_model;          // modelo de reescalado: 0 NXSR-L Ligero, 1 Clasico (NXSR Rapido), 2 NXSR-L Calidad
     int dynamic;           // 1 = calidad dinamica: baja escalones si la GPU no da abasto

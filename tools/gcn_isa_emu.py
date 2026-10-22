@@ -33,7 +33,7 @@ import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BUILD = os.path.join(ROOT, "shaders", "build")
-SOURCES = ["nxflow", "fsr1", "smaa", "nxsr", "nxsr_hq", "osd", "nxsrl"]
+SOURCES = ["nxflow", "fsr1", "smaa", "nxsr", "nxsr_hq", "osd", "nxsrl", "nxre"]
 NL = 64  # lanes por wavefront
 
 f32 = np.float32
@@ -625,6 +625,13 @@ class Wave:
             return
         if base == "v_mov_b32":
             self.vwrite(o[0], self.vread(o[1]), em)
+            return
+        # derrame de SGPRs a lanes de un VGPR (ignoran EXEC): v_writelane_b32 vD, sS, lane
+        if base == "v_writelane_b32":
+            self.v[int(o[0][1:])][self.sread(o[2]) & 63] = self.sread(o[1])
+            return
+        if base == "v_readlane_b32":
+            self.swrite(o[0], int(self.v[int(o[1][1:])][self.sread(o[2]) & 63]))
             return
         if base == "v_movrels_b32":
             r = int(o[1][1:]) + (self.m0 & 0xFFFF)

@@ -20,7 +20,7 @@ hdr() { sed -n "s/^#define $1 \\([0-9]*\\)/\\1/p" "../plugin/include/$2"; }
 SR_FLAGS="-DSR_C=$(hdr NXSR_C nxsr_weights.h) -DSR_B=$(hdr NXSR_B nxsr_weights.h) -DSR_NAME=wg_nxsr"
 HQ_FLAGS="-DSR_C=$(hdr NXSR_HQ_C nxsr_hq_weights.h) -DSR_B=$(hdr NXSR_HQ_B nxsr_hq_weights.h) -DSR_NAME=wg_nxsr_hq"
 clang $CLFLAGS -emit-llvm -c gcn_image.ll -o "$OUT/gcn_image.bc"
-for k in nxflow fsr1 smaa nxsr nxsr_hq osd nxsrl; do
+for k in nxflow fsr1 smaa nxsr nxsr_hq osd nxsrl nxre; do
     case $k in
         nxsr) src=nxsr.cl; flags=$SR_FLAGS ;;
         nxsr_hq) src=nxsr.cl; flags=$HQ_FLAGS ;;
@@ -33,6 +33,6 @@ for k in nxflow fsr1 smaa nxsr nxsr_hq osd nxsrl; do
     if grep -qE "^\s+flat_" "$OUT/$k.s"; then echo "ERROR: $k usa instrucciones FLAT" >&2; exit 1; fi
 done
 python3 ../tools/gcn_pack.py "$OUT/nxflow.co" "$OUT/fsr1.co" "$OUT/smaa.co" "$OUT/nxsr.co" "$OUT/nxsr_hq.co" "$OUT/osd.co" \
-    "$OUT/nxsrl.co" \
-    --asm "$OUT/nxflow.s" "$OUT/fsr1.s" "$OUT/smaa.s" "$OUT/nxsr.s" "$OUT/nxsr_hq.s" "$OUT/osd.s" "$OUT/nxsrl.s" \
+    "$OUT/nxsrl.co" "$OUT/nxre.co" \
+    --asm "$OUT/nxflow.s" "$OUT/fsr1.s" "$OUT/smaa.s" "$OUT/nxsr.s" "$OUT/nxsr_hq.s" "$OUT/osd.s" "$OUT/nxsrl.s" "$OUT/nxre.s" \
     -o ../plugin/include/nx_shaders.h

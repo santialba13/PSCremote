@@ -8,6 +8,7 @@
 #include "../include/nxsr_weights.h"
 #include "../include/nxsr_hq_weights.h"
 #include "../include/nxsrl_weights.h"
+#include "../include/nxre_weights.h"
 #include "../../third_party/smaa/AreaTex.h"
 #include "../../third_party/smaa/SearchTex.h"
 
@@ -29,7 +30,8 @@ enum {
     K_LUMA_DOWN2, K_BM_SEARCH, K_BM_MEDIAN3, K_SCENE, K_SMASK, K_DILATE, K_WARP_BLEND, K_EASU, K_RCAS,
     K_SMAA_EDGES, K_SMAA_WEIGHTS, K_SMAA_BLEND, K_NXSR, K_NXSR_HQ,
     K_CONV_5_12, K_CONV_12_12, K_CONV_12_3, K_SRL_FEAT, K_SRL_ACT, K_SRL_APPLY,
-    K_CONV_5_16, K_CONV_16_16, K_CONV_16_3, K_COUNT
+    K_CONV_5_16, K_CONV_16_16, K_CONV_16_3,
+    K_CONV_3_16, K_CONV_16_24, K_CONV_24_96, K_RE_EMA, K_RE_APPLY, K_COUNT
 };
 static const char* const k_names[K_COUNT] = {
     "conv3x3_15_32", "conv3x3_32_32", "conv3x3_32_5", "conv3x3_17_24", "conv3x3_24_24", "conv3x3_24_5",
@@ -38,6 +40,7 @@ static const char* const k_names[K_COUNT] = {
     "easu", "rcas", "smaa_edges", "smaa_weights", "smaa_blend", "wg_nxsr", "wg_nxsr_hq",
     "conv3x3_5_12", "conv3x3_12_12", "conv3x3_12_3", "wg_srl_feat", "srl_act", "wg_srl_apply",
     "conv3x3_5_16", "conv3x3_16_16", "conv3x3_16_3",
+    "conv3x3_3_16", "conv3x3_16_24", "conv3x3_24_96", "re_ema", "re_apply",
 };
 
 #ifndef NX_NET_NXFG2
@@ -81,6 +84,8 @@ typedef struct { uint64_t src; int32_t W, H; uint64_t w; uint64_t dst; float k; 
 typedef struct { uint64_t src; int32_t W, H; uint64_t out; int32_t wc, hc; } ka_srl_feat_t;
 typedef struct { uint64_t g; int32_t n; } ka_srl_act_t;
 typedef struct { uint64_t src, dst; int32_t W, H; uint64_t g; int32_t wc, hc; float k, margin; } ka_srl_apply_t;
+typedef struct { uint64_t g, state; int32_t n; float a; } ka_re_ema_t;
+typedef struct { uint64_t src, dst; int32_t W, H; uint64_t grid; int32_t gw, gh; float m0, m1, m2, mc, s; } ka_re_apply_t;
 
 static size_t align_up(size_t v, size_t a) { return (v + a - 1) / a * a; }
 
@@ -132,6 +137,10 @@ static void alloc_post_scratch(nx_pipeline_t* p, nx_arena_t* a)
     p->srl_feat = arena_alloc(a, tensor_bytes(hc, wc, 5), 256);
     for (int i = 0; i < 3; ++i) p->srl_h[i] = arena_alloc(a, tensor_bytes(hc, wc, 16), 256);
     p->srl_g = arena_alloc(a, tensor_bytes(hc, wc, 3), 256);
+    // NXRE: imagen chica y 4 tensores de la red (todos caben en el del primer nivel)
+    p->re_lo = arena_alloc(a, tensor_bytes(p->re_hl, p->re_wl, 3), 256);
+    for (int i = 0; i < 4; ++i) p->re_t[i] = arena_alloc(a, tensor_bytes(p->re_h[0], p->re_w_[0], 24), 256);
+    p->re_grid = arena_alloc(a, tensor_bytes(p->re_gh, p->re_gw, NX_RE_D * 12), 256);
     p->tmp_img2 = arena_alloc(a, tensor_bytes(p->Ho, (int)align_up(p->Wo, 64), 1), 64 * 1024);
     p->tmp_aa = arena_alloc(a, tensor_bytes(p->H, (int)align_up(p->W, 64), 1), 64 * 1024);
     p->smaa_edges = arena_alloc(a, tensor_bytes(p->H, (int)align_up(p->W, 64), 1), 256);   // imagen RGBA8 lineal
@@ -150,6 +159,15 @@ static int layout(nx_pipeline_t* p, int W, int H, int Wo, int Ho, nx_arena_t are
         p->lum_h[lv] = (p->Hp / 2) >> lv; p->lum_w[lv] = (p->Wp / 2) >> lv;
         p->bm_h[lv] = (p->lum_h[lv] + 7) / 8; p->bm_w[lv] = (p->lum_w[lv] + 7) / 8;
     }
+    // NXRE: imagen de ~128 de ancho (promedio f x f) y 4 convs de paso 2 (padding 1)
+    p->re_f = (int)((float)W / NX_RE_LOW_W + 0.5f);
+    if (p->re_f < 1) p->re_f = 1;
+    p->re_hl = H / p->re_f; p->re_wl = W / p->re_f;
+    for (int i = 0; i < 4; ++i) {
+        p->re_h[i] = ((i ? p->re_h[i - 1] : p->re_hl) - 1) / 2 + 1;
+        p->re_w_[i] = ((i ? p->re_w_[i - 1] : p->re_wl) - 1) / 2 + 1;
+    }
+    p->re_gh = p->re_h[1]; p->re_gw = p->re_w_[1];   // la malla: 1/4 de la imagen chica
     p->arena = arena;
     nx_arena_t* a = &p->arena;
 
@@ -201,6 +219,19 @@ static int layout(nx_pipeline_t* p, int W, int H, int Wo, int Ho, nx_arena_t are
     p->smaa_area = arena_alloc(a, (size_t)align_up(AREATEX_WIDTH, 64) * AREATEX_HEIGHT * 4, 256);
     p->smaa_search = arena_alloc(a, (size_t)align_up(SEARCHTEX_WIDTH, 64) * SEARCHTEX_HEIGHT * 4, 256);
     p->nxsr_w = arena_alloc(a, sizeof nxsr_weights, 256);
+    for (int l = 0; l < NX_RE_LAYERS; ++l) {
+        const nx_re_layer_t* L = &nx_re_layers[l];
+        size_t wn = (size_t)9 * L->cin * L->cout;
+        p->re_w[l] = arena_alloc(a, wn * 4, 256);
+        p->re_b[l] = arena_alloc(a, L->cout * 4, 256);
+        if (!p->re_w[l] || !p->re_b[l]) return -8;
+        if (!dry) {
+            memcpy(arena_cpu(a, p->re_w[l]), L->w, wn * 4);
+            memcpy(arena_cpu(a, p->re_b[l]), L->b, L->cout * 4);
+        }
+    }
+    p->re_state = arena_alloc(a, tensor_bytes(p->re_gh, p->re_gw, NX_RE_D * 12), 256);
+    if (!p->re_state) return -8;
     for (int m = 0; m < 2; ++m) {
         int n = m ? NX_SRL_HQ_LAYERS : NX_SRL_LITE_LAYERS;
         for (int l = 0; l < n; ++l) {
@@ -361,6 +392,45 @@ static void srl(ctx_t* x, const nx_image_t* cur, const nx_image_t* o, int w, int
     run(x, K_SRL_APPLY, &ap, sizeof ap, w, h);
 }
 
+// NXRE (sr/net_re.py): red sobre la imagen chica -> malla de afines por zona y nivel
+// de brillo -> promedio con la del fotograma anterior -> por pixel, de cur a o.
+static void re_conv(ctx_t* x, int l, uint64_t in, int H, int W, uint64_t out, uint64_t residual)
+{
+    nx_pipeline_t* p = x->p;
+    const nx_re_layer_t* L = &nx_re_layers[l];
+    int Ho = L->stride == 2 ? (H - 1) / 2 + 1 : H, Wo = L->stride == 2 ? (W - 1) / 2 + 1 : W;
+    int k = conv_kernel_name(L->kernel);
+    if (k < 0) { x->err = 9; return; }
+    ka_conv_t a = { in, H, W, out, Ho, Wo, p->re_w[l], p->re_b[l], L->stride, 1, 1, L->act, residual };
+    run(x, k, &a, sizeof a, Wo, Ho);
+}
+
+static void re(ctx_t* x, const nx_image_t* cur, const nx_image_t* o, int w, int h, float s)
+{
+    nx_pipeline_t* p = x->p;
+    enum { S1, S2, S3, S4, G1, L1, L2, OUT };   // orden de nx_re_layers (sr/net_re.py LAYERS)
+    uint64_t* T = p->re_t;
+    ka_avgpool_t ap = { tsharp(x, cur), h, w, p->re_lo, p->re_hl, p->re_wl, p->re_f };
+    run(x, K_AVGPOOL, &ap, sizeof ap, p->re_wl, p->re_hl);
+    re_conv(x, S1, p->re_lo, p->re_hl, p->re_wl, T[0], 0);
+    re_conv(x, S2, T[0], p->re_h[0], p->re_w_[0], T[1], 0);
+    re_conv(x, S3, T[1], p->re_h[1], p->re_w_[1], T[2], 0);
+    re_conv(x, S4, T[2], p->re_h[2], p->re_w_[2], T[3], 0);
+    re_conv(x, G1, T[3], p->re_h[3], p->re_w_[3], T[2], 0);        // contexto global
+    ka_resize_t r = { T[2], p->re_h[3], p->re_w_[3], 24, 0, T[0], p->re_gh, p->re_gw };
+    run(x, K_RESIZE, &r, sizeof r, p->re_gw, p->re_gh);
+    re_conv(x, L1, T[1], p->re_gh, p->re_gw, T[3], T[0]);           // local + global
+    re_conv(x, L2, T[3], p->re_gh, p->re_gw, T[0], 0);
+    re_conv(x, OUT, T[0], p->re_gh, p->re_gw, p->re_grid, 0);
+    int n = p->re_gh * p->re_gw * NX_RE_D * 12;
+    ka_re_ema_t e = { p->re_grid, p->re_state, n, p->re_valid ? 0.5f : 0.0f };
+    run(x, K_RE_EMA, &e, sizeof e, 1024, (n + 1023) / 1024);
+    p->re_valid = 1;
+    ka_re_apply_t a = { tsharp(x, cur), tsharp(x, o), w, h, p->re_state, p->re_gw, p->re_gh,
+                        nx_re_guide[0], nx_re_guide[1], nx_re_guide[2], nx_re_guide[3], s };
+    run(x, K_RE_APPLY, &a, sizeof a, w, h);
+}
+
 static void conv(ctx_t* x, int layer, uint64_t in, int H, int W, uint64_t out, uint64_t residual)
 {
     nx_pipeline_t* p = x->p;
@@ -443,8 +513,10 @@ static void smaa(ctx_t* x, const nx_image_t* src, const nx_image_t* dst)
 static void post(ctx_t* x, const nx_job_t* job, const nx_image_t* src, const nx_image_t* dst)
 {
     nx_pipeline_t* p = x->p;
-    enum { ST_SMAA, ST_EASU, ST_NXSR, ST_RCAS };
-    int st[4], n = 0;
+    enum { ST_RE, ST_SMAA, ST_EASU, ST_NXSR, ST_RCAS };
+    int st[5], n = 0;
+    if (job->re > 0.0f) st[n++] = ST_RE;   // realismo primero: el resto trabaja sobre la imagen final
+    else p->re_valid = 0;                  // al volver a prenderlo no se mezcla con una malla vieja
     if (job->aa) st[n++] = ST_SMAA;
     if (job->post == NX_POST_EASU) st[n++] = ST_EASU;
     if (job->sr) {
@@ -475,7 +547,9 @@ static void post(ctx_t* x, const nx_job_t* job, const nx_image_t* src, const nx_
             if (!o) { x->err = 8; return; }
         }
         int w = (int)o->width, h = (int)o->height;
-        if (st[i] == ST_SMAA) {
+        if (st[i] == ST_RE) {
+            re(x, cur, o, w, h, job->re);
+        } else if (st[i] == ST_SMAA) {
             smaa(x, cur, o);
         } else if (st[i] == ST_EASU) {
             ka_easu_t e = { tsharp(x, cur), p->H, p->W, tsharp(x, o), p->Ho, p->Wo };
@@ -586,7 +660,7 @@ int nx_pipeline_build(nx_pipeline_t* p, pm4_t* c, const nx_job_t* job)
     // aguanto la pantalla de carga y se colgo al empezar la partida). VCFG tampoco
     // los toca; nuestros kernels no usan scratch.
 
-    int any_post = job->post != NX_POST_NONE || job->aa || job->sr || job->rcas;
+    int any_post = job->post != NX_POST_NONE || job->aa || job->sr || job->rcas || job->re > 0.0f;
     if (any_post && !job->out_real) return -15;
     if (job->fg) {
         if (job->enhance_first) {

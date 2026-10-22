@@ -96,6 +96,9 @@ CONV_DECL(conv3x3_15_32) CONV_DECL(conv3x3_32_32) CONV_DECL(conv3x3_32_5)
 CONV_DECL(conv3x3_17_24) CONV_DECL(conv3x3_24_24) CONV_DECL(conv3x3_24_5)
 CONV_DECL(conv3x3_5_12) CONV_DECL(conv3x3_12_12) CONV_DECL(conv3x3_12_3)
 CONV_DECL(conv3x3_5_16) CONV_DECL(conv3x3_16_16) CONV_DECL(conv3x3_16_3)
+CONV_DECL(conv3x3_3_16) CONV_DECL(conv3x3_16_24) CONV_DECL(conv3x3_24_96)
+void re_ema(P, P, int, float);
+void re_apply(P, P, int, int, P, int, int, float, float, float, float, float);
 void wg_srl_feat(P, int, int, P, int, int);
 void srl_act(P, int);
 void wg_srl_apply(P, P, int, int, P, int, int, float, float);
@@ -147,6 +150,11 @@ static void call(const char* n)
     else if (IS("conv3x3_5_16")) CONV(conv3x3_5_16);
     else if (IS("conv3x3_16_16")) CONV(conv3x3_16_16);
     else if (IS("conv3x3_16_3")) CONV(conv3x3_16_3);
+    else if (IS("conv3x3_3_16")) CONV(conv3x3_3_16);
+    else if (IS("conv3x3_16_24")) CONV(conv3x3_16_24);
+    else if (IS("conv3x3_24_96")) CONV(conv3x3_24_96);
+    else if (IS("re_ema")) re_ema(ap(0), ap(1), ai(2), af(3));
+    else if (IS("re_apply")) re_apply(ap(0), ap(1), ai(2), ai(3), ap(4), ai(5), ai(6), af(7), af(8), af(9), af(10), af(11));
     else if (IS("wg_srl_feat")) wg_srl_feat(ap(0), ai(1), ai(2), ap(3), ai(4), ai(5));
     else if (IS("srl_act")) srl_act(ap(0), ai(1));
     else if (IS("wg_srl_apply")) wg_srl_apply(ap(0), ap(1), ai(2), ai(3), ap(4), ai(5), ai(6), af(7), af(8));
@@ -321,13 +329,21 @@ int main(int argc, char** argv)
     // modos: 0 FG, 1 FG+RCAS, 2 FG+SMAA, 3 solo NXSR (k=1), 4 FG+NXSR procesando antes de interpolar,
     //        5 solo NXSR Calidad (k=1), 6 FG rapida (sin la red), 7 solo FSR+ (RCAS 0.25 + detalle 0.6),
     //        8 solo NXSR-L (ligero, k=1), 9 FG IA + NXSR-L + SMAA sobre reales procesados,
-    //        10 solo NXSR-L Calidad (k=1)
+    //        10 solo NXSR-L Calidad (k=1), 11 solo NXRE (realismo, intensidad 1),
+    //        12 todo: FG IA sobre reales con NXRE 0.8 + SMAA + NXSR-L + FSR+
+    int all = post == 12;
+    if (post == 11) post = 8;   // mismo armado que NXSR-L solo, cambiando el efecto abajo
     nx_job_t job = { .prev = &img[0], .cur = &img[1], .out_mid = &img[2], .out_real = post && post != 6 ? &img[3] : NULL, .sharp_detail = post == 7 ? 0.6f : 0.0f, .rcas = post == 7,
                      .sr_lite = post == 10 ? 2 : (post == 8 || post == 9),
                      .slot = 1, .post = post == 1 ? NX_POST_RCAS : NX_POST_NONE, .aa = post == 2 || post == 9,
                      .sharpness_stops = 0.25f, .seq = 7, .fg = post != 3 && post != 5 && post != 7 && post != 8 && post != 10, .fg_fast = post == 6,
                      .sr = post >= 3 && post != 6 && post != 7, .sr_k = 1.0f, .sr_hq = post == 5, .enhance_first = post == 4 || post == 9,
                      .prev_real = &img[4], .prev_real_valid = 0 };
+    if (argc > 6 && atoi(argv[6]) == 11) { job.sr = 0; job.sr_lite = 0; job.re = 1.0f; }
+    if (all) {
+        job.out_real = &img[3]; job.fg = 1; job.enhance_first = 1; job.aa = 1; job.sr = 1; job.sr_lite = 1;
+        job.sr_k = 2.0f; job.rcas = 1; job.sharp_detail = 0.5f; job.sharpness_stops = 0.4f; job.re = 0.8f;
+    }
     if (nx_pipeline_build(&p, &c, &job) != 0) { fprintf(stderr, "build fallo\n"); return 1; }
     // NX_DUMP=archivo: memoria "GPU" (arena + fotogramas) y DCB tal como los armo el
     // plugin, antes de ejecutar nada (para tools/gcn_isa_emu.py: el mismo trabajo

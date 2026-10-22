@@ -1,4 +1,4 @@
-# VCFG-NX 2.75: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
+# VCFG-NX 2.76: frame generation + realismo IA (NXRE) + reescalado IA (NXSR) para PS4 (GoldHEN)
 
 Rediseño del **VCFG v2.14** (generador de fotogramas en beta de la comunidad
 de GoldHEN) que además incorpora un **modelo de reescalado/realce propio,
@@ -6,12 +6,13 @@ NXSR**, como alternativa a GNMScale pero sin el granulado que este agrega.
 Todo con la interfaz de VCFG: app instaladora con lista de juegos y menú en
 pantalla con **L3+R3**.
 
-**Descarga:** [`dist/VCFG-NX_v2.75.pkg`](dist/VCFG-NX_v2.75.pkg) (fPKG, app) ·
+**Descarga:** [`dist/VCFG-NX_v2.76.pkg`](dist/VCFG-NX_v2.76.pkg) (fPKG, app) ·
 [`dist/vcfg_nx.prx`](dist/vcfg_nx.prx) (plugin suelto) · [`dist/SHA256SUMS.txt`](dist/SHA256SUMS.txt)
 
 | servicio | qué hace |
 |---|---|
 | **Generación de fotogramas** | 30 → 60 fps. **VCFG** (el motor clásico de VCFG, MIT) o **IA** (NXFG-2, propia: movimiento de 4 niveles, red chica, elección de vector por píxel y protecciones anti-parpadeo) |
+| **Realismo IA (NXRE)** | red propia que cambia luz y color por zona y por nivel de brillo para que la imagen se vea como una foto real (aprendida de GTA V convertido a fotorrealista); ~1-2 ms a 1080p, sin parpadeos |
 | **Reescalado IA (NXSR)** | red de 16 canales que reconstruye detalle (TAA borroso, render a menos resolución) y **nunca agrega grano ni halos**: su salida queda acotada al rango de los píxeles vecinos |
 | SMAA 1x | antialiasing de bordes |
 | FSR1 / **FSR+** | EASU si el juego renderiza por debajo de la salida; RCAS + realce de detalle sin halos como nitidez (también junto con NXSR y con la generación) |
@@ -61,10 +62,71 @@ botones mientras está abierto):
   (el NXSR Rápido de antes, caro) y **Calidad** (NXSR-L Calidad); con modo ahorro,
   "Ligero (ahorro)".
 * **Generación**: **VCFG** (motor clásico de VCFG) o **IA NXFG-2** (la propia).
+* **Realismo IA (NXRE)**: OFF / Suave / Normal / Fuerte (Normal por defecto).
 * Generación de fotogramas, NXSR (Suave / Normal / Fuerte), modo ahorro, SMAA,
   nitidez FSR+, contador de FPS (con temperatura) y comparar (con línea divisoria).
 * Arriba se ven los FPS, la temperatura y el estado (activo, calidad dinámica,
   calor). **Guardar** deja todo para ese juego; **O** cierra.
+
+## Novedades de la 2.76
+
+Pediste algo tipo **DLSS 5**: que la IA mejore cómo se ve el juego (realismo), no
+solo la nitidez, que se note mucho y que entre todo junto sin "carga alta".
+
+**Qué es DLSS 5 y qué se puede en una PS4.** DLSS 5 es un modelo generativo
+(transformer de difusión en espacio de píxeles) que recibe el fotograma más datos
+3D del motor (normales, profundidad, vectores de movimiento) y rehace la luz y los
+materiales. Necesita una RTX de las grandes; la PS4 tiene ~1,8 TFLOPS y el juego usa
+casi todos. Lo que sí entra es la idea de los trabajos de investigación sobre
+fotorrealismo en GTA V (EPE de Intel, 2021, y REGEN, 2025): una red que convierte el
+fotograma del juego al aspecto de fotos reales de calles (Cityscapes). REGEN publicó
+un video con GTA V a la izquierda y su resultado fotorrealista a la derecha.
+
+**NXRE ("realismo"), modelo propio** (`sr/net_re.py`, `shaders/nxre.cl`):
+
+- Una red chica mira el fotograma entero a ~128 x 72 (4 capas de paso 2 + contexto
+  global de la escena) y arma una **malla de transformaciones de color**: por zona de
+  la imagen y por nivel de brillo (8 niveles), una matriz afín 3x4. Cada píxel toma
+  la suya (bilineal en el espacio, lineal entre niveles de brillo) y la aplica. Es la
+  idea de "Deep Bilateral Learning" (HDRNet, Google/MIT 2017), la forma más barata
+  conocida de hacer una transformación aprendida de imagen completa.
+- **Entrenada por destilación**: de ese video armé 3399 pares alineados (la mitad
+  derecha está ampliada x1,236 y va 2 fotogramas atrasada: alineación automática con
+  ECC sobre los bordes, `sr/make_re_pairs.py`). La red aprende a llevar GTA V al
+  aspecto fotorrealista: luz más natural, cielos y sombras de cámara real, colores
+  menos "de videojuego". No se usa ningún modelo de ellos: solo sus imágenes como
+  ejemplo a imitar.
+- Validación (fotogramas que no vio): pasa de **14,4 dB a ~23,9 dB** de parecido con
+  el resultado fotorrealista. Cambio medio por píxel: ~27-35/255 (se nota mucho, a
+  simple vista; NXSR-L cambiaba ~1/255).
+- **No parpadea ni inventa texturas**: es una transformación de color suave por zonas
+  (no puede generar artefactos de detalle), la malla además se promedia con la del
+  fotograma anterior, y el intermedio de la generación se arma sobre el real ya
+  procesado.
+- Costo medido con el código máquina: **~14 M instrucciones a 1080p (~1-2 ms)**, la
+  red en sí es casi nada (~1 M); el resto es aplicar la malla por píxel.
+- Menú: **Realismo IA (NXRE): OFF / Suave / Normal / Fuerte** (intensidad 0,5 / 0,8
+  / 1). Normal por defecto. Va primero en la cadena: después SMAA, NXSR-L y FSR+
+  trabajan sobre la imagen final. También en la app (ajustes por juego).
+
+Honestidad: aprendió de escenas de día manejando por Los Santos; en interiores,
+noche o menús aplica la misma idea (lo probé con escenas oscurecidas y con otro tipo
+de imagen: no rompe nada), pero donde más se luce es en exteriores. El estilo es el
+de las fotos de Cityscapes: más sobrio y "de cámara" que el GTA original.
+
+**Todo a la vez sin "carga alta".** Hasta la 2.75 la calidad dinámica bajaba efectos
+si nuestro trabajo pasaba 8 ms, aunque el juego siguiera a 30 fps. Ahora solo baja si
+el **juego de verdad pierde fotogramas** (fps del juego < 28,5 o el período de la GPU
+entre fotogramas > 35 ms) o si lo nuestro pasa un límite duro de 14 ms. En el
+simulador, con un juego de 20 ms de GPU y todo prendido (IA + NXRE + NXSR-L + SMAA +
+FSR+, ~11,5 ms propios): nivel 0, sin aviso, 1000/1000 intermedios. Con un juego de
+26 ms baja dos escalones y la generación sigue.
+
+**Pruebas.** NXRE en el emulador de PC contra JAX (máx. 1/255) y en el emulador del
+código máquina GCN (idéntico, también el modo "todo a la vez"); simulador de consola
+con todos los escenarios (nuevo: 33, todo a la vez). El emulador GCN ahora soporta
+`v_writelane/v_readlane` (la capa de salida de NXRE derrama SGPRs). **Sigue sin
+probarse en una PS4.**
 
 ## Novedades de la 2.75
 

@@ -10,6 +10,7 @@ void nx_config_defaults(nx_config_t* c)
 {
     c->effects = 1;
     c->framegen = 1;
+    c->re = 2;            // realismo IA (NXRE) Normal: el efecto que mas se ve, y barato
     c->sr = 2;
     c->sr_model = 0;
     c->dynamic = 1;
@@ -52,6 +53,7 @@ void nx_config_parse(nx_config_t* c, const char* text)
         int iv = atoi(v);
         if (!strcmp(k, "effects")) c->effects = iv != 0;
         else if (!strcmp(k, "framegen")) c->framegen = clampi(iv, 0, 2);   // 0 no, 1 rapida, 2 IA
+        else if (!strcmp(k, "re")) c->re = clampi(iv, 0, 3);
         else if (!strcmp(k, "sr")) c->sr = clampi(iv, 0, 3);
         else if (!strcmp(k, "sr_model")) c->sr_model = clampi(iv, 0, 2);
         else if (!strcmp(k, "dynamic")) c->dynamic = iv != 0;
@@ -87,9 +89,9 @@ int nx_config_format(const nx_config_t* c, const char* comment, char* out, int c
 {
     return snprintf(out, (size_t)cap,
                     "; %s\n"
-                    "effects = %d\nframegen = %d\nsr = %d\nsr_model = %d\naa = %d\nrcas = %d\ndynamic = %d\neco = %d\n"
+                    "effects = %d\nframegen = %d\nre = %d\nsr = %d\nsr_model = %d\naa = %d\nrcas = %d\ndynamic = %d\neco = %d\n"
                     "temp_limit = %d\nfps_counter = %d\ncompare = %d\n",
-                    comment, c->effects, c->framegen, c->sr, c->sr_model, c->aa, c->rcas, c->dynamic, c->eco, c->temp_limit,
+                    comment, c->effects, c->framegen, c->re, c->sr, c->sr_model, c->aa, c->rcas, c->dynamic, c->eco, c->temp_limit,
                     c->fps_counter, c->compare);
 }
 
