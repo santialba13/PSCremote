@@ -7,6 +7,7 @@
 #include "../include/nxflow_weights.h"
 #include "../include/nxsr_weights.h"
 #include "../include/nxsr_hq_weights.h"
+#include "../include/nxsrl_weights.h"
 #include "../../third_party/smaa/AreaTex.h"
 #include "../../third_party/smaa/SearchTex.h"
 
@@ -26,13 +27,15 @@ enum {
     K_CONV_15_32, K_CONV_32_32, K_CONV_32_5, K_CONV_17_24, K_CONV_24_24, K_CONV_24_5,
     K_AVGPOOL, K_POOL2, K_RESIZE, K_UPSAMPLE5, K_INPUT_A, K_BUILD_INPUT, K_BM_TO_FLOW, K_LUMA_HALF,
     K_LUMA_DOWN2, K_BM_SEARCH, K_BM_MEDIAN3, K_SCENE, K_SMASK, K_DILATE, K_WARP_BLEND, K_EASU, K_RCAS,
-    K_SMAA_EDGES, K_SMAA_WEIGHTS, K_SMAA_BLEND, K_NXSR, K_NXSR_HQ, K_COUNT
+    K_SMAA_EDGES, K_SMAA_WEIGHTS, K_SMAA_BLEND, K_NXSR, K_NXSR_HQ,
+    K_CONV_5_12, K_CONV_12_12, K_CONV_12_3, K_SRL_FEAT, K_SRL_ACT, K_SRL_APPLY, K_COUNT
 };
 static const char* const k_names[K_COUNT] = {
     "conv3x3_15_32", "conv3x3_32_32", "conv3x3_32_5", "conv3x3_17_24", "conv3x3_24_24", "conv3x3_24_5",
     "avgpool_rgb", "pool2_rgb", "resize_bilinear", "upsample5", "nxfg_input_a", "build_level_input",
     "bm_to_flow", "luma_half", "luma_down2", "wg_bm_search", "bm_median3", "wg_nxfg_scene", "static_mask", "mask_dilate", "warp_blend",
     "easu", "rcas", "smaa_edges", "smaa_weights", "smaa_blend", "wg_nxsr", "wg_nxsr_hq",
+    "conv3x3_5_12", "conv3x3_12_12", "conv3x3_12_3", "wg_srl_feat", "srl_act", "wg_srl_apply",
 };
 
 #ifndef NX_NET_NXFG2
@@ -73,6 +76,9 @@ typedef struct { uint64_t src; int32_t W, H; uint64_t edges; } ka_smaa_edges_t;
 typedef struct { uint64_t edges; int32_t W, H; uint64_t area, search, weights; } ka_smaa_weights_t;
 typedef struct { uint64_t src, samp, weights; int32_t W, H; uint64_t dst; } ka_smaa_blend_t;
 typedef struct { uint64_t src; int32_t W, H; uint64_t w; uint64_t dst; float k; } ka_nxsr_t;
+typedef struct { uint64_t src; int32_t W, H; uint64_t out; int32_t wc, hc; } ka_srl_feat_t;
+typedef struct { uint64_t g; int32_t n; } ka_srl_act_t;
+typedef struct { uint64_t src, dst; int32_t W, H; uint64_t g; int32_t wc, hc; float k; } ka_srl_apply_t;
 
 static size_t align_up(size_t v, size_t a) { return (v + a - 1) / a * a; }
 
@@ -119,6 +125,11 @@ static void alloc_fg_scratch(nx_pipeline_t* p, nx_arena_t* a)
 
 static void alloc_post_scratch(nx_pipeline_t* p, nx_arena_t* a)
 {
+    // NXSR-L: guia a 1/8 de la etapa mas grande (la salida)
+    int wc = (p->Wo + 7) / 8, hc = (p->Ho + 7) / 8;
+    p->srl_feat = arena_alloc(a, tensor_bytes(hc, wc, 5), 256);
+    for (int i = 0; i < 3; ++i) p->srl_h[i] = arena_alloc(a, tensor_bytes(hc, wc, 12), 256);
+    p->srl_g = arena_alloc(a, tensor_bytes(hc, wc, 3), 256);
     p->tmp_img2 = arena_alloc(a, tensor_bytes(p->Ho, (int)align_up(p->Wo, 64), 1), 64 * 1024);
     p->tmp_aa = arena_alloc(a, tensor_bytes(p->H, (int)align_up(p->W, 64), 1), 64 * 1024);
     p->smaa_edges = arena_alloc(a, (size_t)p->W * p->H * 2, 256);
@@ -186,6 +197,17 @@ static int layout(nx_pipeline_t* p, int W, int H, int Wo, int Ho, nx_arena_t are
     p->smaa_area = arena_alloc(a, sizeof areaTexBytes, 256);
     p->smaa_search = arena_alloc(a, sizeof searchTexBytes, 256);
     p->nxsr_w = arena_alloc(a, sizeof nxsr_weights, 256);
+    for (int l = 0; l < NX_SRL_LAYERS; ++l) {
+        const nx_srl_layer_t* L = &nx_srl_layers[l];
+        size_t wn = (size_t)9 * L->cin * L->cout;
+        p->srl_w[l] = arena_alloc(a, wn * 4, 256);
+        p->srl_b[l] = arena_alloc(a, L->cout * 4, 256);
+        if (!p->srl_w[l] || !p->srl_b[l]) return -7;
+        if (!dry) {
+            memcpy(arena_cpu(a, p->srl_w[l]), L->w, wn * 4);
+            memcpy(arena_cpu(a, p->srl_b[l]), L->b, L->cout * 4);
+        }
+    }
     p->nxsr_hq_w = arena_alloc(a, sizeof nxsr_hq_weights, 256);
     if (!p->smaa_search || !p->nxsr_w || !p->nxsr_hq_w) return -5;
     if (!dry) {
@@ -283,11 +305,36 @@ static void same_pads(int n, int stride, int* before)
     *before = total / 2;
 }
 
-static int conv_kernel(const nx_layer_t* L)
+static int conv_kernel_name(const char* name)
 {
-    for (int k = K_CONV_15_32; k <= K_CONV_24_5; ++k)
-        if (!strcmp(k_names[k], L->kernel)) return k;
+    for (int k = 0; k < K_COUNT; ++k)
+        if (k_names[k][0] == 'c' && k_names[k][4] == '3' && !strcmp(k_names[k], name)) return k;   // conv3x3_*
     return -1;
+}
+
+static int conv_kernel(const nx_layer_t* L) { return conv_kernel_name(L->kernel); }
+
+// NXSR-L (sr/net_srl.py): guia a 1/8 + realce de bandas con limite, de cur a o (w x h)
+static void srl(ctx_t* x, const nx_image_t* cur, const nx_image_t* o, int w, int h, float k)
+{
+    nx_pipeline_t* p = x->p;
+    int wc = (w + 7) / 8, hc = (h + 7) / 8;
+    ka_srl_feat_t f = { tsharp(x, cur), w, h, p->srl_feat, wc, hc };
+    run(x, K_SRL_FEAT, &f, sizeof f, wc * 8, hc * 8);
+    uint64_t in[4] = { p->srl_feat, p->srl_h[0], p->srl_h[1], p->srl_h[2] };
+    uint64_t out[4] = { p->srl_h[0], p->srl_h[1], p->srl_h[2], p->srl_g };
+    for (int l = 0; l < NX_SRL_LAYERS; ++l) {
+        const nx_srl_layer_t* L = &nx_srl_layers[l];
+        int kk = conv_kernel_name(L->kernel);
+        if (kk < 0) { x->err = 9; return; }
+        ka_conv_t a = { in[l], hc, wc, out[l], hc, wc, p->srl_w[l], p->srl_b[l], 1, 1, 1, L->act,
+                        l == 2 ? p->srl_h[0] : 0 };   // c2 + residual de c0
+        run(x, kk, &a, sizeof a, wc, hc);
+    }
+    ka_srl_act_t ac = { p->srl_g, wc * hc };
+    run(x, K_SRL_ACT, &ac, sizeof ac, 1024, (wc * hc + 1023) / 1024);
+    ka_srl_apply_t ap = { tsharp(x, cur), tsharp(x, o), w, h, p->srl_g, wc, hc, k };
+    run(x, K_SRL_APPLY, &ap, sizeof ap, w, h);
 }
 
 static void conv(ctx_t* x, int layer, uint64_t in, int H, int W, uint64_t out, uint64_t residual)
@@ -405,6 +452,8 @@ static void post(ctx_t* x, const nx_job_t* job, const nx_image_t* src, const nx_
         } else if (st[i] == ST_EASU) {
             ka_easu_t e = { tsharp(x, cur), p->H, p->W, tsharp(x, o), p->Ho, p->Wo };
             run(x, K_EASU, &e, sizeof e, p->Wo, p->Ho);
+        } else if (st[i] == ST_NXSR && job->sr_lite) {
+            srl(x, cur, o, w, h, job->sr_k);
         } else if (st[i] == ST_NXSR) {
             ka_nxsr_t r = { tsharp(x, cur), w, h, job->sr_hq ? p->nxsr_hq_w : p->nxsr_w, tsharp(x, o), job->sr_k };
             run(x, job->sr_hq ? K_NXSR_HQ : K_NXSR, &r, sizeof r, w / 2, h / 2);

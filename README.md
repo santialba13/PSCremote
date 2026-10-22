@@ -1,4 +1,4 @@
-# VCFG-NX 2.73: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
+# VCFG-NX 2.74: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
 
 Rediseño del **VCFG v2.14** (generador de fotogramas en beta de la comunidad
 de GoldHEN) que además incorpora un **modelo de reescalado/realce propio,
@@ -6,7 +6,7 @@ NXSR**, como alternativa a GNMScale pero sin el granulado que este agrega.
 Todo con la interfaz de VCFG: app instaladora con lista de juegos y menú en
 pantalla con **L3+R3**.
 
-**Descarga:** [`dist/VCFG-NX_v2.73.pkg`](dist/VCFG-NX_v2.73.pkg) (fPKG, app) ·
+**Descarga:** [`dist/VCFG-NX_v2.74.pkg`](dist/VCFG-NX_v2.74.pkg) (fPKG, app) ·
 [`dist/vcfg_nx.prx`](dist/vcfg_nx.prx) (plugin suelto) · [`dist/SHA256SUMS.txt`](dist/SHA256SUMS.txt)
 
 | servicio | qué hace |
@@ -64,6 +64,64 @@ botones mientras está abierto):
   nitidez FSR+, contador de FPS (con temperatura) y comparar (con línea divisoria).
 * Arriba se ven los FPS, la temperatura y el estado (activo, calidad dinámica,
   calor). **Guardar** deja todo para ese juego; **O** cierra.
+
+## Novedades de la 2.74
+
+Con la 2.73 en GTA V: la generación de VCFG perfecta; el reescalado no se notaba
+(salvo el modelo Rápido), con el modelo Calidad la carga obligaba a bajar de nivel,
+el SMAA no se veía y la nitidez FSR se notaba poco.
+
+**Modelo nuevo de reescalado: NXSR-L ("Ligero")**, pensado para ir junto con la
+generación (`sr/net_srl.py`, `shaders/nxsrl.cl`):
+
+- La imagen se separa en dos bandas de detalle de la luma (radios 1 y 2) con
+  filtros fijos baratos, y una **red chica a 1/8 de resolución** (celdas de 8x8:
+  color medio y energía de cada banda → 3 capas 3x3 de 12 canales) decide por zona
+  cuánto realzar cada banda y desde qué umbral ignorar el grano. Un límite al
+  rango 3x3 local (más un 25 %) evita los halos; solo toca la luma (sin bordes de
+  color).
+- Medido en el mismo conjunto de validación que los otros modelos:
+
+  | modelo | PSNR | SSIM | zonas planas (grano) | instrucciones de GPU por fotograma 1080p |
+  |---|---|---|---|---|
+  | sin procesar | 27,37 | 0,888 | 41,98 | — |
+  | NXSR Rápido | 27,84 | 0,898 | 42,19 | ~79 M |
+  | NXSR Calidad | 27,90 | 0,900 | — | ~307 M |
+  | **NXSR-L** | **27,92** | **0,904** | **42,03** | **~26 M** |
+
+  Mejor que los dos anteriores y 3 veces más barato que Rápido (12 veces que
+  Calidad). Las instrucciones son las del código máquina real, contadas con el
+  emulador de la GPU.
+- Es el modelo por defecto y el del modo ahorro. Suave / Normal / Fuerte = 1,2 /
+  2,0 / 3,0: hasta 3 sigue mejorando la imagen (PSNR por encima del original) sin
+  agregar grano, así que se usa fuerte para que se note a 1080p nativos.
+- Menú: **Modelo IA: Ligero / Rápido / Calidad**. La calidad dinámica, si falta
+  GPU, primero cambia Rápido o Calidad por Ligero; recién después saca SMAA, el
+  reescalado y la nitidez. La generación queda siempre.
+
+**SMAA y FSR+ más visibles.**
+
+- El modo ahorro ya no apaga el SMAA (era la razón más probable de que no se
+  viera); en ahorro solo se fuerza NXSR-L.
+- SMAA con umbral de borde 0,05 (preset "Ultra"): los juegos ya traen FXAA/TAA y
+  sus bordes quedan con poco contraste; con 0,1 casi no los encontraba.
+- FSR+ más fuerte: Baja / Media / Alta = detalle 0,5 / 1,0 / 1,6, con un
+  sobreimpulso permitido que crece con la intensidad.
+
+**Lo que se tomó de mirar GNMScale** (la versión nueva que pasaste; no se usa
+ninguno de sus modelos, ver `docs/ANALISIS_GNMSCALE.md`): su integración es la
+misma que la nuestra (trabajo al final de los comandos del juego, resultado
+copiado al buffer del juego, solo SDR de 8 bits). Lo que hace que su efecto se
+note es la intensidad (corre la red a 1/N de la resolución y reconstruye, con
+"textura generada" e intensidad por encima de 1, que ellos mismos avisan que hace
+halos y tiembla). Su FBSR usa la misma idea que NXSR-L: celdas de 8x8 con
+estadísticas y una red de contexto que modula un filtro por píxel.
+
+**Pruebas.** NXSR-L en el emulador de PC (contra JAX: 1/255) y en el emulador de
+instrucciones GCN (idéntico); simulador de consola con el costo de GPU de cada
+kernel medido con el código máquina real (`tools/isa_costs.py` →
+`plugin/test/kernel_costs.h`): con el juego usando 24 ms de GPU, la calidad dinámica
+cambia Rápido por Ligero y alcanza, sin atrasos.
 
 ## Novedades de la 2.73
 

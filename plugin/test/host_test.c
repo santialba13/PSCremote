@@ -41,6 +41,9 @@ typedef struct { uint64_t dst; int32_t W, H; uint64_t text, attr; int32_t cols, 
                  int32_t cw, ch, x0, y0, scale, sel_row; } ka_osd_t;
 typedef struct { uint64_t src, dst; int32_t x0, y0, w, h; } ka_copy_t;
 typedef struct { uint64_t dst; int32_t x0, y0, w, h; float r, g, b; } ka_fill_t;
+typedef struct { uint64_t src; int32_t W, H; uint64_t out; int32_t wc, hc; } ka_srl_feat_t;
+typedef struct { uint64_t g; int32_t n; } ka_srl_act_t;
+typedef struct { uint64_t src, dst; int32_t W, H; uint64_t g; int32_t wc, hc; float k; } ka_srl_apply_t;
 
 #define O(t, f) (int)offsetof(t, f)
 typedef struct { const char* name; int n; int offs[16]; } layout_t;
@@ -90,6 +93,11 @@ static const layout_t layouts[] = {
     { "osd_draw", 14, { O(ka_osd_t, dst), O(ka_osd_t, W), O(ka_osd_t, H), O(ka_osd_t, text), O(ka_osd_t, attr),
         O(ka_osd_t, cols), O(ka_osd_t, rows), O(ka_osd_t, font), O(ka_osd_t, cw), O(ka_osd_t, ch), O(ka_osd_t, x0),
         O(ka_osd_t, y0), O(ka_osd_t, scale), O(ka_osd_t, sel_row) } },
+    { "wg_srl_feat", 6, { O(ka_srl_feat_t, src), O(ka_srl_feat_t, W), O(ka_srl_feat_t, H), O(ka_srl_feat_t, out),
+        O(ka_srl_feat_t, wc), O(ka_srl_feat_t, hc) } },
+    { "srl_act", 2, { O(ka_srl_act_t, g), O(ka_srl_act_t, n) } },
+    { "wg_srl_apply", 8, { O(ka_srl_apply_t, src), O(ka_srl_apply_t, dst), O(ka_srl_apply_t, W), O(ka_srl_apply_t, H),
+        O(ka_srl_apply_t, g), O(ka_srl_apply_t, wc), O(ka_srl_apply_t, hc), O(ka_srl_apply_t, k) } },
     { "fill_rect", 8, { O(ka_fill_t, dst), O(ka_fill_t, x0), O(ka_fill_t, y0), O(ka_fill_t, w), O(ka_fill_t, h),
         O(ka_fill_t, r), O(ka_fill_t, g), O(ka_fill_t, b) } },
     { "copy_rect", 6, { O(ka_copy_t, src), O(ka_copy_t, dst), O(ka_copy_t, x0), O(ka_copy_t, y0), O(ka_copy_t, w),
@@ -121,8 +129,8 @@ static void check_layouts(void)
     }
     // las 4 variantes de conv comparten layout
     const char* convs[] = { "conv3x3_32_32", "conv3x3_32_5", "conv3x3_17_24", "conv3x3_24_24", "conv3x3_24_5",
-                            "conv3x3_15_32" };
-    for (int i = 0; i < 6; ++i) {
+                            "conv3x3_15_32", "conv3x3_5_12", "conv3x3_12_12", "conv3x3_12_3" };
+    for (int i = 0; i < (int)(sizeof convs / sizeof convs[0]); ++i) {
         const nx_shader_t* s = find(convs[i]);
         CHECK(s && s->num_args == 13, "%s", convs[i]);
         for (int a = 0; s && a < 13; ++a)

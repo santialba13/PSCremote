@@ -136,7 +136,8 @@ NX_KERNEL void rcas(tdesc_t src, tdesc_t dst, int W, int H, float sharp, int den
         float mxY = nx_maxf(nx_maxf(nx_maxf(ya, yb), nx_maxf(yc, yd)), nx_maxf(nx_maxf(ye, yf), nx_maxf(nx_maxf(yg, yh), yi)));
         float yo = y601(o);
         // el limite nunca recorta lo que ya hizo RCAS: solo acota el realce extra
-        float tgt = nx_clampf(yo + detail * dt * wn, nx_minf(mnY, yo) - 0.01f, nx_maxf(mxY, yo) + 0.01f);
+        float mg = 0.012f * detail;   // sobreimpulso permitido, crece con la intensidad
+        float tgt = nx_clampf(yo + detail * dt * wn, nx_minf(mnY, yo) - mg, nx_maxf(mxY, yo) + mg);
         float dy = tgt - yo;
         o = o + (float4)(dy, dy, dy, 0.0f);
     }

@@ -30,6 +30,8 @@ MODES = [
     (3, "NXSR Rapido", False, True),
     (5, "NXSR Calidad", False, True),
     (4, "IA sobre reales procesados con NXSR", True, True),
+    (8, "NXSR-L (ligero)", False, True),
+    (9, "IA + NXSR-L + SMAA (reales procesados)", True, True),
 ]
 
 

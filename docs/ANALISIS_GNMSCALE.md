@@ -78,3 +78,35 @@ cambiarían algo, pero el comportamiento (residuo sin acotar) es el mismo.
 | `jb.prx` propio para salir del sandbox | `sys_sdk_jailbreak` del SDK de GoldHEN, restaurando el sandbox al salir |
 | lista `/user/app` y `/mnt/ext1/user/app` | igual |
 | menú L3+R3 y comparar mitad original | igual, con la interfaz de VCFG |
+
+## Versión nueva ("nofg", 01.00, git e6dfd37, octubre 2026)
+
+Solo se estudió cómo funciona; ningún modelo suyo se usa en VCFG-NX.
+
+**Modelos.** Además de los SRNetFemto de antes trae FBSR-v2 y FBSR-v3: "grilla de
+celdas 8x8 (estadísticas + MLP 32->64->10: contexto y luz), conv 3x3 3->6, MLP por
+píxel 58->12/16 (Winograd F(2,3)), cabezal polinómico sub-píxel; salida devuelta a
+la resolución del fotograma (promedio por área)". `fbsr_proc` 1..4: la red corre a
+1/N del lado y reconstruye. FBSR-v3 agrega una base lineal 5x5 por canal (mezcla
+de 8 filtros) + residuos. Opción de "textura generada" (0 = reconstrucción fiel,
+1 = textura inventada; avisan que en movimiento tiembla).
+
+**Integración** (textos del plugin, en italiano):
+- hooks de `sceGnmSubmitAndFlipCommandBuffers(ForWorkload)`, `sceGnmSubmitCommandBuffers(ForWorkload)`,
+  `sceVideoOutSubmitFlip`, `RegisterBuffers`, `SetFlipRate`, `GetFlipStatus`;
+- "SUL POSTO": su trabajo al final de los comandos del juego; "N buffer di uscita,
+  non registrato sul video out (il risultato viene copiato nel buffer del gioco)",
+  o un modo "Flip" que presenta su buffer sin copia. Es lo mismo que hace VCFG-NX;
+- "il fotogramma non e' SDR a 8 bit: effetti spenti" (como nosotros con HDR); asume
+  B8G8R8A8_SRGB con tiling 2D cuando tiene que recuperar la geometría;
+- lee los DCB del juego (`CB_COLOR0_BASE`, profundidad, vectores de movimiento) para
+  aplicar la super resolución **antes del HUD** ("Super resolution prima dell'HUD"),
+  "HUDFix" y la generación sobre la escena sin HUD. Potente pero frágil: depende de
+  adivinar qué buffer es cuál en cada juego (tiene una "vista de buffers" para que
+  el usuario lo elija).
+
+**Qué se tomó.** La confirmación de que la forma de integrar es la correcta, la
+idea de la guía por celdas (NXSR-L) y la lección de que a 1080p nativos el
+realce tiene que ser fuerte para notarse. No se copia: la extrapolación sin límite
+(halos), la textura inventada (parpadeo) ni leer los DCB del juego para encontrar
+buffers.

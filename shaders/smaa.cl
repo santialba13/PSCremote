@@ -9,7 +9,7 @@
 // lineas + areas precalculadas) -> smaa_blend (mezcla con el vecino).
 #include "nx_common.h"
 
-#define SMAA_THRESHOLD 0.1f
+#define SMAA_THRESHOLD 0.05f   // preset "Ultra": los juegos ya traen FXAA/TAA y sus bordes quedan con poco contraste
 #define SMAA_MAX_SEARCH_STEPS 16
 #define SMAA_CORNER_ROUNDING_NORM 0.25f
 #define SMAA_LCA_FACTOR 2.0f

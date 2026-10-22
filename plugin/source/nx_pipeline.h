@@ -32,14 +32,15 @@ typedef struct {
     int bm_h[4], bm_w[4];     // mallas de bloques de 8 de cada nivel (L1 = 1/16 de la imagen)
     int Wo, Ho;         // resolucion de salida (== W, H salvo con EASU)
     nx_arena_t arena;
-    int shader[32];     // indice en nx_shaders[] por kernel usado
-    uint64_t shader_gpu[32];
+    int shader[48];     // indice en nx_shaders[] por kernel usado
+    uint64_t shader_gpu[48];
     uint64_t w_gpu[24], b_gpu[24];
     // tensores
     uint64_t luma[2][4], a8[2], a16[2];
     uint64_t vec[4], vtmp, flowG, deltaG, flow8, delta8, lvl_in, hA, hB, hR, up, scene, smask, smask_e;
     uint64_t tmp_img, tmp_img2, tmp_aa;   // imagenes intermedias para el post-proceso
     uint64_t smaa_edges, smaa_weights, smaa_area, smaa_search, nxsr_w, nxsr_hq_w;
+    uint64_t srl_w[4], srl_b[4], srl_feat, srl_h[3], srl_g;   // NXSR-L
     uint64_t kernarg_base[NX_PIPE_SLOTS], desc_base[NX_PIPE_SLOTS];   // por slot (piramides: por paridad)
     uint64_t label_gpu;
     volatile uint32_t* label_cpu;
@@ -62,6 +63,7 @@ typedef struct {
     int sr;                     // NXSR (reemplaza a RCAS)
     float sr_k;                 // intensidad de NXSR (1 = la del entrenamiento; el limitador 3x3 evita halos)
     int sr_hq;                  // 1 = modelo Calidad (wg_nxsr_hq), 0 = Rapido
+    int sr_lite;                // 1 = NXSR-L (ligero, guia a 1/8): el que se combina con la generacion
     int rcas;                   // nitidez RCAS
     int enhance_first;          // FG sobre los reales ya procesados (misma resolucion)
     const nx_image_t* prev_real;  // real procesado del fotograma anterior

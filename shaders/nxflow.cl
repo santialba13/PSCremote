@@ -60,6 +60,10 @@ CONV3X3(conv3x3_32_5, 32, 5)    // A.out (flujo t->0, t->1, mascara a 1/16)
 CONV3X3(conv3x3_17_24, 17, 24)  // B.c0 (entrada 1/8 -> interno 1/16)
 CONV3X3(conv3x3_24_24, 24, 24)  // B.c1 y capa media
 CONV3X3(conv3x3_24_5, 24, 5)    // B.out (a 1/8)
+// guia de NXSR-L (sr/net_srl.py, malla 1/8)
+CONV3X3(conv3x3_5_12, 5, 12)
+CONV3X3(conv3x3_12_12, 12, 12)
+CONV3X3(conv3x3_12_3, 12, 3)
 
 // ------------------------------------------------- utilidades de tensores
 // Promedio fxf (f = 4 u 8) del fotograma del juego -> RGB a 1/f. Lee fuera de

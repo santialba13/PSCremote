@@ -715,7 +715,7 @@ static void build_menu_text(void)
         const char* sep = "";
         if (f & (FX_FG_VCFG | FX_FG_IA)) { n += snprintf(l + n, sizeof l - (size_t)n, "%s", f & FX_FG_IA ? "IA" : "VCFG"); sep = "+"; }
         if (f & FX_EASU) { n += snprintf(l + n, sizeof l - (size_t)n, "%sEASU", sep); sep = "+"; }
-        if (f & FX_SR) { n += snprintf(l + n, sizeof l - (size_t)n, "%sNXSR%s", sep, E.info.hq ? "-C" : ""); sep = "+"; }
+        if (f & FX_SR) { n += snprintf(l + n, sizeof l - (size_t)n, "%sNXSR%s", sep, E.info.lite ? "-L" : E.info.hq ? "-C" : ""); sep = "+"; }
         if (f & FX_AA) { n += snprintf(l + n, sizeof l - (size_t)n, "%sSMAA", sep); sep = "+"; }
         if (f & FX_RCAS) { n += snprintf(l + n, sizeof l - (size_t)n, "%sFSR", sep); sep = "+"; }
         if (E.info.level > 0 && n < (int)sizeof l - 6) snprintf(l + n, sizeof l - (size_t)n, " (-%d)", E.info.level);
@@ -733,13 +733,13 @@ static void build_menu_text(void)
     osd_item(t, a, 2 + ROW_SR, "Reescalado IA (NXSR)", sr_names[E.cfg.sr & 3], E.cfg.sr ? A_ACCENT : A_OFF, pdim);
     // modelo: lo que eligio el usuario y lo que se usa de verdad
     const char* mv;
-    if (E.cfg.eco) mv = "R\xe1pido (ahorro)";
+    if (E.cfg.eco) mv = "Ligero (ahorro)";
     else if (E.cfg.sr_model == 2) mv = "Calidad";
     else if (E.cfg.sr_model == 1) mv = "R\xe1pido";
-    else mv = E.pro ? "Auto: Calidad" : "Auto: R\xe1pido";
+    else mv = "Ligero";
     osd_item(t, a, 2 + ROW_MODEL, "Modelo IA", mv, A_ACCENT, pdim || !E.cfg.sr);
     osd_switch(t, a, 2 + ROW_ECO, "Modo ahorro (menos calor)", E.cfg.eco, dim);
-    osd_switch(t, a, 2 + ROW_AA, "Antialiasing SMAA", E.cfg.aa, pdim || E.cfg.eco);
+    osd_switch(t, a, 2 + ROW_AA, "Antialiasing SMAA", E.cfg.aa, pdim);
     osd_item(t, a, 2 + ROW_RCAS, "Nitidez FSR+ (RCAS)", rc_names[E.cfg.rcas & 3], E.cfg.rcas ? A_ACCENT : A_OFF,
              pdim);
     osd_switch(t, a, 2 + ROW_FPS, "Contador de FPS", E.cfg.fps_counter, 0);
@@ -970,12 +970,22 @@ void nx_engine_tick(void)
 
 // ------------------------------------------------------- calidad dinamica
 // escalones, del mas caro al mas barato; solo cuentan los que estan en uso
-static void quality_ladder(int* fg, int* sr, int* hq, int* aa, int* rcas)
+// modelo de reescalado: 0 = NXSR-L (ligero, por defecto y en modo ahorro), 1 = Rapido, 2 = Calidad
+static void sr_choice(int sr, int* hq, int* lite)
+{
+    *lite = sr && (E.cfg.sr_model == 0 || E.cfg.eco);
+    *hq = sr && !*lite && E.cfg.sr_model == 2;
+}
+
+// escalones de la calidad dinamica, de lo mas pesado a lo mas liviano: primero el
+// modelo pesado pasa a NXSR-L, despues SMAA, el reescalado, la nitidez y la generacion
+static void quality_ladder(int* fg, int* sr, int* hq, int* lite, int* aa, int* rcas)
 {
     int steps = 0, lv = E.info.level;   // los escalones por atraso solo se suman con `dynamic`; los de calor siempre
-    if (*sr && *hq) { if (lv > steps) *hq = 0; steps++; }
+    if (*sr && !*lite) { if (lv > steps) { *hq = 0; *lite = 1; } steps++; }
     if (*aa) { if (lv > steps) *aa = 0; steps++; }
-    if (*sr || *rcas) { if (lv > steps) *sr = *rcas = *hq = 0; steps++; }
+    if (*sr) { if (lv > steps) *sr = *hq = *lite = 0; steps++; }
+    if (*rcas) { if (lv > steps) *rcas = 0; steps++; }
     if (*fg) { if (lv > steps) *fg = 0; steps++; }
     E.info.level_max = steps;
     if (E.info.level > steps) E.info.level = steps;
@@ -1142,20 +1152,27 @@ static void pace30(void)
 
 static void gpu_time_read_ts(volatile uint64_t* ts);
 
-// nitidez FSR+ (2.73): RCAS al maximo de FSR desde "Media" y ademas el realce de
-// detalle sin halos (Baja/Media/Alta = 0.3/0.6/1.0), que se nota en imagenes con TAA/FXAA
-static float sharp_stops(void) { return E.cfg.rcas == 1 ? 0.5f : E.cfg.rcas == 2 ? 0.2f : E.cfg.rcas ? 0.0f : 2.0f; }
-static float sharp_detail(void) { return E.cfg.rcas == 1 ? 0.3f : E.cfg.rcas == 2 ? 0.6f : E.cfg.rcas ? 1.0f : 0.0f; }
+// nitidez FSR+ (2.74, mas fuerte que en la 2.73): RCAS y despues el realce de detalle
+// (Baja/Media/Alta = 0.5/1.0/1.6, con un sobreimpulso permitido que crece con la intensidad)
+static float sharp_stops(void) { return E.cfg.rcas == 1 ? 0.4f : E.cfg.rcas == 2 ? 0.1f : E.cfg.rcas ? 0.0f : 2.0f; }
+static float sharp_detail(void) { return E.cfg.rcas == 1 ? 0.5f : E.cfg.rcas == 2 ? 1.0f : E.cfg.rcas ? 1.6f : 0.0f; }
 // NXSR a la resolucion nativa es realce de detalle (no hay escalado que hacer): con
 // k = 1 cambia ~0.7/255 en promedio y no se notaba. El limitador 3x3 del shader
 // impide halos, asi que se puede subir (Suave/Normal/Fuerte = 1/2/3)
-static float sr_gain(void) { return E.cfg.sr == 1 ? 1.0f : E.cfg.sr == 2 ? 2.0f : 3.0f; }
+static float sr_gain(int lite)
+{
+    // NXSR-L: medido en validacion (sr/net_srl.py), hasta 3 sigue por encima del
+    // original en PSNR, sin grano en zonas planas y con halos acotados por el limite;
+    // a 1.6 es el mejor en SSIM. Se usa fuerte para que se note a 1080p nativos.
+    if (lite) return E.cfg.sr == 1 ? 1.2f : E.cfg.sr == 2 ? 2.0f : 3.0f;
+    return E.cfg.sr == 1 ? 1.0f : E.cfg.sr == 2 ? 2.0f : 3.0f;
+}
 
 // post-proceso del real de la generacion: en un buffer propio y de vuelta al del
 // juego, ANTES de generar el intermedio (que asi hereda la misma calidad y no hace
 // falta procesarlo aparte: una sola vez por fotograma del juego). Slots 6-9 del
 // pipeline y del OSD (los de la generacion son 0-3 y 2-5).
-static int fg8_post(pm4_t* c, int k, const nx_image_t* C, int sr, int hq, int aa, int rcas, uint32_t seq)
+static int fg8_post(pm4_t* c, int k, const nx_image_t* C, int sr, int hq, int lite, int aa, int rcas, uint32_t seq)
 {
     nx_job_t pj;
     memset(&pj, 0, sizeof pj);
@@ -1168,8 +1185,9 @@ static int fg8_post(pm4_t* c, int k, const nx_image_t* C, int sr, int hq, int aa
     pj.sharp_detail = rcas ? sharp_detail() : 0.0f;
     pj.seq = seq;
     pj.sr = sr;
-    pj.sr_k = sr ? sr_gain() : 0.0f;
+    pj.sr_k = sr ? sr_gain(lite) : 0.0f;
     pj.sr_hq = hq;
+    pj.sr_lite = lite;
     pj.rcas = rcas;
     pj.copy_back = C;
     pj.osd_ctx = &E.osd;
@@ -1177,8 +1195,8 @@ static int fg8_post(pm4_t* c, int k, const nx_image_t* C, int sr, int hq, int aa
     int r = nx_pipeline_build(&E.pipe, c, &pj);
     if (!r && !E.fx_post_first) {
         E.fx_post_first = 1;
-        stage("efectos: primer post-proceso con generacion (nxsr %d%s, smaa %d, nitidez %d)", sr, hq ? " calidad" : "",
-              aa, rcas);
+        stage("efectos: primer post-proceso con generacion (nxsr %d%s, smaa %d, nitidez %d)", sr,
+              lite ? " ligero" : hq ? " calidad" : "", aa, rcas);
     }
     return r;
 }
@@ -1224,15 +1242,16 @@ static int fg8_frame(const nx_submit_t* s, int gi)
     int m = E.fg8_midk;
     int ia = E.cfg.framegen == 2;   // generacion propia (NXFG-2) con la presentacion de VCFG
     // post-proceso del real (reescalado, SMAA, nitidez), con la calidad dinamica
-    int sr = 0, hq = 0, aa = 0, rcas = 0, fgk = 1;
+    int sr = 0, hq = 0, lite = 0, aa = 0, rcas = 0, fgk = 1;
     if (E.info.full_ready && E.Wo == E.W && E.Ho == E.H) {
         sr = E.cfg.sr > 0;
-        hq = sr && !E.cfg.eco && (E.cfg.sr_model == 2 || (E.cfg.sr_model == 0 && E.pro));
-        aa = E.cfg.aa && !E.cfg.eco;
+        sr_choice(sr, &hq, &lite);
+        aa = E.cfg.aa;
         rcas = E.cfg.rcas > 0;
-        quality_ladder(&fgk, &sr, &hq, &aa, &rcas);
+        quality_ladder(&fgk, &sr, &hq, &lite, &aa, &rcas);
     }
     E.info.hq = hq;
+    E.info.lite = lite;
     int post_on = sr || aa || rcas;
     int tag = ia ? 4 : 3;
     int repeat = E.prev_idx < 0 || E.prev_idx == gi || E.prev_idx >= 16 || !((E.game_mask >> E.prev_idx) & 1)
@@ -1255,7 +1274,7 @@ static int fg8_frame(const nx_submit_t* s, int gi)
     // post-proceso del real y recien ahi la generacion, sobre los reales ya procesados
     nx_fg8_prologue(&E.fg8, &c, k, seq, C, j.ts0);
     j.no_prologue = 1;
-    int br = post_on ? fg8_post(&c, k, C, sr, hq, aa, rcas, seq) : 0;
+    int br = post_on ? fg8_post(&c, k, C, sr, hq, lite, aa, rcas, seq) : 0;
     if (br) {
         logf_("[fg8] post = %d: post-proceso apagado\n", br);
         E.cfg.sr = E.cfg.aa = E.cfg.rcas = 0;
@@ -1416,14 +1435,16 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
     int want_fg = effects && E.cfg.framegen && E.fg8_ready && (E.cfg.framegen == 1 || E.info.full_ready)
                   && !E.cfg.compare && E.info.game_fps > 1.0f && E.info.game_fps < (float)E.cfg.max_game_fps;
     int sr = full && E.cfg.sr > 0;
-    int hq = sr && !E.cfg.eco && (E.cfg.sr_model == 2 || (E.cfg.sr_model == 0 && E.pro));
-    int aa = full && E.cfg.aa && !E.cfg.eco;
+    int hq, lite;
+    sr_choice(sr, &hq, &lite);
+    int aa = full && E.cfg.aa;
     int rcas = full && E.cfg.rcas;   // tambien despues del reescalado
-    quality_ladder(&want_fg, &sr, &hq, &aa, &rcas);
+    quality_ladder(&want_fg, &sr, &hq, &lite, &aa, &rcas);
     // arranque escalonado: los efectos se habilitan por partes
     if (E.fx_cap < 3) want_fg = 0;
-    if (E.fx_cap < 2) { sr = hq = aa = 0; rcas = full; }
+    if (E.fx_cap < 2) { sr = hq = lite = aa = 0; rcas = full; }
     E.info.hq = hq;
+    E.info.lite = lite;
     int want_post = effects && (sr || aa || rcas || E.post == NX_POST_EASU);
     int osd_menu = E.info.menu_open, osd_fps = E.cfg.fps_counter;
     // generacion (VCFG o IA) con la presentacion de VCFG: su propio camino (mismo envio
@@ -1517,7 +1538,7 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
         .slot = sl, .post = want_post ? E.post : NX_POST_NONE, .aa = aa,
         .sharpness_stops = sharp_stops(), .sharp_detail = rcas ? sharp_detail() : 0.0f,
         .seq = E.seq + 1,
-        .fg = want_fg, .fg_fast = E.cfg.framegen != 2, .sr = sr, .sr_k = sr ? sr_gain() : 0.0f, .sr_hq = hq,
+        .fg = want_fg, .fg_fast = E.cfg.framegen != 2, .sr = sr, .sr_k = sr ? sr_gain(lite) : 0.0f, .sr_hq = hq, .sr_lite = lite,
         .rcas = rcas,
         .enhance_first = enhance_first,
         .prev_real = enhance_first ? &E.real_img[m ^ 1] : NULL,

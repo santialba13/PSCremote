@@ -126,7 +126,8 @@ def rcas(img, sharpness=0.2, denoise=False, detail=0.0):
         wn = np.clip((np.abs(dt) - 0.004) / 0.016, 0, 1)
         nb = np.stack([ya, yb, yc, yd, ye, yf, yg, yh, yi])
         yo = _y601(o)
-        tgt = np.clip(yo + detail * dt * wn, np.minimum(nb.min(0), yo) - 0.01, np.maximum(nb.max(0), yo) + 0.01)
+        mg = 0.012 * detail
+        tgt = np.clip(yo + detail * dt * wn, np.minimum(nb.min(0), yo) - mg, np.maximum(nb.max(0), yo) + mg)
         o = o + (tgt - yo)[..., None]
     return np.clip(o, 0, 1).astype(np.float32)
 

@@ -76,6 +76,7 @@ typedef struct {
     int level, level_max;   // calidad dinamica: escalones bajados / posibles (0 = como se configuro)
     int level_locked;       // las subidas fallaron varias veces: espera el maximo entre intentos
     int hq;                 // NXSR Calidad en uso
+    int lite;             // NXSR-L (ligero) en uso
     int temp_c;             // ultima temperatura leida (-1 = desconocida)
     int hot;                // 1 = bajando por temperatura, 2 = temperatura critica (todo apagado)
     uint64_t readopts;      // re-registros de buffers del juego adoptados sin apagarse

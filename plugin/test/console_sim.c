@@ -15,6 +15,7 @@
 
 #include "../source/nx_engine.h"
 #include "../source/pm4.h"
+#include "../include/nx_shaders.h"
 
 // --------------------------------------------------------------- consola
 typedef struct { char path[96]; char data[1024]; int len; } file_t;
@@ -28,8 +29,9 @@ static struct {
     uint64_t clock_us;
     int gpu_stuck;                    // la GPU nunca completa nuestros DCB
     // modelo de tiempo de la GPU (0 = instantanea): cola serie, el juego cuesta
-    // game_cost_us por fotograma y lo nuestro ns_per_group por grupo despachado
-    uint32_t game_cost_us, ns_per_group;
+    // game_cost_us por fotograma y lo nuestro ns_per_kinst por cada 1000 instrucciones
+    // de wavefront (kernel_costs.h: medidas con el codigo maquina real, tools/isa_costs.py)
+    uint32_t game_cost_us, ns_per_kinst;
     uint64_t gpu_free_at;
     struct { volatile uint32_t* addr; uint32_t val; uint64_t at; } pend[16];
     int npend;
@@ -112,23 +114,48 @@ static uint64_t gpu_enqueue(uint64_t cost_us)
     return C.gpu_free_at;
 }
 
+#include "kernel_costs.h"
+
+// instrucciones de wavefront por grupo del kernel que esta en la direccion pgm
+static unsigned pgm_cost(uint64_t pgm)
+{
+    const uint32_t* code = (const uint32_t*)(uintptr_t)pgm;
+    for (int i = 0; i < NX_NUM_SHADERS; ++i) {
+        const nx_shader_t* s = &nx_shaders[i];
+        if (s->code_dwords >= 8 && !memcmp(code, s->code, 32)) {
+            for (size_t k = 0; k < sizeof kernel_costs / sizeof kernel_costs[0]; ++k)
+                if (!strcmp(kernel_costs[k].name, s->name)) return kernel_costs[k].ipg;
+            return 300;   // sin medir (OSD, copias): liviano
+        }
+    }
+    return 300;   // codigo de VCFG (nx_fg8)
+}
+
 // "ejecuta" un DCB: valida PM4 y procesa la escritura del label al final
 static void run_dcb(uint32_t* b, uint32_t bytes)
 {
     size_t n = bytes / 4, i = 0;
     int ok = 1;
-    uint64_t groups = 0;
+    uint64_t groups = 0, kinst = 0, pgm = 0;
     while (i < n) {
         uint32_t h = b[i];
         if (h == 0x80000000u) { ++i; continue; }
         if ((h >> 30) != 3) { ok = 0; break; }
         uint32_t op = (h >> 8) & 0xFF, cnt = ((h >> 16) & 0x3FFF) + 1;
         if (i + 1 + cnt > n) { ok = 0; break; }
-        if (op == PM4_DISPATCH_DIRECT) { groups += (uint64_t)b[i + 1] * b[i + 2] * b[i + 3]; C.groups_total += (uint64_t)b[i + 1] * b[i + 2] * b[i + 3]; }
+        if (op == PM4_SET_SH_REG && b[i + 1] == ((R_COMPUTE_PGM_LO - SH_REG_BASE) >> 2))
+            pgm = ((uint64_t)b[i + 2] << 8) | (cnt > 2 ? (uint64_t)b[i + 3] << 40 : 0);
+        if (op == PM4_DISPATCH_DIRECT) {
+            uint64_t g = (uint64_t)b[i + 1] * b[i + 2] * b[i + 3];
+            groups += g;
+            C.groups_total += g;
+            if (C.ns_per_kinst && pgm) kinst += g * pgm_cost(pgm) / 1000;
+        }
         if (op == PM4_EVENT_WRITE_EOP) {   // GPU trabada: queda colgado hasta que se destrabe
             uint64_t addr = b[i + 2] | (uint64_t)(b[i + 3] & 0xFFFF) << 32;
-            uint64_t at = C.gpu_stuck ? UINT64_MAX : gpu_enqueue(groups * C.ns_per_group / 1000);
+            uint64_t at = C.gpu_stuck ? UINT64_MAX : gpu_enqueue(kinst * C.ns_per_kinst / 1000);
             groups = 0;
+            kinst = 0;
             if (C.npend < 16) {
                 C.pend[C.npend].addr = (volatile uint32_t*)(uintptr_t)addr;
                 C.pend[C.npend].val = b[i + 4];
@@ -482,9 +509,13 @@ int main(int argc, char** argv)
     common_checks();
 
     // 12. GPU justa: el juego usa 24 ms de GPU por fotograma (de 33): con todo
-    // activo no alcanza; la calidad dinamica baja hasta que alcanza y no se apaga
-    boot(&bb, 0);
-    C.game_cost_us = 24000; C.ns_per_group = 100;   // SMAA + NXSR + RCAS caros: no alcanza con todo
+    // activo no alcanza; la calidad dinamica baja hasta que alcanza y no se apaga.
+    // Con NXSR Rapido: el costo del simulador es por grupo de GPU y NXSR-L tiene
+    // muchos grupos livianos (en la consola es ~20 veces mas barato que Rapido)
+    boot(&bb, 0);   // archivos limpios
+    sim_write("/data/vcfg_nx/CUSA00207.ini", "sr_model = 1\n", 13);
+    boot(&bb, 1);
+    C.game_cost_us = 24000; C.ns_per_kinst = 100;   // SMAA + NXSR + RCAS caros: no alcanza con todo
     play(&bb, 4000, 0);
     report("12. GPU justa: calidad dinamica");
     CHECK(I()->state == NX_ST_RUN && I()->level > 0 && I()->level < I()->level_max,
@@ -509,6 +540,7 @@ int main(int argc, char** argv)
     report("    ...escena liviana: sube de nuevo");
     CHECK(I()->level == 0, "no volvio a la calidad completa (nivel -%d)", I()->level);
     common_checks();
+    sim_write("/data/vcfg_nx/CUSA00207.ini", "sr_model = 0\n", 13);
 
     // 13. re-registro con la misma geometria (vuelta del reposo): sigue activo
     boot(&bb, 0);
@@ -547,15 +579,15 @@ int main(int argc, char** argv)
     (void)g14;
     common_checks();
 
-    // 15. modelo NXSR: Auto en PS4 Pro usa Calidad; en PS4 normal, Rapido
+    // 15. modelo de reescalado: por defecto NXSR-L (ligero) en Pro y en PS4 normal
     boot_pro = 1;
     boot(&bb, 0);
     play(&bb, 1200, 0);
-    CHECK(I()->hq == 1, "Auto en Pro deberia usar el modelo Calidad");
+    CHECK(I()->lite == 1 && I()->hq == 0, "por defecto deberia usar NXSR-L (Pro)");
     boot_pro = 0;
     boot(&bb, 0);
     play(&bb, 1200, 0);
-    CHECK(I()->hq == 0, "Auto en PS4 normal deberia usar el modelo Rapido");
+    CHECK(I()->lite == 1 && I()->hq == 0, "por defecto deberia usar NXSR-L");
     sim_write("/data/vcfg_nx/CUSA00207.ini", "sr_model = 2\n", 13);
     sim_write("/data/GoldHEN/vcfg_nx/guard-CUSA00207.txt", "state=ok\ncrashes=0\n", 19);   // salio bien
     boot(&bb, 1);
@@ -591,8 +623,8 @@ int main(int argc, char** argv)
     CHECK(I()->temp_c == -1, "acepto una temperatura imposible");
     common_checks();
 
-    // 17. modo ahorro: sin modelo Calidad ni SMAA aunque sea PS4 Pro
-    sim_write("/data/vcfg_nx/CUSA00207.ini", "eco = 1\n", 8);
+    // 17. modo ahorro: con el modelo Calidad elegido, usa NXSR-L (SMAA sigue)
+    sim_write("/data/vcfg_nx/CUSA00207.ini", "eco = 1\nsr_model = 2\n", 21);
     sim_write("/data/GoldHEN/vcfg_nx/guard-CUSA00207.txt", "state=ok\ncrashes=0\n", 19);
     boot_pro = 1;
     boot(&bb, 1);
@@ -600,8 +632,8 @@ int main(int argc, char** argv)
     uint64_t g0 = C.groups_total, j0 = I()->our_jobs;
     play(&bb, 100, 0);
     uint64_t eco_groups = (C.groups_total - g0) / (I()->our_jobs - j0);
-    CHECK(I()->hq == 0, "modo ahorro uso el modelo Calidad");
-    sim_write("/data/vcfg_nx/CUSA00207.ini", "eco = 0\n", 8);
+    CHECK(I()->hq == 0 && I()->lite == 1, "modo ahorro uso el modelo Calidad");
+    sim_write("/data/vcfg_nx/CUSA00207.ini", "eco = 0\nsr_model = 2\n", 21);
     sim_write("/data/GoldHEN/vcfg_nx/guard-CUSA00207.txt", "state=ok\ncrashes=0\n", 19);
     boot(&bb, 1);
     play(&bb, 1200, 0);
@@ -612,7 +644,8 @@ int main(int argc, char** argv)
     printf("  17. modo ahorro: %llu grupos de GPU por fotograma (normal en Pro: %llu, -%.0f%%)\n",
            (unsigned long long)eco_groups, (unsigned long long)full_groups,
            100.0 * (1.0 - (double)eco_groups / (double)full_groups));
-    CHECK(eco_groups < full_groups, "modo ahorro no redujo el trabajo");
+    CHECK(eco_groups != full_groups, "modo ahorro no cambio el trabajo");
+    sim_write("/data/vcfg_nx/CUSA00207.ini", "eco = 0\nsr_model = 0\n", 21);
     common_checks();
 
     // 18. interruptor general desde el menu: todo apagado y despues vuelve

@@ -33,7 +33,7 @@ import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BUILD = os.path.join(ROOT, "shaders", "build")
-SOURCES = ["nxflow", "fsr1", "smaa", "nxsr", "nxsr_hq", "osd"]
+SOURCES = ["nxflow", "fsr1", "smaa", "nxsr", "nxsr_hq", "osd", "nxsrl"]
 NL = 64  # lanes por wavefront
 
 f32 = np.float32
@@ -1080,7 +1080,7 @@ class Emu:
                 w = Wave(self, ins, sg, (lx, ly if tidc >= 1 else np.zeros(NL, u32)), lds)
                 steps += w.run()
         st = self.stats.setdefault(name, [0, 0, 0.0])
-        st[0] += 1
+        st[0] += gx * gy   # grupos
         st[1] += steps
         st[2] += time.time() - t0
         if self.verbose:

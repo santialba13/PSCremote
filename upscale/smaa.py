@@ -14,7 +14,7 @@ import re
 import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-THRESHOLD = 0.1
+THRESHOLD = 0.05   # preset "Ultra" (igual que shaders/smaa.cl)
 MAX_SEARCH_STEPS = 16
 CORNER_ROUNDING_NORM = 0.25
 LCA_FACTOR = 2.0
