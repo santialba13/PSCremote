@@ -33,7 +33,8 @@ static struct {
     // de wavefront (kernel_costs.h: medidas con el codigo maquina real, tools/isa_costs.py)
     uint32_t game_cost_us, ns_per_kinst;
     uint64_t gpu_free_at;
-    struct { volatile uint32_t* addr; uint32_t val; uint64_t at; } pend[16];
+    struct { volatile uint32_t* addr; uint32_t val; uint64_t at; int ts; } pend[64];
+    uint32_t flip_wait_us;   // lo que tarda WaitFlipDone (la pantalla suelta el intermedio): GPU ociosa
     int npend;
     int pro;
     size_t early_base, early_work;    // reserva temprana del plugin (la hace main.c al cargar)
@@ -101,7 +102,10 @@ static void gpu_resolve(void)
 {
     int k = 0;
     for (int i = 0; i < C.npend; ++i) {
-        if (C.pend[i].at <= C.clock_us) *C.pend[i].addr = C.pend[i].val;
+        if (C.pend[i].at <= C.clock_us) {
+            if (C.pend[i].ts) *(volatile uint64_t*)C.pend[i].addr = C.pend[i].at * 100;   // reloj de la GPU: 100 MHz
+            else *C.pend[i].addr = C.pend[i].val;
+        }
         else C.pend[k++] = C.pend[i];
     }
     C.npend = k;
@@ -145,6 +149,12 @@ static void run_dcb(uint32_t* b, uint32_t bytes)
         if (i + 1 + cnt > n) { ok = 0; break; }
         if (op == PM4_SET_SH_REG && b[i + 1] == ((R_COMPUTE_PGM_LO - SH_REG_BASE) >> 2))
             pgm = ((uint64_t)b[i + 2] << 8) | (cnt > 2 ? (uint64_t)b[i + 3] << 40 : 0);
+        if (op == 0x10 && cnt == 6 && C.flip_wait_us && !C.gpu_stuck) {
+            // espera a la pantalla (WaitFlipDone; sin la funcion del sistema queda un NOP de 7 dwords)
+            gpu_enqueue(kinst * C.ns_per_kinst / 1000);
+            kinst = 0;
+            gpu_enqueue(C.flip_wait_us);
+        }
         if (op == PM4_DISPATCH_DIRECT) {
             uint64_t g = (uint64_t)b[i + 1] * b[i + 2] * b[i + 3];
             groups += g;
@@ -156,9 +166,10 @@ static void run_dcb(uint32_t* b, uint32_t bytes)
             uint64_t at = C.gpu_stuck ? UINT64_MAX : gpu_enqueue(kinst * C.ns_per_kinst / 1000);
             groups = 0;
             kinst = 0;
-            if (C.npend < 16) {
+            if (C.npend < 64) {
                 C.pend[C.npend].addr = (volatile uint32_t*)(uintptr_t)addr;
                 C.pend[C.npend].val = b[i + 4];
+                C.pend[C.npend].ts = ((b[i + 3] >> 29) & 7) == 3;   // DATA_SEL = 3: reloj de 64 bits
                 C.pend[C.npend++].at = at;
             }
             gpu_resolve();
@@ -593,7 +604,7 @@ int main(int argc, char** argv)
     boot(&bb, 1);
     play(&bb, 1200, 0);
     report("15. modelo IA (Auto / Calidad)");
-    CHECK(I()->hq == 1, "sr_model = 2 deberia usar Calidad");
+    CHECK(I()->lite == 2 && I()->hq == 0, "sr_model = 2 deberia usar NXSR-L Calidad");
     common_checks();
 
     // 16. temperatura: sube por encima del limite, luego critica, luego enfria
@@ -835,7 +846,7 @@ int main(int argc, char** argv)
     //     juego, un envio con el trabajo del juego + el nuestro y flip al intermedio, y
     //     despues el flip del real al buffer del juego (los dos terminan en la cola)
     {
-        const char* c28 = "warmup_flips = 600\nframegen = 1\nsr = 0\naa = 0\n";
+        const char* c28 = "warmup_flips = 600\nframegen = 1\nsr = 0\naa = 0\nrcas = 0\n";
         sim_write("/data/vcfg_nx/config.ini", c28, strlen(c28));
         boot(&bb, 1);
         int rc0 = rate_calls;
@@ -892,6 +903,43 @@ int main(int argc, char** argv)
               (unsigned long long)I()->our_jobs, C.mid_flips, C.pairs);
         CHECK(C.groups_total - g0 > 1000000, "IA: casi no hubo trabajo de GPU (la red no corrio)");
         common_checks();
+        sim_write("/data/vcfg_nx/config.ini", "warmup_flips = 600\nframegen = 0\n", 32);
+    }
+
+    // 31. generacion VCFG + nitidez con la GPU justa y la pantalla tardando en soltar
+    //     el intermedio: esa espera no es carga (hasta la 2.74 contaba y la calidad
+    //     dinamica apagaba los efectos)
+    {
+        const char* c31 = "warmup_flips = 600\nframegen = 1\nsr = 0\naa = 0\nrcas = 2\n";
+        sim_write("/data/vcfg_nx/config.ini", c31, strlen(c31));
+        boot(&bb, 1);
+        C.game_cost_us = 24000; C.ns_per_kinst = 100; C.flip_wait_us = 9000;
+        play(&bb, 3000, 0);
+        printf("  31. VCFG + FSR, espera de pantalla 9 ms: GPU propia %.1f ms, espera %.1f ms, nivel -%d\n",
+               (double)I()->gpu_ms, (double)I()->wait_ms, I()->level);
+        CHECK(I()->gpu_ms > 0.0f && I()->gpu_ms < 8.0f, "el tiempo de GPU medido incluye la espera (%.1f ms)", (double)I()->gpu_ms);
+        CHECK(I()->wait_ms > 5.0f, "no se midio la espera a la pantalla (%.1f ms)", (double)I()->wait_ms);
+        CHECK(I()->level == 0, "bajo la calidad por una espera que no es carga (nivel -%d)", I()->level);
+        CHECK(C.mid_flips > 2000, "la generacion no siguio (%d)", C.mid_flips);
+        common_checks();
+    }
+    // 32. IA + NXSR-L + SMAA + FSR con la GPU justa: la calidad dinamica baja efectos
+    //     y, si hace falta, pasa la IA a VCFG, pero la generacion nunca se apaga
+    {
+        const char* c32 = "warmup_flips = 600\nframegen = 2\nsr = 2\naa = 1\nrcas = 2\n";
+        sim_write("/data/vcfg_nx/config.ini", c32, strlen(c32));
+        boot(&bb, 1);
+        C.game_cost_us = 24000; C.ns_per_kinst = 100; C.flip_wait_us = 2000;
+        play(&bb, 6000, 0);
+        int m0 = C.mid_flips;
+        play(&bb, 1000, 0);
+        printf("  32. IA + todo con la GPU justa: GPU propia %.1f ms, nivel -%d de %d, intermedios %d/1000\n",
+               (double)I()->gpu_ms, I()->level, I()->level_max, C.mid_flips - m0);
+        CHECK(C.mid_flips - m0 > 900, "la carga apago la generacion (%d intermedios)", C.mid_flips - m0);
+        CHECK(I()->state == NX_ST_RUN, "quedo en estado %d", (int)I()->state);
+        CHECK(I()->gpu_ms < 9.0f, "no bajo la carga lo suficiente (%.1f ms)", (double)I()->gpu_ms);
+        common_checks();
+        C.flip_wait_us = 0; C.ns_per_kinst = 0;
         sim_write("/data/vcfg_nx/config.ini", "warmup_flips = 600\nframegen = 0\n", 32);
     }
 

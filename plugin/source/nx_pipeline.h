@@ -40,7 +40,7 @@ typedef struct {
     uint64_t vec[4], vtmp, flowG, deltaG, flow8, delta8, lvl_in, hA, hB, hR, up, scene, smask, smask_e;
     uint64_t tmp_img, tmp_img2, tmp_aa;   // imagenes intermedias para el post-proceso
     uint64_t smaa_edges, smaa_weights, smaa_area, smaa_search, nxsr_w, nxsr_hq_w;
-    uint64_t srl_w[4], srl_b[4], srl_feat, srl_h[3], srl_g;   // NXSR-L
+    uint64_t srl_w[2][8], srl_b[2][8], srl_feat, srl_h[3], srl_g;   // NXSR-L: [0] Ligero, [1] Calidad
     uint64_t kernarg_base[NX_PIPE_SLOTS], desc_base[NX_PIPE_SLOTS];   // por slot (piramides: por paridad)
     uint64_t label_gpu;
     volatile uint32_t* label_cpu;
@@ -63,7 +63,7 @@ typedef struct {
     int sr;                     // NXSR (reemplaza a RCAS)
     float sr_k;                 // intensidad de NXSR (1 = la del entrenamiento; el limitador 3x3 evita halos)
     int sr_hq;                  // 1 = modelo Calidad (wg_nxsr_hq), 0 = Rapido
-    int sr_lite;                // 1 = NXSR-L (ligero, guia a 1/8): el que se combina con la generacion
+    int sr_lite;                // NXSR-L (guia a 1/8, se combina con la generacion): 1 = Ligero, 2 = Calidad
     int rcas;                   // nitidez RCAS
     int enhance_first;          // FG sobre los reales ya procesados (misma resolucion)
     const nx_image_t* prev_real;  // real procesado del fotograma anterior

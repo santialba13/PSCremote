@@ -144,6 +144,7 @@ static struct {
     int fx_cap;                      // tope de efectos (nx_engine_allow_effects)
     int fx_first_job, fx_first_fg, fx_post_first;
     int have_mids;                   // intermedios propios (generacion del camino propio, flips de CPU)
+    int ia_fallback_said;            // ya se aviso que la IA paso a VCFG por carga
     unsigned fx_active;              // lo que se aplico en el ultimo fotograma (FX_*), para el menu
     int mem_need_mb, mem_free_mb;    // la ultima reserva de los efectos que no alcanzo
     uint64_t level_since, last_stall, probe_until, degraded_at;
@@ -715,7 +716,7 @@ static void build_menu_text(void)
         const char* sep = "";
         if (f & (FX_FG_VCFG | FX_FG_IA)) { n += snprintf(l + n, sizeof l - (size_t)n, "%s", f & FX_FG_IA ? "IA" : "VCFG"); sep = "+"; }
         if (f & FX_EASU) { n += snprintf(l + n, sizeof l - (size_t)n, "%sEASU", sep); sep = "+"; }
-        if (f & FX_SR) { n += snprintf(l + n, sizeof l - (size_t)n, "%sNXSR%s", sep, E.info.lite ? "-L" : E.info.hq ? "-C" : ""); sep = "+"; }
+        if (f & FX_SR) { n += snprintf(l + n, sizeof l - (size_t)n, "%sNXSR%s", sep, E.info.lite == 2 ? "-LC" : E.info.lite ? "-L" : ""); sep = "+"; }
         if (f & FX_AA) { n += snprintf(l + n, sizeof l - (size_t)n, "%sSMAA", sep); sep = "+"; }
         if (f & FX_RCAS) { n += snprintf(l + n, sizeof l - (size_t)n, "%sFSR", sep); sep = "+"; }
         if (E.info.level > 0 && n < (int)sizeof l - 6) snprintf(l + n, sizeof l - (size_t)n, " (-%d)", E.info.level);
@@ -729,13 +730,13 @@ static void build_menu_text(void)
     // interruptor general
     osd_item(t, a, 2 + ROW_ALL, "Todos los efectos", E.cfg.effects ? "ON" : "OFF", E.cfg.effects ? A_ON : A_ERROR, 0);
     osd_item(t, a, 2 + ROW_FG, "Generaci\xf3n de fotogramas",
-             E.cfg.framegen == 2 ? "IA" : E.cfg.framegen ? "VCFG" : "OFF", E.cfg.framegen ? A_ON : A_OFF, dim);
+             E.cfg.framegen == 2 ? "IA NXFG-2" : E.cfg.framegen ? "VCFG" : "OFF", E.cfg.framegen ? A_ON : A_OFF, dim);
     osd_item(t, a, 2 + ROW_SR, "Reescalado IA (NXSR)", sr_names[E.cfg.sr & 3], E.cfg.sr ? A_ACCENT : A_OFF, pdim);
     // modelo: lo que eligio el usuario y lo que se usa de verdad
     const char* mv;
     if (E.cfg.eco) mv = "Ligero (ahorro)";
     else if (E.cfg.sr_model == 2) mv = "Calidad";
-    else if (E.cfg.sr_model == 1) mv = "R\xe1pido";
+    else if (E.cfg.sr_model == 1) mv = "Cl\xe1sico";
     else mv = "Ligero";
     osd_item(t, a, 2 + ROW_MODEL, "Modelo IA", mv, A_ACCENT, pdim || !E.cfg.sr);
     osd_switch(t, a, 2 + ROW_ECO, "Modo ahorro (menos calor)", E.cfg.eco, dim);
@@ -970,23 +971,29 @@ void nx_engine_tick(void)
 
 // ------------------------------------------------------- calidad dinamica
 // escalones, del mas caro al mas barato; solo cuentan los que estan en uso
-// modelo de reescalado: 0 = NXSR-L (ligero, por defecto y en modo ahorro), 1 = Rapido, 2 = Calidad
+// modelo de reescalado (2.75): 0 = NXSR-L Ligero (por defecto y en modo ahorro),
+// 1 = Clasico (NXSR Rapido, el primero), 2 = NXSR-L Calidad (guia mas grande, el mismo
+// costo a resolucion completa: se combina con la generacion). El NXSR Calidad viejo
+// (~20 ms de GPU a 1080p) ya no se usa.
 static void sr_choice(int sr, int* hq, int* lite)
 {
-    *lite = sr && (E.cfg.sr_model == 0 || E.cfg.eco);
-    *hq = sr && !*lite && E.cfg.sr_model == 2;
+    *hq = 0;
+    *lite = !sr ? 0 : (E.cfg.eco || E.cfg.sr_model == 0) ? 1 : E.cfg.sr_model == 2 ? 2 : 0;
 }
 
 // escalones de la calidad dinamica, de lo mas pesado a lo mas liviano: primero el
 // modelo pesado pasa a NXSR-L, despues SMAA, el reescalado, la nitidez y la generacion
-static void quality_ladder(int* fg, int* sr, int* hq, int* lite, int* aa, int* rcas)
+// ia: generacion IA con la presentacion de VCFG; su escalon la cambia por la de VCFG
+// (nunca se apaga la generacion en ese camino: fg = NULL)
+static void quality_ladder(int* fg, int* ia, int* sr, int* hq, int* lite, int* aa, int* rcas)
 {
     int steps = 0, lv = E.info.level;   // los escalones por atraso solo se suman con `dynamic`; los de calor siempre
-    if (*sr && !*lite) { if (lv > steps) { *hq = 0; *lite = 1; } steps++; }
+    if (*sr && *lite != 1) { if (lv > steps) { *hq = 0; *lite = 1; } steps++; }
     if (*aa) { if (lv > steps) *aa = 0; steps++; }
     if (*sr) { if (lv > steps) *sr = *hq = *lite = 0; steps++; }
     if (*rcas) { if (lv > steps) *rcas = 0; steps++; }
-    if (*fg) { if (lv > steps) *fg = 0; steps++; }
+    if (ia && *ia) { if (lv > steps) *ia = 0; steps++; }
+    if (fg && *fg) { if (lv > steps) *fg = 0; steps++; }
     E.info.level_max = steps;
     if (E.info.level > steps) E.info.level = steps;
 }
@@ -1069,20 +1076,30 @@ static void maybe_level_up(void)
 
 // tiempo de GPU del trabajo anterior en este slot (ya termino): la unidad del
 // reloj de la GPU se calibra contra el de la CPU con los inicios de cada trabajo
-static void gpu_time_read_ts(volatile uint64_t* ts)
+// waits = 1: ts[2..3] es la espera a que la pantalla suelte el intermedio (generacion
+// con la presentacion de VCFG), que se descuenta: no es carga de la GPU. Hasta la
+// 2.74 contaba, y con la generacion cualquier efecto parecia "carga alta".
+static void gpu_time_read_ts(volatile uint64_t* ts, int waits)
 {
     uint64_t t0 = ts[0], t1 = ts[1];
     if (!t0 || t1 <= t0) return;
+    uint64_t idle = 0;
+    if (waits && ts[2] && ts[3] >= ts[2] && ts[2] >= t0 && ts[3] <= t1) idle = ts[3] - ts[2];
+    else if (waits) return;   // falto alguna marca: este fotograma no se mide
     uint64_t now = E.pf->now_us();
     if (!E.ts_first) { E.ts_first = t0; E.ts_cpu_first = now; return; }
     if (now > E.ts_cpu_first + 2000000 && t0 > E.ts_first)
         E.ts_unit = (float)(t0 - E.ts_first) / (float)(now - E.ts_cpu_first);
     if (E.ts_unit <= 0.0f) return;
-    float ms = (float)(t1 - t0) / E.ts_unit / 1000.0f;
+    float ms = (float)(t1 - t0 - idle) / E.ts_unit / 1000.0f;
     if (ms > 0.0f && ms < 1000.0f) E.info.gpu_ms = E.info.gpu_ms ? E.info.gpu_ms * 0.9f + ms * 0.1f : ms;
+    if (waits) {
+        float w = (float)idle / E.ts_unit / 1000.0f;
+        if (w >= 0.0f && w < 1000.0f) E.info.wait_ms = E.info.wait_ms ? E.info.wait_ms * 0.9f + w * 0.1f : w;
+    }
 }
 
-static void gpu_time_read(int sl) { gpu_time_read_ts(E.ts_cpu + sl * 2); }
+static void gpu_time_read(int sl) { gpu_time_read_ts(E.ts_cpu + sl * 2, 0); }
 
 // resumen periodico al registro: cuantos fotogramas y por que pasaron intactos
 static void flip_summary(const nx_submit_t* s)
@@ -1092,10 +1109,10 @@ static void flip_summary(const nx_submit_t* s)
     for (int i = 0; i < WHY_N && n < (int)sizeof w - 32; ++i)
         if (E.why[i]) n += snprintf(w + n, sizeof w - (size_t)n, " %s=%llu", WHY_NAME[i], (unsigned long long)E.why[i]);
     if (!n) snprintf(w, sizeof w, " -");
-    logf_("[flip] estado=%d handle=%u idx=%u count=%u gnm=%llu wl=%llu cpu=%llu nuestros=%llu fps=%.1f gpu=%.1fms nivel=%d intactos:%s\n",
+    logf_("[flip] estado=%d handle=%u idx=%u count=%u gnm=%llu wl=%llu cpu=%llu nuestros=%llu fps=%.1f gpu=%.1fms espera=%.1fms nivel=%d intactos:%s\n",
           (int)E.info.state, s->handle, s->index, s->count, (unsigned long long)E.flips_gnm,
           (unsigned long long)E.flips_wl, (unsigned long long)E.flips_cpu, (unsigned long long)E.info.our_jobs,
-          (double)E.info.game_fps, (double)E.info.gpu_ms, E.info.level, w);
+          (double)E.info.game_fps, (double)E.info.gpu_ms, (double)E.info.wait_ms, E.info.level, w);
     log_flush();
 }
 
@@ -1150,7 +1167,7 @@ static void pace30(void)
     E.pace_last_us = now;
 }
 
-static void gpu_time_read_ts(volatile uint64_t* ts);
+static void gpu_time_read_ts(volatile uint64_t* ts, int waits);
 
 // nitidez FSR+ (2.74, mas fuerte que en la 2.73): RCAS y despues el realce de detalle
 // (Baja/Media/Alta = 0.5/1.0/1.6, con un sobreimpulso permitido que crece con la intensidad)
@@ -1161,10 +1178,10 @@ static float sharp_detail(void) { return E.cfg.rcas == 1 ? 0.5f : E.cfg.rcas == 
 // impide halos, asi que se puede subir (Suave/Normal/Fuerte = 1/2/3)
 static float sr_gain(int lite)
 {
-    // NXSR-L: medido en validacion (sr/net_srl.py), hasta 3 sigue por encima del
-    // original en PSNR, sin grano en zonas planas y con halos acotados por el limite;
-    // a 1.6 es el mejor en SSIM. Se usa fuerte para que se note a 1080p nativos.
-    if (lite) return E.cfg.sr == 1 ? 1.2f : E.cfg.sr == 2 ? 2.0f : 3.0f;
+    // NXSR-L: en validacion (sr/net_srl.py) a 1.6 es el mejor en SSIM; se usa bastante
+    // mas para que se vea a 1080p nativos (2.74 con 1.2/2/3 "no cambiaba nada"). El
+    // nucleo deja afuera el grano y el limite al rango 3x3 acota los halos aun a 4.5.
+    if (lite) return E.cfg.sr == 1 ? 2.0f : E.cfg.sr == 2 ? 3.0f : 4.5f;   // Ligero y Calidad
     return E.cfg.sr == 1 ? 1.0f : E.cfg.sr == 2 ? 2.0f : 3.0f;
 }
 
@@ -1227,7 +1244,7 @@ static int fg8_frame(const nx_submit_t* s, int gi)
         return passthrough_why(s, WHY_STALL);
     }
     E.stall_run = 0;
-    gpu_time_read_ts(nx_fg8_ts(&E.fg8, k));
+    gpu_time_read_ts(nx_fg8_ts(&E.fg8, k), 1);
     // calidad dinamica por tiempo de GPU: los 4 slots casi nunca esperan, asi que el
     // atraso no se ve en la espera sino en lo que tarda nuestro trabajo
     if (E.info.gpu_ms > FG8_BUDGET_MS) {
@@ -1240,15 +1257,22 @@ static int fg8_frame(const nx_submit_t* s, int gi)
     set_rate_forced(1);
     uint32_t seq = ++E.fg8_seq;
     int m = E.fg8_midk;
-    int ia = E.cfg.framegen == 2;   // generacion propia (NXFG-2) con la presentacion de VCFG
-    // post-proceso del real (reescalado, SMAA, nitidez), con la calidad dinamica
-    int sr = 0, hq = 0, lite = 0, aa = 0, rcas = 0, fgk = 1;
+    int ia = E.cfg.framegen == 2 && E.info.full_ready;   // generacion propia (NXFG-2) con la presentacion de VCFG
+    // post-proceso del real (reescalado, SMAA, nitidez), con la calidad dinamica: el
+    // ultimo escalon cambia la IA por la generacion de VCFG; la generacion no se apaga
+    int sr = 0, hq = 0, lite = 0, aa = 0, rcas = 0;
     if (E.info.full_ready && E.Wo == E.W && E.Ho == E.H) {
         sr = E.cfg.sr > 0;
         sr_choice(sr, &hq, &lite);
         aa = E.cfg.aa;
         rcas = E.cfg.rcas > 0;
-        quality_ladder(&fgk, &sr, &hq, &lite, &aa, &rcas);
+    }
+    int want_ia = ia;
+    quality_ladder(NULL, &ia, &sr, &hq, &lite, &aa, &rcas);
+    if (want_ia && !ia && !E.ia_fallback_said) {
+        E.ia_fallback_said = 1;
+        notify("VCFG-NX: la generacion IA no entra en la GPU con este juego: usa la de VCFG");
+        stage("generacion IA -> VCFG por carga (nivel %d)", E.info.level);
     }
     E.info.hq = hq;
     E.info.lite = lite;
@@ -1432,25 +1456,26 @@ int nx_engine_on_submit_flip(const nx_submit_t* s)
     int full = effects && E.info.full_ready;
     // las dos generaciones se presentan como VCFG (fg8_frame); la IA ademas usa la
     // memoria de la cadena propia (piramides, NXFlow)
-    int want_fg = effects && E.cfg.framegen && E.fg8_ready && (E.cfg.framegen == 1 || E.info.full_ready)
+    // la IA necesita la memoria de los efectos; sin ella va la de VCFG (fg8_frame)
+    int want_fg = effects && E.cfg.framegen && E.fg8_ready
                   && !E.cfg.compare && E.info.game_fps > 1.0f && E.info.game_fps < (float)E.cfg.max_game_fps;
+    if (E.fx_cap < 3) want_fg = 0;   // arranque escalonado: los efectos se habilitan por partes
+    // generacion (VCFG o IA) con la presentacion de VCFG: su propio camino (mismo envio
+    // que el juego, flip al intermedio y flip del real al buffer del juego); el
+    // post-proceso del real va dentro de ese trabajo, antes de generar. Su calidad
+    // dinamica no apaga la generacion (ver fg8_frame)
+    if (want_fg && !s->cpu_flip) return fg8_frame(s, gi);
     int sr = full && E.cfg.sr > 0;
     int hq, lite;
     sr_choice(sr, &hq, &lite);
     int aa = full && E.cfg.aa;
     int rcas = full && E.cfg.rcas;   // tambien despues del reescalado
-    quality_ladder(&want_fg, &sr, &hq, &lite, &aa, &rcas);
-    // arranque escalonado: los efectos se habilitan por partes
-    if (E.fx_cap < 3) want_fg = 0;
+    quality_ladder(&want_fg, NULL, &sr, &hq, &lite, &aa, &rcas);
     if (E.fx_cap < 2) { sr = hq = lite = aa = 0; rcas = full; }
     E.info.hq = hq;
     E.info.lite = lite;
     int want_post = effects && (sr || aa || rcas || E.post == NX_POST_EASU);
     int osd_menu = E.info.menu_open, osd_fps = E.cfg.fps_counter;
-    // generacion (VCFG o IA) con la presentacion de VCFG: su propio camino (mismo envio
-    // que el juego, flip al intermedio y flip del real al buffer del juego); el
-    // post-proceso del real va dentro de ese trabajo, antes de generar
-    if (want_fg && !s->cpu_flip) return fg8_frame(s, gi);
     if (want_fg && !E.have_mids) want_fg = 0;   // flips de CPU vistos recien despues de reservar
     if (!want_fg && !want_post && !osd_menu && !osd_fps) {
         E.fx_active = 0;

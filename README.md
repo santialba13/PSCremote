@@ -1,4 +1,4 @@
-# VCFG-NX 2.74: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
+# VCFG-NX 2.75: frame generation + reescalado IA (NXSR) para PS4 (GoldHEN)
 
 Rediseño del **VCFG v2.14** (generador de fotogramas en beta de la comunidad
 de GoldHEN) que además incorpora un **modelo de reescalado/realce propio,
@@ -6,7 +6,7 @@ NXSR**, como alternativa a GNMScale pero sin el granulado que este agrega.
 Todo con la interfaz de VCFG: app instaladora con lista de juegos y menú en
 pantalla con **L3+R3**.
 
-**Descarga:** [`dist/VCFG-NX_v2.74.pkg`](dist/VCFG-NX_v2.74.pkg) (fPKG, app) ·
+**Descarga:** [`dist/VCFG-NX_v2.75.pkg`](dist/VCFG-NX_v2.75.pkg) (fPKG, app) ·
 [`dist/vcfg_nx.prx`](dist/vcfg_nx.prx) (plugin suelto) · [`dist/SHA256SUMS.txt`](dist/SHA256SUMS.txt)
 
 | servicio | qué hace |
@@ -57,13 +57,66 @@ botones mientras está abierto):
 
 * **Todos los efectos**: interruptor general; apaga o prende todo de una vez
   sin perder lo que elegiste en cada fila.
-* **Modelo IA**: izquierda/derecha cambia entre **Calidad**, **Rápido** y
-  **Auto** (muestra cuál usa: "Auto: Calidad" en PS4 Pro, "Auto: Rápido" en
-  PS4 normal; con modo ahorro, "Rápido (ahorro)").
+* **Modelo IA**: izquierda/derecha cambia entre **Ligero** (NXSR-L), **Clásico**
+  (el NXSR Rápido de antes, caro) y **Calidad** (NXSR-L Calidad); con modo ahorro,
+  "Ligero (ahorro)".
+* **Generación**: **VCFG** (motor clásico de VCFG) o **IA NXFG-2** (la propia).
 * Generación de fotogramas, NXSR (Suave / Normal / Fuerte), modo ahorro, SMAA,
   nitidez FSR+, contador de FPS (con temperatura) y comparar (con línea divisoria).
 * Arriba se ven los FPS, la temperatura y el estado (activo, calidad dinámica,
   calor). **Guardar** deja todo para ese juego; **O** cierra.
+
+## Novedades de la 2.75
+
+Con la 2.74 en GTA V: NXSR-L corría bien pero "no cambiaba nada", el modelo
+Calidad tampoco, la generación **IA** se apagaba apenas se elegía ("carga alta") y
+el antialiasing no se veía. Las cuatro cosas tenían la **misma causa**:
+
+- **La carga de GPU se medía mal con la generación.** En la presentación de VCFG
+  nuestro trabajo espera dentro de la GPU a que la pantalla muestre el fotograma
+  intermedio (WaitFlipDone, ~8-16 ms). Esa espera se contaba como trabajo nuestro,
+  así que cualquier efecto parecía "carga alta" y la calidad dinámica sacaba, en
+  orden, SMAA → reescalado → nitidez → generación IA. Por eso nada se notaba.
+  Ahora se marcan tiempos antes y después de la espera y se descuenta: se mide solo
+  lo que hacemos (en el simulador: 2,8 ms propios con 9 ms de espera → nivel 0, todo
+  activo). El registro muestra los dos (`espera=… ms`).
+- **La calidad dinámica ya no apaga la generación** en ese camino: lo máximo que
+  hace es pasar de IA a la de VCFG (avisa una vez en pantalla). Presupuesto propio:
+  8 ms por fotograma del juego.
+
+**NXSR-L más visible.** Suave / Normal / Fuerte = **2,0 / 3,0 / 4,5** (antes 1,2 /
+2,0 / 3,0). El núcleo deja afuera el grano y el límite al rango 3x3 de los vecinos
+sigue acotando los halos aun a 4,5.
+
+**NXSR-L Calidad (modelo nuevo, entrenado para esta versión).** Misma estructura
+que Ligero pero con 16 canales y una capa más en la red guía, entrenado dando el
+doble de peso a los bordes y con más margen de realce (35 %). Validación: 27,95 dB
+(Ligero 27,94), ~31 M instrucciones a 1080p contra ~307 M del Calidad viejo: entra
+junto con la generación. El modelo "Calidad" viejo ya no se usa; el "Rápido" viejo
+queda como **Clásico**.
+
+**Generación IA NXFG-2** en el menú con ese nombre ("IA NXFG-2"). Es el modelo
+propio (movimiento de 4 niveles, red chica, elección de vector por píxel, máscara
+anti-fantasma del HUD, guarda de zonas quietas, corte de escena). Costo medido con
+el código máquina: ~40 M instrucciones a 1080p (~3-6 ms), parecido al motor de VCFG.
+
+**SMAA 2,5 veces más rápido y siempre activo si lo elegís.**
+
+- El pase caro (búsqueda de líneas) leía los bordes de un buffer de bytes con el
+  filtro bilineal hecho a mano (8 lecturas por muestra). Ahora los bordes son una
+  imagen RGBA8 y se leen con el **filtro bilineal del hardware**, como el SMAA
+  original (lo mismo las texturas de áreas y de búsqueda). Resultado idéntico a la
+  referencia (0/255 de diferencia), ~32 M instrucciones a 1080p en vez de ~57 M.
+- 8 pasos de búsqueda (preset Medium) y el modo ahorro ya no lo apaga.
+
+**Nitidez FSR+ activada por defecto.**
+
+**Pruebas.** Emulador de PC y emulador de instrucciones GCN: todos los modos
+idénticos (IA, VCFG, SMAA, NXSR-L Ligero y Calidad, combinados). Simulador de
+consola: todos los escenarios, incluidos los nuevos (espera de pantalla que no
+cuenta como carga, IA + todo con la GPU justa sin que se apague la generación). Los
+imports del plugin son los mismos que en la 2.74. **Sigue sin probarse en una PS4**:
+los tiempos son estimados del código máquina, no medidos en la consola.
 
 ## Novedades de la 2.74
 

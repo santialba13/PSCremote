@@ -193,7 +193,7 @@ void nx_fg8_prologue(nx_fg8_t* f, pm4_t* c, int slot, uint32_t seq, const nx_ima
     uint64_t lbl2 = (uint64_t)(uintptr_t)(sb + SLOT_LBL2);
     *(volatile uint64_t*)(sb + SLOT_LBL2) = 0;
     *(volatile uint64_t*)(sb + SLOT_LBL) = 0;
-    ((volatile uint64_t*)(sb + SLOT_TS))[0] = ((volatile uint64_t*)(sb + SLOT_TS))[1] = 0;
+    for (int i = 0; i < 4; ++i) ((volatile uint64_t*)(sb + SLOT_TS))[i] = 0;
     uint32_t nbytes = cur->pitch * cur->height * 4u;
     // el juego termino su fotograma (el CP espera, no la CPU) y sus escrituras de
     // color estan en memoria; caches de constantes/instrucciones limpias
@@ -209,6 +209,9 @@ void nx_fg8_prologue(nx_fg8_t* f, pm4_t* c, int slot, uint32_t seq, const nx_ima
 
 void nx_fg8_wait_mid(pm4_t* c, const nx_fg8_job_t* j)
 {
+    // reloj antes y despues de la espera: lo que tarda la pantalla en soltar el
+    // intermedio no es trabajo nuestro y no tiene que contar como carga
+    if (j->ts0) pm4_timestamp(c, j->ts0 + 16);
     int r = -1;
     if (c->n + 7 <= c->cap && j->wait_flip_done) r = j->wait_flip_done(c->buf + c->n, 7, j->handle, j->mid_index);
     if (r != 0 && c->n + 7 <= c->cap) {
@@ -216,6 +219,7 @@ void nx_fg8_wait_mid(pm4_t* c, const nx_fg8_job_t* j)
         for (int i = 1; i < 7; ++i) c->buf[c->n + i] = 0;
     }
     if (c->n + 7 <= c->cap) c->n += 7; else c->overflow = 1;
+    if (j->ts0) pm4_timestamp(c, j->ts0 + 24);
 }
 
 int nx_fg8_build(nx_fg8_t* f, pm4_t* c, int slot, const nx_fg8_job_t* j)

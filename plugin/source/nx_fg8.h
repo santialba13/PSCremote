@@ -31,7 +31,7 @@ int nx_fg8_init(nx_fg8_t* f, uint8_t* slab, uint8_t* work);
 uint32_t* nx_fg8_dcb(nx_fg8_t* f, int slot);             // DCB del slot (NX_FG8_DCB_DWORDS)
 uint32_t* nx_fg8_tail(nx_fg8_t* f, int slot);            // cola de flip para el flip del real
 volatile uint32_t* nx_fg8_label(nx_fg8_t* f, int slot);  // fin del trabajo del slot (= seq)
-volatile uint64_t* nx_fg8_ts(nx_fg8_t* f, int slot);     // [inicio, fin] del reloj de la GPU del slot
+volatile uint64_t* nx_fg8_ts(nx_fg8_t* f, int slot);     // reloj de la GPU del slot: [inicio, fin, antes y despues de esperar la pantalla]
 
 typedef struct {
     const nx_image_t* prev;      // P: fotograma anterior del juego

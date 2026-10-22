@@ -125,7 +125,8 @@ NX_KERNEL void srl_act(__global float* g, int n)
 }
 
 // Despacho: W x H hilos (grupos de 8x8). g: hc x wc x 3 (g1, g2, t). k = intensidad.
-NX_KERNEL void wg_srl_apply(tdesc_t src, tdesc_t dst, int W, int H, __global const float* g, int wc, int hc, float k)
+NX_KERNEL void wg_srl_apply(tdesc_t src, tdesc_t dst, int W, int H, __global const float* g, int wc, int hc, float k,
+                           float margin)
 {
     SRL_LDS_DECL
     const int gx0 = GROUP_X * 8, gy0 = GROUP_Y * 8;
@@ -154,7 +155,7 @@ NX_KERNEL void wg_srl_apply(tdesc_t src, tdesc_t dst, int W, int H, __global con
         float th = G[2];
         float c1 = b1 - nx_clampf(b1, -th, th), c2 = b2 - nx_clampf(b2, -th, th);
         float yn = yc + k * (G[0] * c1 + G[1] * c2);
-        float m = SRL_MARGIN * (hi - lo);
+        float m = margin * (hi - lo);   // 0.25 Ligero, 0.35 Calidad (sr/net_srl.py MARGIN)
         yn = nx_clampf(yn, lo - m, hi + m);
         float dy = yn - yc;
         float4 c = nx_load(src, x, y);

@@ -95,9 +95,10 @@ typedef void* P;
 CONV_DECL(conv3x3_15_32) CONV_DECL(conv3x3_32_32) CONV_DECL(conv3x3_32_5)
 CONV_DECL(conv3x3_17_24) CONV_DECL(conv3x3_24_24) CONV_DECL(conv3x3_24_5)
 CONV_DECL(conv3x3_5_12) CONV_DECL(conv3x3_12_12) CONV_DECL(conv3x3_12_3)
+CONV_DECL(conv3x3_5_16) CONV_DECL(conv3x3_16_16) CONV_DECL(conv3x3_16_3)
 void wg_srl_feat(P, int, int, P, int, int);
 void srl_act(P, int);
-void wg_srl_apply(P, P, int, int, P, int, int, float);
+void wg_srl_apply(P, P, int, int, P, int, int, float, float);
 void avgpool_rgb(P, int, int, P, int, int, int);
 void resize_bilinear(P, int, int, int, P, int, int);
 void upsample5(P, int, int, P);
@@ -115,7 +116,7 @@ void mask_dilate(P, int, int, P);
 void easu(P, int, int, P, int, int);
 void rcas(P, P, int, int, float, int, float);
 void smaa_edges(P, int, int, P);
-void smaa_weights(P, int, int, P, P, P);
+void smaa_weights(P, P, int, int, P, P, P);
 void smaa_blend(P, P, P, int, int, P);
 void wg_nxsr(P, int, int, P, P, float);
 void wg_bm_search(P, P, int, int, P, int, int, P, int, int, int, int);
@@ -143,9 +144,12 @@ static void call(const char* n)
     else if (IS("conv3x3_5_12")) CONV(conv3x3_5_12);
     else if (IS("conv3x3_12_12")) CONV(conv3x3_12_12);
     else if (IS("conv3x3_12_3")) CONV(conv3x3_12_3);
+    else if (IS("conv3x3_5_16")) CONV(conv3x3_5_16);
+    else if (IS("conv3x3_16_16")) CONV(conv3x3_16_16);
+    else if (IS("conv3x3_16_3")) CONV(conv3x3_16_3);
     else if (IS("wg_srl_feat")) wg_srl_feat(ap(0), ai(1), ai(2), ap(3), ai(4), ai(5));
     else if (IS("srl_act")) srl_act(ap(0), ai(1));
-    else if (IS("wg_srl_apply")) wg_srl_apply(ap(0), ap(1), ai(2), ai(3), ap(4), ai(5), ai(6), af(7));
+    else if (IS("wg_srl_apply")) wg_srl_apply(ap(0), ap(1), ai(2), ai(3), ap(4), ai(5), ai(6), af(7), af(8));
     else if (IS("nxfg_input_a")) nxfg_input_a(ap(0), ap(1), ap(2), ai(3), ai(4), ap(5), ap(6));
     else if (IS("pool2_rgb")) pool2_rgb(ap(0), ai(1), ai(2), ap(3));
     else if (IS("wg_nxfg_scene")) wg_nxfg_scene(ap(0), ai(1), ap(2));
@@ -166,7 +170,7 @@ static void call(const char* n)
     else if (IS("easu")) easu(ap(0), ai(1), ai(2), ap(3), ai(4), ai(5));
     else if (IS("rcas")) rcas(ap(0), ap(1), ai(2), ai(3), af(4), ai(5), af(6));
     else if (IS("smaa_edges")) smaa_edges(ap(0), ai(1), ai(2), ap(3));
-    else if (IS("smaa_weights")) smaa_weights(ap(0), ai(1), ai(2), ap(3), ap(4), ap(5));
+    else if (IS("smaa_weights")) smaa_weights(ap(0), ap(1), ai(2), ai(3), ap(4), ap(5), ap(6));
     else if (IS("smaa_blend")) smaa_blend(ap(0), ap(1), ap(2), ai(3), ai(4), ap(5));
     else if (IS("wg_nxsr")) wg_nxsr(ap(0), ai(1), ai(2), ap(3), ap(4), af(5));
     else if (IS("wg_nxsr_hq")) wg_nxsr_hq(ap(0), ai(1), ai(2), ap(3), ap(4), af(5));
@@ -316,11 +320,12 @@ int main(int argc, char** argv)
     pm4_init(&c, dcb, sizeof dcb / 4);
     // modos: 0 FG, 1 FG+RCAS, 2 FG+SMAA, 3 solo NXSR (k=1), 4 FG+NXSR procesando antes de interpolar,
     //        5 solo NXSR Calidad (k=1), 6 FG rapida (sin la red), 7 solo FSR+ (RCAS 0.25 + detalle 0.6),
-    //        8 solo NXSR-L (ligero, k=1), 9 FG IA + NXSR-L + SMAA sobre reales procesados
+    //        8 solo NXSR-L (ligero, k=1), 9 FG IA + NXSR-L + SMAA sobre reales procesados,
+    //        10 solo NXSR-L Calidad (k=1)
     nx_job_t job = { .prev = &img[0], .cur = &img[1], .out_mid = &img[2], .out_real = post && post != 6 ? &img[3] : NULL, .sharp_detail = post == 7 ? 0.6f : 0.0f, .rcas = post == 7,
-                     .sr_lite = post == 8 || post == 9,
+                     .sr_lite = post == 10 ? 2 : (post == 8 || post == 9),
                      .slot = 1, .post = post == 1 ? NX_POST_RCAS : NX_POST_NONE, .aa = post == 2 || post == 9,
-                     .sharpness_stops = 0.25f, .seq = 7, .fg = post != 3 && post != 5 && post != 7 && post != 8, .fg_fast = post == 6,
+                     .sharpness_stops = 0.25f, .seq = 7, .fg = post != 3 && post != 5 && post != 7 && post != 8 && post != 10, .fg_fast = post == 6,
                      .sr = post >= 3 && post != 6 && post != 7, .sr_k = 1.0f, .sr_hq = post == 5, .enhance_first = post == 4 || post == 9,
                      .prev_real = &img[4], .prev_real_valid = 0 };
     if (nx_pipeline_build(&p, &c, &job) != 0) { fprintf(stderr, "build fallo\n"); return 1; }

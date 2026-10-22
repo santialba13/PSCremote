@@ -70,6 +70,7 @@ typedef struct {
     int full_ready;       // arena y buffers de salida reservados
     int menu_x, menu_y, menu_w, menu_h;   // donde se dibujo el menu la ultima vez (px)
     float gpu_ms;         // tiempo de GPU de nuestro trabajo por fotograma (promedio)
+    float wait_ms;        // espera a la pantalla dentro de nuestro trabajo (no cuenta como carga)
     int safe_mode;        // la sesion anterior se cerro con el plugin activo
     int menu_open, menu_row;
     float game_fps;

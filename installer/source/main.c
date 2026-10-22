@@ -60,7 +60,7 @@
 #define LOG_DIR ROOT "/data/GoldHEN/vcfg_nx"   // registros del plugin (desde 2.55)
 #define TITLE_ID "VCNX00001"
 #define CONTENT_ID "IV0000-VCNX00001_00-VCFGNXINSTALL000"
-#define VERSION "2.7.4"
+#define VERSION "2.7.5"
 
 #define W 1920
 #define H 1080
@@ -594,7 +594,7 @@ static void icon_load(int gi)
 // ---------------------------------------------------------------- ajustes
 static const char* SR_N[] = { "OFF", "Suave", "Normal", "Fuerte" };
 static const char* RC_N[] = { "OFF", "Baja", "Media", "Alta" };
-static const char* MD_N[] = { "Ligero", "R\xe1pido", "Calidad" };
+static const char* MD_N[] = { "Ligero", "Cl\xe1sico", "Calidad" };
 static const int TEMPS[] = { 0, 70, 75, 80, 85, 90 };
 #define NTEMPS 6
 

@@ -34,7 +34,7 @@ typedef struct { uint64_t l0, l1; int32_t H, W; uint64_t out; } ka_smask_t;
 typedef struct { uint64_t src; int32_t H, W; uint64_t dst; int32_t Ho, Wo; } ka_easu_t;
 typedef struct { uint64_t src, dst; int32_t W, H; float sharp; int32_t denoise; float detail; } ka_rcas_t;
 typedef struct { uint64_t src; int32_t W, H; uint64_t edges; } ka_smaa_edges_t;
-typedef struct { uint64_t edges; int32_t W, H; uint64_t area, search, weights; } ka_smaa_weights_t;
+typedef struct { uint64_t edges, samp; int32_t W, H; uint64_t area, search, weights; } ka_smaa_weights_t;
 typedef struct { uint64_t src, samp, weights; int32_t W, H; uint64_t dst; } ka_smaa_blend_t;
 typedef struct { uint64_t src; int32_t W, H; uint64_t w; uint64_t dst; float k; } ka_nxsr_t;
 typedef struct { uint64_t dst; int32_t W, H; uint64_t text, attr; int32_t cols, rows; uint64_t font;
@@ -43,7 +43,7 @@ typedef struct { uint64_t src, dst; int32_t x0, y0, w, h; } ka_copy_t;
 typedef struct { uint64_t dst; int32_t x0, y0, w, h; float r, g, b; } ka_fill_t;
 typedef struct { uint64_t src; int32_t W, H; uint64_t out; int32_t wc, hc; } ka_srl_feat_t;
 typedef struct { uint64_t g; int32_t n; } ka_srl_act_t;
-typedef struct { uint64_t src, dst; int32_t W, H; uint64_t g; int32_t wc, hc; float k; } ka_srl_apply_t;
+typedef struct { uint64_t src, dst; int32_t W, H; uint64_t g; int32_t wc, hc; float k, margin; } ka_srl_apply_t;
 
 #define O(t, f) (int)offsetof(t, f)
 typedef struct { const char* name; int n; int offs[16]; } layout_t;
@@ -82,7 +82,7 @@ static const layout_t layouts[] = {
         O(ka_rcas_t, sharp), O(ka_rcas_t, denoise), O(ka_rcas_t, detail) } },
     { "smaa_edges", 4, { O(ka_smaa_edges_t, src), O(ka_smaa_edges_t, W), O(ka_smaa_edges_t, H),
         O(ka_smaa_edges_t, edges) } },
-    { "smaa_weights", 6, { O(ka_smaa_weights_t, edges), O(ka_smaa_weights_t, W), O(ka_smaa_weights_t, H),
+    { "smaa_weights", 7, { O(ka_smaa_weights_t, edges), O(ka_smaa_weights_t, samp), O(ka_smaa_weights_t, W), O(ka_smaa_weights_t, H),
         O(ka_smaa_weights_t, area), O(ka_smaa_weights_t, search), O(ka_smaa_weights_t, weights) } },
     { "smaa_blend", 6, { O(ka_smaa_blend_t, src), O(ka_smaa_blend_t, samp), O(ka_smaa_blend_t, weights),
         O(ka_smaa_blend_t, W), O(ka_smaa_blend_t, H), O(ka_smaa_blend_t, dst) } },
@@ -96,8 +96,9 @@ static const layout_t layouts[] = {
     { "wg_srl_feat", 6, { O(ka_srl_feat_t, src), O(ka_srl_feat_t, W), O(ka_srl_feat_t, H), O(ka_srl_feat_t, out),
         O(ka_srl_feat_t, wc), O(ka_srl_feat_t, hc) } },
     { "srl_act", 2, { O(ka_srl_act_t, g), O(ka_srl_act_t, n) } },
-    { "wg_srl_apply", 8, { O(ka_srl_apply_t, src), O(ka_srl_apply_t, dst), O(ka_srl_apply_t, W), O(ka_srl_apply_t, H),
-        O(ka_srl_apply_t, g), O(ka_srl_apply_t, wc), O(ka_srl_apply_t, hc), O(ka_srl_apply_t, k) } },
+    { "wg_srl_apply", 9, { O(ka_srl_apply_t, src), O(ka_srl_apply_t, dst), O(ka_srl_apply_t, W), O(ka_srl_apply_t, H),
+        O(ka_srl_apply_t, g), O(ka_srl_apply_t, wc), O(ka_srl_apply_t, hc), O(ka_srl_apply_t, k),
+        O(ka_srl_apply_t, margin) } },
     { "fill_rect", 8, { O(ka_fill_t, dst), O(ka_fill_t, x0), O(ka_fill_t, y0), O(ka_fill_t, w), O(ka_fill_t, h),
         O(ka_fill_t, r), O(ka_fill_t, g), O(ka_fill_t, b) } },
     { "copy_rect", 6, { O(ka_copy_t, src), O(ka_copy_t, dst), O(ka_copy_t, x0), O(ka_copy_t, y0), O(ka_copy_t, w),
@@ -129,7 +130,8 @@ static void check_layouts(void)
     }
     // las 4 variantes de conv comparten layout
     const char* convs[] = { "conv3x3_32_32", "conv3x3_32_5", "conv3x3_17_24", "conv3x3_24_24", "conv3x3_24_5",
-                            "conv3x3_15_32", "conv3x3_5_12", "conv3x3_12_12", "conv3x3_12_3" };
+                            "conv3x3_15_32", "conv3x3_5_12", "conv3x3_12_12", "conv3x3_12_3",
+                            "conv3x3_5_16", "conv3x3_16_16", "conv3x3_16_3" };
     for (int i = 0; i < (int)(sizeof convs / sizeof convs[0]); ++i) {
         const nx_shader_t* s = find(convs[i]);
         CHECK(s && s->num_args == 13, "%s", convs[i]);

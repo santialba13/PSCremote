@@ -64,6 +64,9 @@ CONV3X3(conv3x3_24_5, 24, 5)    // B.out (a 1/8)
 CONV3X3(conv3x3_5_12, 5, 12)
 CONV3X3(conv3x3_12_12, 12, 12)
 CONV3X3(conv3x3_12_3, 12, 3)
+CONV3X3(conv3x3_5_16, 5, 16)     // guia de NXSR-L Calidad
+CONV3X3(conv3x3_16_16, 16, 16)
+CONV3X3(conv3x3_16_3, 16, 3)
 
 // ------------------------------------------------- utilidades de tensores
 // Promedio fxf (f = 4 u 8) del fotograma del juego -> RGB a 1/f. Lee fuera de

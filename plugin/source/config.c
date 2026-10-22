@@ -16,7 +16,7 @@ void nx_config_defaults(nx_config_t* c)
     c->eco = 0;
     c->temp_limit = 80;
     c->aa = 1;
-    c->rcas = 0;
+    c->rcas = 1;          // FSR+ Baja por defecto: el realce de NXSR-L + un toque de nitidez se nota a 1080p
     c->fps_counter = 0;
     c->compare = 0;
     c->out_w = 1920;
